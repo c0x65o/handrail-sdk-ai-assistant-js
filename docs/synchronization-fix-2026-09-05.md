@@ -41,3 +41,24 @@ After deploying the updated host, reload the browser, refresh conversation histo
 and send a new message; test a second send and reopening as well. This patch needs
 no schema migration. It does not complete the separate audio billing contract or
 sign off full live parity.
+
+## Follow-up: completed reply retained in composer
+
+Production read-only evidence at 2026-09-05 23:09 UTC confirmed that the
+previous candidate was deployed. The server stored a completed greeting while
+a browser synchronization append returned 503. This differs from the earlier
+provider failure. Logs did not retain the underlying transaction exception.
+
+The shared runtime now performs one authoritative history catch-up after a
+failed observation/frame write. Only a matching saved terminal turn can settle
+that send; otherwise the original failure remains. A completed send lets the
+composer clear only the submitted draft, preserving text edited during execution.
+Synchronization still checks ownership and validates every proposed mutation,
+but failure of opportunistic transcript/activity repair no longer prevents access
+to the canonical event store. Repair failures remain diagnostic events and are
+retried on later requests. No provider request is repeated by this catch-up.
+
+Regression coverage includes failed writes with and without a saved completion,
+and mounted gateway synchronization while activity persistence is offline.
+This change does not rewrite historical failed turns or prove the live deployment
+is repaired; the updated host archive must be deployed and exercised there.

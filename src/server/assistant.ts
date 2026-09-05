@@ -677,7 +677,10 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       turnStore: bundleFor(context).durableTurns as never,
       authorizeConversation: async (conversationId) => {
         await ownsConversation(context, conversationId);
-        await reconcileFor(context, conversationId);
+        // Repair is retried on each request, but it is not an authorization check.
+        // A competing projector or activity-store outage must not block access to
+        // already-saved history. The adapter still validates every proposed event.
+        await reconcileSafely(context, conversationId);
         return true;
       },
       ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),

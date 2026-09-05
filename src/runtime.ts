@@ -646,6 +646,21 @@ export async function createConversationRuntime<TRequest>(
       ? result(turnId, turn.status, turn.error ?? undefined) : null;
   };
 
+  const refreshCanonicalTerminalResult = async (turnId: ConversationTurnId): Promise<ConversationRuntimeTurnResult | null> => {
+    // A projector can finish while our write or acknowledgement fails. Only
+    // authoritative history can settle that send; never infer success from text.
+    try {
+      await persistGenerated(() => [], () => catchUpRuntimeStore(
+        options.conversationId, options.eventStore, store, protocolByTurn,
+        durableFrameKeys, durableFrameFingerprints, catchUpBatchSize,
+      ));
+    } catch (cause) {
+      if (cause instanceof ConversationRuntimeDestroyedError) throw cause;
+      return null;
+    }
+    return canonicalTerminalResult(turnId);
+  };
+
   const observeTransport = async (
     turnId: ConversationTurnId,
     observation: TurnObservation<unknown>,
@@ -726,6 +741,7 @@ export async function createConversationRuntime<TRequest>(
       if (transportResult !== null) {
         await captureUsageReceipt(turnId, transportResult);
       }
+      if (frameState.failure !== null) await refreshCanonicalTerminalResult(turnId);
       const alreadyTerminal = canonicalTerminalResult(turnId);
       if (alreadyTerminal) return alreadyTerminal;
 
@@ -965,6 +981,11 @@ export async function createConversationRuntime<TRequest>(
             retryable: false,
           });
         }
+        // Terminal writes and start-handle acknowledgements can fail outside
+        // the frame loop too. Preserve the original error unless this exact
+        // admitted turn has an authoritative terminal outcome.
+        const settled = await refreshCanonicalTerminalResult(turnId);
+        if (settled) return settled;
         throw cause;
       }
     })();

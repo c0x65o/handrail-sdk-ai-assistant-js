@@ -1942,6 +1942,42 @@ describe("createConversationRuntime", () => {
     expect(conflictingRuntime.getSnapshot().turns[0]?.status).toBe("running");
   });
 
+  it.each([[true, "message.text_appended"], [false, "message.text_appended"], [true, "turn.completed"]] as const)("checks authoritative completion after a failed write: %s / %s", async (completeElsewhere, failedType) => {
+    const durable = new InMemoryConversationEventStore();
+    const eventStore: ConversationEventStore = {
+      read: (input) => durable.read(input),
+      getLatestRevision: (id) => durable.getLatestRevision(id),
+      async append(input) {
+        if (input.events.some(event => event.payload.type === failedType)) {
+          if (completeElsewhere) {
+            await durable.append(input);
+            const turnId = (input.events[0]!.metadata!.handrail_runtime as { turn_id: string }).turn_id;
+            if (failedType !== "turn.completed") await durable.append({ conversationId, expectedRevision: input.events.at(-1)!.revision,
+              events: [parseConversationEvent({ version: 1, conversation_id: conversationId,
+                event_id: "server-completed", revision: input.events.at(-1)!.revision + 1,
+                occurred_at: "2026-09-05T00:00:00Z", actor: { type: "system" }, source: { type: "runtime" },
+                payload: { type: "turn.completed", turn_id: turnId, outcome: "stop", output_message_ids: [] } })] });
+          }
+          throw new Error("Conversation synchronization is unavailable.");
+        }
+        return durable.append(input);
+      },
+    };
+    const transport = new FakeTransport();
+    transport.startObservations.push(observation([startedFrame(), deltaFrame(1, "Hey!"), completedFrame(2)], "completed"));
+    const runtime = await createConversationRuntime({ conversationId, clientId, eventStore, transport,
+      retryPolicy: createRetryPolicy({ maximumAttempts: 1 }), ...deterministicSources() });
+    try {
+      const result = await runtime.sendMessage({ content: "hey", request: { prompt: "hey" } });
+      expect(result.status).toBe(completeElsewhere ? "completed" : "interrupted");
+      expect(transport.starts).toHaveLength(1);
+      if (completeElsewhere) {
+        expect(result.error).toBeUndefined();
+        expect(runtime.getSnapshot().messages.filter(message => message.role === "assistant")).toHaveLength(1);
+      }
+    } finally { runtime.destroy(); }
+  });
+
   it("keeps abrupt EOF disconnected and resumes from the last safely persisted frame after restart", async () => {
     const eventStore = new InMemoryConversationEventStore();
     const transport = new FakeTransport();

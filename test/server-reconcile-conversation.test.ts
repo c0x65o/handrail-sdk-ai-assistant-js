@@ -64,9 +64,11 @@ describe("server stored-output reconciliation", () => {
     await catalog.create({ authorizationContext: context, idempotencyKey: "create" as never, title: "Saved" });
     const activity = new InMemoryConversationActivityStore();
     let failActivity = true;
+    let activityOffline = false;
     const bundle = { events: input.events, durableTurns: input.turns, catalog,
       approvals: new InMemoryApprovalProposalStore({ authorize: () => "allow" }), toolLedger: new InMemoryToolExecutionLedger(),
       activity: { list: async () => activity.getSnapshot(), upsert: async (record: Parameters<typeof activity.upsert>[0]) => {
+        if (activityOffline) throw new Error("Activity storage is offline");
         if (failActivity) { failActivity = false; throw new Error("Activity storage temporarily unavailable"); }
         activity.upsert(record); return activity.getSnapshot()[0]!;
       }, markRead: async (id: string) => { activity.markRead(id); return activity.getSnapshot()[0] ?? null; } },
@@ -93,7 +95,11 @@ describe("server stored-output reconciliation", () => {
     try {
       await client.catalog.list({ authorizationContext: context, lifecycle: "active", pageSize: 20, order: { field: "updated_at", direction: "desc" } });
       expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({ code: "reconciliation_failed" }));
+      activityOffline = true;
       const runtime = await client.workspace!.open({ authorizationContext: context, conversationId: "conversation" as never });
+      await runtime.synchronize!();
+      activityOffline = false;
+      await client.catalog.list({ authorizationContext: context, lifecycle: "active", pageSize: 20, order: { field: "updated_at", direction: "desc" } });
       expect(runtime.getSnapshot().active_turn_id).toBeNull();
       expect(runtime.getSnapshot().messages[0]?.content).toEqual([{ type: "text", text: "Stored answer" }]);
       expect(activity.getSnapshot()[0]).toMatchObject({ turnStatus: "completed", unread: true, turnId: "turn" });
