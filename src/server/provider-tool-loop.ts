@@ -1,3 +1,4 @@
+import { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { AI_RUNTIME_PROTOCOL_VERSION, parseChatRequest, type ApplicationToolResult,
   type ChatRequest, type ResponseToolCallEvent, type StreamEvent } from "../protocol.js";
 import type { ProviderAdapter, ProviderAdapterResult, ProviderDocumentReferenceResolver,
@@ -88,115 +89,130 @@ function terminal(result: ProviderAdapterResult, checkpoint: { readonly requestI
 export function createProviderToolLoopTransport(
   options: ProviderToolLoopTransportOptions,
 ): ConversationTransport<StreamEvent, ChatRequest> {
+  for (const [name, value] of Object.entries(options.limits)) {
+    if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
+  }
   return createApplicationTurnTransport<StreamEvent, ChatRequest>({
     async execute(value, turn) {
-      let request = parseChatRequest(value), sequence = 0, calls = 0;
-      const startedAt = Date.now(), usages: ProviderUsage[] = [];
-      let approvalWaitMilliseconds = 0;
-      let rootRequestId = "", traceId = "", finalResult: ProviderAdapterResult | null = null;
-      for (let iteration = 0; iteration < options.limits.maxIterations; iteration += 1) {
-        if (turn.signal.aborted) return { status: "cancelled", checkpoint: {
-          lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null } };
-        if (Date.now() - startedAt - approvalWaitMilliseconds >= options.limits.maxElapsedMs) {
-          throw new Error("Tool loop wall-clock budget exhausted");
-        }
-        const context = await options.createContext({ conversationId: turn.conversationId, turnId: turn.turnId,
-          mutationId: turn.mutationId, iteration });
-        rootRequestId ||= context.request_id; traceId ||= context.trace_id;
-        const discovered: ResponseToolCallEvent[] = [];
-        const stream = options.adapter.invoke({
-          continuation_of: request.continuation_of,
-          messages: request.messages,
-          tools: options.tools,
-          tool_results: request.tool_results,
-          generation: request.generation,
-          signal: turn.signal,
-          context,
-          ...(options.resolveDocumentReference === undefined ? {} : {
-            resolve_document_reference: (reference: Parameters<ProviderDocumentReferenceResolver>[0],
-              resolution: Parameters<ProviderDocumentReferenceResolver>[1]) => options.resolveDocumentReference!({
-                conversationId: turn.conversationId, reference, signal: resolution.signal,
-              }),
-          }),
-        });
-        let step = await stream.next();
-        while (!step.done) {
-          const event = step.value;
-          if (event.type === "response.tool_call") discovered.push(event);
-          if (event.type === "response.started" && sequence === 0) {
-            await turn.emit({ ...event, request_id: rootRequestId, trace_id: traceId, sequence: sequence++ });
-          } else if (event.type !== "response.started" && event.type !== "response.usage" &&
-            event.type !== "response.completed" && event.type !== "response.cancelled" && event.type !== "response.error") {
-            await turn.emit({ ...event, request_id: rootRequestId, trace_id: traceId, sequence: sequence++ });
+      const budget = createActiveExecutionBudget(turn.signal, options.limits.maxElapsedMs);
+      try {
+        let request = parseChatRequest(value), sequence = 0, calls = 0;
+        const usages: ProviderUsage[] = [];
+        let rootRequestId = "", traceId = "", finalResult: ProviderAdapterResult | null = null;
+        for (let iteration = 0; iteration < options.limits.maxIterations; iteration += 1) {
+          if (turn.signal.aborted) return { status: "cancelled", checkpoint: {
+            lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null } };
+          if (budget.signal.aborted) {
+            finalResult = limitFailure("The execution time limit was reached. Completed tool results are retained; review them before continuing.");
+            break;
           }
-          step = await stream.next();
-        }
-        finalResult = step.value;
-        if (finalResult.usage) {
-          usages.push(finalResult.usage);
-          await options.captureUsage?.(projectProviderUsageToReceipt(finalResult.usage, {
-            usage_receipt_id: `${rootRequestId}:usage:${iteration}`,
-            conversation_id: turn.conversationId, turn_id: turn.turnId,
-            logical_request_id: rootRequestId, trace_id: traceId,
-            attempt: { id: `${rootRequestId}:attempt`, index: 0 },
-            continuation: { id: `${rootRequestId}:continuation`, index: iteration },
-            provider_id: options.adapter.metadata.provider_id, model_id: options.adapter.metadata.model_id,
-            attribution: context.attribution, source: "provider", quality: "reported",
-            terminal_status: finalResult.status === "completed" ? "completed" : finalResult.status,
-          }));
-        }
-        if (finalResult.status !== "completed" || finalResult.outcome !== "tool_calls") break;
-        calls += discovered.length;
-        if (discovered.length === 0 || calls > options.limits.maxTotalToolCalls) throw new Error("Tool loop call budget exhausted");
-        const results: ApplicationToolResult[] = [];
-        for (let offset = 0; offset < discovered.length; offset += options.limits.parallelism) {
-          const batch = discovered.slice(offset, offset + options.limits.parallelism);
-          const outcomes = await Promise.all(batch.map((call) => options.executeTool({
-            conversationId: turn.conversationId, turnId: turn.turnId, call, signal: turn.signal,
-          })));
-          for (let index = 0; index < outcomes.length; index += 1) {
-            const outcome = outcomes[index]!;
-            if (outcome.status === "completed") {
-              results.push(outcome.result);
-              continue;
+          const context = await options.createContext({ conversationId: turn.conversationId, turnId: turn.turnId,
+            mutationId: turn.mutationId, iteration });
+          rootRequestId ||= context.request_id; traceId ||= context.trace_id;
+          const discovered: ResponseToolCallEvent[] = [];
+          const stream = options.adapter.invoke({
+            continuation_of: request.continuation_of,
+            messages: request.messages,
+            tools: options.tools,
+            tool_results: request.tool_results,
+            generation: request.generation,
+            signal: budget.signal,
+            context,
+            ...(options.resolveDocumentReference === undefined ? {} : {
+              resolve_document_reference: (reference: Parameters<ProviderDocumentReferenceResolver>[0],
+                resolution: Parameters<ProviderDocumentReferenceResolver>[1]) => options.resolveDocumentReference!({
+                  conversationId: turn.conversationId, reference, signal: resolution.signal,
+                }),
+            }),
+          });
+          let step = await stream.next();
+          while (!step.done) {
+            const event = step.value;
+            if (event.type === "response.tool_call") discovered.push(event);
+            if (event.type === "response.started" && sequence === 0) {
+              await turn.emit({ ...event, request_id: rootRequestId, trace_id: traceId, sequence: sequence++ });
+            } else if (event.type !== "response.started" && event.type !== "response.usage" &&
+              event.type !== "response.completed" && event.type !== "response.cancelled" && event.type !== "response.error") {
+              await turn.emit({ ...event, request_id: rootRequestId, trace_id: traceId, sequence: sequence++ });
             }
-            if (options.awaitApproval === undefined) {
-              const failure = { kind: "policy" as const, retryable: false as const, code: "policy_denied" as const,
-                message: "Tool execution requires external approval." };
-              finalResult = { status: "failed", error: failure, usage: null };
-              break;
+            step = await stream.next();
+          }
+          finalResult = step.value;
+          if (finalResult.usage) {
+            usages.push(finalResult.usage);
+            await options.captureUsage?.(projectProviderUsageToReceipt(finalResult.usage, {
+              usage_receipt_id: `${rootRequestId}:usage:${iteration}`,
+              conversation_id: turn.conversationId, turn_id: turn.turnId,
+              logical_request_id: rootRequestId, trace_id: traceId,
+              attempt: { id: `${rootRequestId}:attempt`, index: 0 },
+              continuation: { id: `${rootRequestId}:continuation`, index: iteration },
+              provider_id: options.adapter.metadata.provider_id, model_id: options.adapter.metadata.model_id,
+              attribution: context.attribution, source: "provider", quality: "reported",
+              terminal_status: finalResult.status === "completed" ? "completed" : finalResult.status,
+            }));
+          }
+          if (finalResult.status !== "completed" || finalResult.outcome !== "tool_calls") break;
+          calls += discovered.length;
+          if (discovered.length === 0 || calls > options.limits.maxTotalToolCalls) {
+            finalResult = limitFailure("The tool call limit was reached. Review completed results before continuing.");
+            break;
+          }
+          const results: ApplicationToolResult[] = [];
+          for (let offset = 0; offset < discovered.length; offset += options.limits.parallelism) {
+            budget.signal.throwIfAborted();
+            const batch = discovered.slice(offset, offset + options.limits.parallelism);
+            const outcomes = await Promise.all(batch.map((call) => options.executeTool({
+              conversationId: turn.conversationId, turnId: turn.turnId, call, signal: budget.signal,
+            })));
+            for (let index = 0; index < outcomes.length; index += 1) {
+              const outcome = outcomes[index]!;
+              if (outcome.status === "completed") {
+                results.push(outcome.result);
+                continue;
+              }
+              if (options.awaitApproval === undefined) {
+                const failure = { kind: "policy" as const, retryable: false as const, code: "policy_denied" as const,
+                  message: "Tool execution requires external approval." };
+                finalResult = { status: "failed", error: failure, usage: null };
+                break;
+              }
+              const approved = await budget.withApprovalWait(() => options.awaitApproval!({ conversationId: turn.conversationId,
+                turnId: turn.turnId, call: batch[index]!, signal: budget.signal }));
+              results.push(approved.result);
             }
-            const waitStartedAt = Date.now();
-            const approved = await options.awaitApproval({ conversationId: turn.conversationId,
-              turnId: turn.turnId, call: batch[index]!, signal: turn.signal });
-            approvalWaitMilliseconds += Date.now() - waitStartedAt;
-            results.push(approved.result);
+            if (finalResult.status !== "completed") break;
           }
           if (finalResult.status !== "completed") break;
+          request = parseChatRequest({ ...request, protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
+            continuation_of: context.request_id, tools: options.tools, tool_results: results });
         }
-        if (finalResult.status !== "completed") break;
-        request = parseChatRequest({ ...request, protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
-          continuation_of: context.request_id, tools: options.tools, tool_results: results });
-      }
-      if (!finalResult) throw new Error("Provider loop did not run");
-      if (usages.length > 0) {
-        const usage = totals(usages);
-        await turn.emit({ type: "response.usage", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
-          request_id: rootRequestId, trace_id: traceId, sequence: sequence++, usage: {
-            input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, total_tokens: usage.total_tokens,
+        if (!finalResult) throw new Error("Provider loop did not run");
+        if (finalResult.status === "completed" && finalResult.outcome === "tool_calls") {
+          finalResult = limitFailure("The iteration limit was reached before the request finished. Review completed results before continuing.");
+        }
+        if (usages.length > 0) {
+          const usage = totals(usages);
+          await turn.emit({ type: "response.usage", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
+            request_id: rootRequestId, trace_id: traceId, sequence: sequence++, usage: {
+              input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, total_tokens: usage.total_tokens,
+            } });
+        }
+        const result = finalResult;
+        if (result.status === "completed") await turn.emit({ type: "response.completed", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
+          request_id: rootRequestId, trace_id: traceId, sequence: sequence++, outcome: result.outcome === "tool_calls" ? "length" : result.outcome });
+        else if (result.status === "cancelled") await turn.emit({ type: "response.cancelled", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
+          request_id: rootRequestId, trace_id: traceId, sequence: sequence++, reason: result.reason });
+        else await turn.emit({ type: "response.error", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
+          request_id: rootRequestId, trace_id: traceId, sequence: sequence++, error: {
+            category: result.error.kind === "policy" ? "policy" : result.error.kind === "client" ? "request" : "upstream",
+            code: result.error.code, message: result.error.message, retryable: result.error.retryable,
           } });
-      }
-      const result = finalResult;
-      if (result.status === "completed") await turn.emit({ type: "response.completed", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
-        request_id: rootRequestId, trace_id: traceId, sequence: sequence++, outcome: result.outcome === "tool_calls" ? "length" : result.outcome });
-      else if (result.status === "cancelled") await turn.emit({ type: "response.cancelled", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
-        request_id: rootRequestId, trace_id: traceId, sequence: sequence++, reason: result.reason });
-      else await turn.emit({ type: "response.error", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
-        request_id: rootRequestId, trace_id: traceId, sequence: sequence++, error: {
-          category: result.error.kind === "policy" ? "policy" : result.error.kind === "client" ? "request" : "upstream",
-          code: result.error.code, message: result.error.message, retryable: result.error.retryable,
-        } });
-      return terminal(result, { requestId: rootRequestId, sequence: sequence - 1 });
+        return terminal(result, { requestId: rootRequestId, sequence: sequence - 1 });
+      } finally { budget.dispose(); }
     },
   });
+}
+
+function limitFailure(message: string): ProviderAdapterResult {
+  return { status: "failed", usage: null, error: { kind: "policy", code: "policy_denied", message, retryable: false } };
 }

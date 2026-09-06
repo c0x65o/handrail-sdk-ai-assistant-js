@@ -1,3 +1,4 @@
+export { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { createToolActivityObserver, type HandrailAssistantToolObserver } from "./tool-observer.js";
 import { createHash } from "node:crypto";
 import { recordToolLifecycle } from "./tool-lifecycle.js";

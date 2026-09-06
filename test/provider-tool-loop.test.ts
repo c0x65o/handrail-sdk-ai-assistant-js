@@ -23,7 +23,7 @@ function event(invocation: ProviderAdapterInvocation, sequence: number, value: o
 }
 
 describe("createProviderToolLoopTransport", () => {
-  it("runs bounded tool continuations as one valid stream and captures every usage receipt", async () => {
+  it.each([false, true])("runs continuations and reports unfinished iteration limits (limited=%s)", async (limited) => {
     let invocations = 0;
     const adapter: ProviderAdapter = {
       metadata: { provider_id: "fake", model_id: "fake-model", capabilities: {
@@ -51,7 +51,7 @@ describe("createProviderToolLoopTransport", () => {
     const receipts: NormalizedUsageReceipt[] = [];
     const transport = createProviderToolLoopTransport({
       adapter, tools: [{ name: "lookup", description: "Lookup", input_schema: { type: "object" } }],
-      limits: { maxIterations: 4, maxTotalToolCalls: 4, maxElapsedMs: 10_000, parallelism: 1 },
+      limits: { maxIterations: limited ? 1 : 4, maxTotalToolCalls: 4, maxElapsedMs: 10_000, parallelism: 1 },
       createContext: ({ iteration }) => ({ request_id: `request-${iteration}`, trace_id: "trace-1", attribution,
         correlation_hints: {} }),
       executeTool: ({ call }) => ({ status: "completed", result: { tool_call_id: call.tool_call_id,
@@ -67,6 +67,13 @@ describe("createProviderToolLoopTransport", () => {
     const events: StreamEvent[] = [];
     for await (const item of started.value.observation.events) events.push(item);
 
+    if (limited) {
+      expect(await started.value.observation.result).toMatchObject({ status: "failed", error: { retryable: false } });
+      expect(events.at(-1)).toMatchObject({ type: "response.error" });
+      expect(events.some((item) => item.type === "response.completed")).toBe(false);
+      expect(receipts).toHaveLength(1);
+      return;
+    }
     expect((await started.value.observation.result).status).toBe("completed");
     expect(parseStreamEvents(events).map((item) => item.type)).toEqual([
       "response.started", "response.tool_call", "response.text.delta", "response.usage", "response.completed",

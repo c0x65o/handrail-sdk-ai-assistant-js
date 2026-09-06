@@ -1,3 +1,4 @@
+export { runIndependentReadBatch, type IndependentReadCall, type IndependentReadResult } from "../tools/read-batch.js";
 import type { ConversationRuntimeOptions } from "../runtime.js";
 import { createConversationRuntime, type ConversationRuntime } from "../runtime.js";
 import type { ToolDefinition } from "../protocol.js";
