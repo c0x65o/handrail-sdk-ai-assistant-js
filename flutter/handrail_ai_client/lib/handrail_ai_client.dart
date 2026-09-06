@@ -238,6 +238,24 @@ class HandrailConversationActivityRecord {
     this.summary,
     this.progress,
   });
+  Map<String, Object?> toJson() => {
+        'conversationId': conversationId,
+        if (turnId != null) 'turnId': turnId,
+        if (turnRevision != null) 'turnRevision': turnRevision,
+        'turnStatus': switch (status) {
+          HandrailTurnStatus.running ||
+          HandrailTurnStatus.waitingForTool =>
+            'running',
+          HandrailTurnStatus.failed => 'error',
+          HandrailTurnStatus.completed ||
+          HandrailTurnStatus.cancelled =>
+            'completed',
+          _ => 'idle',
+        },
+        'unread': unread,
+        if (updatedAt != null)
+          'updatedAt': updatedAt!.toUtc().toIso8601String(),
+      };
   factory HandrailConversationActivityRecord.fromJson(
     Map<String, Object?> json,
   ) {
@@ -382,6 +400,19 @@ class HandrailConversationWorkspace {
       ..clear()
       ..addAll(next);
     _publish();
+  }
+
+  HandrailConversationActivityRecord? remoteActivityFor(
+          String conversationId) =>
+      _remoteActivity[conversationId];
+
+  /// Merge an authoritative read response, including any newer unread result.
+  void acceptRemoteActivity(HandrailConversationActivityRecord record) {
+    replaceRemoteActivity([
+      ..._remoteActivity.values
+          .where((item) => item.conversationId != record.conversationId),
+      record,
+    ]);
   }
 
   void markRemoteRead(String conversationId) {
@@ -630,11 +661,13 @@ class HandrailAiClient {
   }
 
   Future<HandrailConversationActivityRecord?> markActivityRead(
-    String conversationId,
-  ) async {
+    String conversationId, {
+    HandrailConversationActivityRecord? observed,
+  }) async {
     final result = await _post('/activity', {
       'operation': 'mark_read',
       'conversationId': conversationId,
+      if (observed != null) 'observed': observed.toJson(),
     });
     return result['value'] is Map
         ? HandrailConversationActivityRecord.fromJson(

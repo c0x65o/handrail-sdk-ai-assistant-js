@@ -40,6 +40,7 @@ export interface ChatLauncherState {
   open: boolean;
   turnStatus?: ChatLauncherTurnStatus;
   unreadCount: number;
+  runningCount: number;
 }
 
 type OpenChangeHandler = (open: boolean) => void;
@@ -178,6 +179,7 @@ function stateData(state: ChatLauncherState) {
     "data-state": state.open ? "open" : "closed",
     "data-turn-status": state.turnStatus,
     "data-unread-count": String(state.unreadCount),
+    "data-running-count": String(state.runningCount),
   };
 }
 
@@ -195,6 +197,7 @@ export interface ChatLauncherRootProps {
   open?: boolean;
   turnStatus?: ChatLauncherTurnStatus;
   unreadCount?: number;
+  runningCount?: number;
 }
 
 export function ChatLauncherRoot({
@@ -209,6 +212,7 @@ export function ChatLauncherRoot({
   open: controlledOpen,
   turnStatus,
   unreadCount = 0,
+  runningCount = 0,
 }: ChatLauncherRootProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -292,11 +296,12 @@ export function ChatLauncherRoot({
   const normalizedUnreadCount = Number.isFinite(unreadCount)
     ? Math.max(0, Math.floor(unreadCount))
     : 0;
+  const normalizedRunningCount = Number.isFinite(runningCount) ? Math.max(0, Math.floor(runningCount)) : 0;
   const value = useMemo<LauncherContextValue>(
     () => ({
       ...(activityProgress === undefined ? {} : { activityProgress }),
       ...(activitySummary === undefined ? {} : { activitySummary }),
-      busy: connectionStatus === "connecting" || turnStatus === "busy",
+      busy: normalizedRunningCount > 0 || turnStatus === "busy",
       ...(connectionStatus === undefined ? {} : { connectionStatus }),
       descriptionId: `handrail-chat-launcher-description-${reactId}`,
       error: connectionStatus === "error" || turnStatus === "error",
@@ -307,6 +312,7 @@ export function ChatLauncherRoot({
       titleId: `handrail-chat-launcher-title-${reactId}`,
       ...(turnStatus === undefined ? {} : { turnStatus }),
       unreadCount: normalizedUnreadCount,
+      runningCount: normalizedRunningCount,
     }),
     [
       connectionStatus,
@@ -316,6 +322,7 @@ export function ChatLauncherRoot({
       instance,
       modal,
       normalizedUnreadCount,
+      normalizedRunningCount,
       open,
       reactId,
       registrationVersion,
@@ -696,6 +703,7 @@ function publicState(context: LauncherContextValue): ChatLauncherState {
       ? {}
       : { turnStatus: context.turnStatus }),
     unreadCount: context.unreadCount,
+    runningCount: context.runningCount,
   };
 }
 
@@ -742,8 +750,7 @@ function statusText(state: ChatLauncherState): string {
       ? `${state.activitySummary}. ${progress.completed} of ${progress.total}${progress.unit ? ` ${progress.unit}` : ""}`
       : state.activitySummary);
   }
-  if (state.connectionStatus) parts.push(`Connection ${state.connectionStatus}`);
-  if (state.turnStatus) parts.push(`Turn ${state.turnStatus}`);
+  if (state.busy) parts.push(state.runningCount > 1 ? `${state.runningCount} conversations running` : "Running");
   return parts.join(". ");
 }
 

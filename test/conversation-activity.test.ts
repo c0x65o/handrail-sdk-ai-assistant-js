@@ -177,7 +177,14 @@ describe("conversation activity", () => {
     const read = await handler(new Request("https://app.example/activity", { method: "POST",
       body: JSON.stringify({ operation: "mark_read", conversationId: "remote" }) }));
     expect((await read.json()).value.unread).toBe(false);
-    expect(markRead).toHaveBeenCalledWith("remote");
+    expect(markRead).toHaveBeenCalledWith("remote", undefined);
+    const observed = { conversationId: "remote", turnId: "seen", turnStatus: "error", unread: true };
+    await handler(new Request("https://app.example/activity", { method: "POST",
+      body: JSON.stringify({ operation: "mark_read", conversationId: "remote", observed }) }));
+    expect(markRead).toHaveBeenLastCalledWith("remote", observed);
+    const invalid = await handler(new Request("https://app.example/activity", { method: "POST",
+      body: JSON.stringify({ operation: "mark_read", conversationId: "other", observed }) }));
+    expect(invalid.status).toBe(400);
   });
 
   it("streams an initial activity snapshot and later updates over SSE", async () => {

@@ -62,6 +62,7 @@ import {
   type ConversationActivityRecord,
   type DurableConversationActivityStore,
   retainConversationActivity,
+  matchesConversationActivityRead,
 } from "../conversation/activity.js";
 import { createAttachmentStagingService, type AttachmentBlobStore, type AttachmentStagingMetadataStore,
   type AttachmentStagingLimits, type StagedAttachmentRecord } from "../attachments/staging.js";
@@ -612,13 +613,13 @@ export class PostgresConversationActivityStore implements DurableConversationAct
     }
     throw new PostgresPersistenceConflictError();
   }
-  async markRead(conversationId: string): Promise<ConversationActivityRecord | null> {
+  async markRead(conversationId: string, observed?: ConversationActivityRecord): Promise<ConversationActivityRecord | null> {
     id(conversationId, "conversationId");
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const current = await this.persistence.getDocument<ConversationActivityRecord>(this.tenantId, "activity", this.scopeId, conversationId);
       if (!current) return null;
       const record = parseConversationActivityRecord(current.value);
-      if (!record.unread) return record;
+      if (!record.unread || (observed && !matchesConversationActivityRead(record, observed))) return record;
       try {
         const saved = await this.persistence.compareAndSetDocument({ tenantId: this.tenantId, kind: "activity",
           scopeId: this.scopeId, recordId: conversationId, expectedVersion: current.version, value: { ...record, unread: false } });

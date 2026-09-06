@@ -304,11 +304,17 @@ export function createConversationActivityHttpHandler(
         headers: { allow: options.delivery ? "GET, POST" : "POST" } });
     }
     try {
-      const input = await request.json() as { readonly operation?: unknown; readonly conversationId?: unknown };
+      const input = await request.json() as { readonly operation?: unknown; readonly conversationId?: unknown; readonly observed?: unknown };
       let value: readonly ConversationActivityRecord[] | ConversationActivityRecord | null;
       if (input.operation === "list") value = await store.list();
       else if (input.operation === "mark_read" && typeof input.conversationId === "string") {
-        const record = await store.markRead(input.conversationId);
+        let observed: ConversationActivityRecord | undefined;
+        if (input.observed !== undefined) {
+          try { observed = parseConversationActivityRecord(input.observed as ConversationActivityRecord); }
+          catch { return new Response(null, { status: 400 }); }
+          if (observed.conversationId !== input.conversationId) return new Response(null, { status: 400 });
+        }
+        const record = await store.markRead(input.conversationId, observed);
         if (record !== null) await options.delivery?.publish(record);
         value = record;
       } else return new Response(null, { status: 400 });
@@ -583,7 +589,7 @@ export interface ApplicationGatewayResourceClient {
   /** Available when the negotiated gateway reports `activity: true`. */
   listActivity?(): Promise<readonly ConversationActivityRecord[]>;
   /** Available when the negotiated gateway reports `activity: true`. */
-  markActivityRead?(input: { readonly conversationId: string }): Promise<ConversationActivityRecord | null>;
+  markActivityRead?(input: { readonly conversationId: string; readonly observed?: ConversationActivityRecord }): Promise<ConversationActivityRecord | null>;
   /** Protected SSE stream; callers should retain polling as a convergence fallback. */
   subscribeActivity?(signal?: AbortSignal): AsyncIterable<ConversationActivityRecord>;
   listConversations(input: WithoutAuthorization<ListConversationsInput<unknown>>): Promise<ListConversationsResult>;

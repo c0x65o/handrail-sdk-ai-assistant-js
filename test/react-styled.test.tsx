@@ -8,6 +8,30 @@ import { InMemoryConversationActivityStore } from "../src/conversation/activity.
 import { CatalogWorkspaceThreadPicker, HandrailAssistantLauncher, StandardConversationTitleObserver, StandardGatewayApprovals, StyledChatLauncher, StyledChatPreset, StyledChatPresetStyles, WorkspaceThreadPicker, createHandrailChatThemeStyle, gatewayAttachmentIntake, installToolRendererPlugins } from "../src/react-styled/index.js";
 
 describe("styled React preset", () => {
+  it("counts concurrent runs and unread failures independently, then clears attention when read", () => {
+    const activity = new InMemoryConversationActivityStore();
+    activity.replace([
+      { conversationId: "first", turnId: "one", turnStatus: "running", unread: false },
+      { conversationId: "second", turnId: "two", turnStatus: "running", unread: true },
+      { conversationId: "failed", turnId: "three", turnStatus: "error", unread: true },
+      { conversationId: "old-failure", turnStatus: "error", unread: false },
+    ]);
+    const view = render(<StyledChatLauncher activity={activity}/>);
+    const trigger = view.container.querySelector<HTMLButtonElement>(".hr-chat__launcher-trigger")!;
+    expect(trigger.textContent).toContain("2 running");
+    expect(trigger.dataset.unreadCount).toBe("2");
+    expect(trigger.dataset.error).toBe("false");
+    act(() => {
+      activity.upsert({ conversationId: "first", turnId: "one", turnStatus: "completed", unread: false });
+      activity.upsert({ conversationId: "second", turnId: "two", turnStatus: "completed", unread: false });
+    });
+    expect(trigger.textContent).toContain("Unread");
+    act(() => activity.markRead("failed"));
+    expect(trigger.textContent).toBe("Open chat");
+    expect(trigger.dataset.turnStatus).toBe("idle");
+    expect(activity.getSnapshot().find((item) => item.conversationId === "failed")?.turnStatus).toBe("error");
+  });
+
   it("shows server completion for an open disconnected thread in both launcher and picker", () => {
     const state = { ...createInitialConversationState("conversation" as never),
       turns: [{ turn_id: "turn", status: "running" }] };
@@ -24,12 +48,12 @@ describe("styled React preset", () => {
     const trigger = view.container.querySelector<HTMLButtonElement>(".hr-chat__launcher-trigger")!;
     expect(trigger.dataset.turnStatus).toBe("completed");
     expect(trigger.dataset.unreadCount).toBe("1");
-    expect(screen.getByRole("button", { name: "conversation Done" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "conversation Unread" })).toBeTruthy();
     expect(screen.queryByText(/running\)/)).toBeNull();
     act(() => activity.upsert({ conversationId: "conversation", turnId: "turn", turnRevision: 2,
       turnStatus: "completed", unread: false }));
     expect(trigger.dataset.unreadCount).toBe("0");
-    expect(screen.queryByRole("button", { name: "conversation Done" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "conversation Unread" })).toBeNull();
   });
 
   it("clears a stale running summary as soon as canonical completion arrives", () => {

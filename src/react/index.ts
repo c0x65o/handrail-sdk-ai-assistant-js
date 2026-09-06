@@ -18,6 +18,7 @@ export {
 } from "./message-actions.js";
 export {
   useConversationLauncherBinding,
+  useConversationReadState,
   useConversationActivitySnapshot,
   useConversationWorkspaceSnapshot,
   type ConversationLauncherBinding,

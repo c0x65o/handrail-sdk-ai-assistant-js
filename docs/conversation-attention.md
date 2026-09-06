@@ -1,0 +1,9 @@
+# Conversation attention and read receipts
+
+All shared text launchers and thread pickers show running work, unread replies, or no attention indicator. Running and unread counts are independent; a failed turn contributes to unread only while its reply is unread. Execution failures remain available in canonical turn records and the transcript. `errorCount` remains diagnostic data for existing integrations, not a launcher priority.
+
+Custom React hosts should use `summarizeConversationActivity` and `conversationAttentionStatus` for presentation and call `useConversationReadState(workspace, activity, panelVisible, onConversationRead)`. Forward both callback arguments to `client.markActivityRead(conversationId, observed)`. The hook waits until the selected terminal turn is synchronized and visible, handles hidden browser tabs, and retries failed read acknowledgements. Keep workspace selection separate from visibility with `workspace.setVisible(false)` when a panel is hidden. Background catalog hydration must not acknowledge reads.
+
+Read requests carry an optional observed activity record. The stock Postgres store only clears unread when the stored turn, revision, status and result timestamp still match. A concurrent newer result remains unread. Custom durable stores must honor the optional second argument to `markRead`; existing one-argument callers remain supported. Acknowledgement responses merge into the live activity index immediately and cannot be overwritten by a pending older poll. Flutter sessions send the observed record and merge the authoritative response instead of blindly clearing unread.
+
+Qualification: targeted SDK workspace/activity/persistence and React tests, SDK source build, Dart analysis and session tests, plus consuming app checks. This is a local candidate; runtime deployment is separate.

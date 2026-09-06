@@ -46,6 +46,24 @@ describe("ConversationWorkspace", () => {
     expect(workspace.getSnapshot()).toMatchObject({ runningCount: 0, unreadCount: 1 });
   });
 
+  it("retains unread failures for a selected but hidden conversation without archiving it", async () => {
+    const first = fakeRuntime("first");
+    const registry = { open: vi.fn(async () => first.runtime) } as unknown as ConversationRuntimeRegistry<unknown>;
+    const workspace = new ConversationWorkspace(registry);
+    workspace.setVisible(false);
+    await workspace.open({ authorizationContext: undefined, conversationId: "first" as ConversationId });
+    first.update({ ...first.runtime.store.getSnapshot(), active_turn_id: "turn-1" as never,
+      turns: [{ turn_id: "turn-1", status: "running" } as never] });
+    first.update({ ...first.runtime.store.getSnapshot(), active_turn_id: null,
+      turns: [{ turn_id: "turn-1", status: "failed" } as never] });
+    expect(workspace.getSnapshot()).toMatchObject({ selectedConversationId: "first", runningCount: 0, unreadCount: 1 });
+    workspace.select("first" as ConversationId);
+    expect(workspace.getSnapshot().unreadCount).toBe(1);
+    workspace.setVisible(true);
+    expect(workspace.getSnapshot()).toMatchObject({ unreadCount: 0, errorCount: 1 });
+    expect(workspace.getSnapshot().threads).toHaveLength(1);
+  });
+
   it("reports recovery rejection after opening", async () => {
     const first = fakeRuntime("first");
     const error = new Error("offline");

@@ -15,6 +15,7 @@ export interface ConversationWorkspaceThreadSnapshot {
 export interface ConversationWorkspaceSnapshot {
   readonly selectedConversationId: ConversationId | null;
   readonly runningCount: number;
+  /** Diagnostic count; use runningCount and unreadCount for attention indicators. */
   readonly errorCount: number;
   readonly unreadCount: number;
   readonly threads: readonly ConversationWorkspaceThreadSnapshot[];
@@ -62,6 +63,7 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
   readonly #entries = new Map<ConversationId, WorkspaceEntry<TRequest>>();
   readonly #listeners = new Set<Listener>();
   #selectedConversationId: ConversationId | null = null;
+  #visible = true;
   #snapshot: ConversationWorkspaceSnapshot = Object.freeze({
     selectedConversationId: null, runningCount: 0, errorCount: 0, unreadCount: 0,
     threads: Object.freeze([]),
@@ -105,8 +107,15 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
   select(conversationId: ConversationId | null): void {
     this.#selectedConversationId = conversationId;
     const selected = conversationId === null ? undefined : this.#entries.get(conversationId);
-    if (selected !== undefined) selected.unread = false;
+    if (this.#visible && selected !== undefined) selected.unread = false;
     this.#publish();
+  }
+
+  /** Keep selection while a panel or browser tab is hidden without consuming replies. */
+  setVisible(visible: boolean): void {
+    if (this.#visible === visible) return;
+    this.#visible = visible;
+    if (visible && this.#selectedConversationId !== null) this.markRead(this.#selectedConversationId);
   }
 
   markRead(conversationId: ConversationId): void {
@@ -155,7 +164,7 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
     const previous = entry.turnStatus;
     entry.turnStatus = statusOf(entry.runtime);
     entry.revision = state.revision;
-    if (this.#selectedConversationId !== conversationId && previous === "running" &&
+    if ((!this.#visible || this.#selectedConversationId !== conversationId) && previous === "running" &&
       (entry.turnStatus === "completed" || entry.turnStatus === "error")) entry.unread = true;
     this.#publish();
   }

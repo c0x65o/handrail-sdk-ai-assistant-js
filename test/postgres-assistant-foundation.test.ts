@@ -131,6 +131,17 @@ describe("Postgres assistant persistence foundation", () => {
     expect(await first.list()).toEqual([expect.objectContaining({ turnId: "second", turnStatus: "running", unread: false })]);
   });
 
+  it("does not let an old acknowledgement clear a newer unread result", async () => {
+    const documents = new MemoryDocuments();
+    const store = new PostgresConversationActivityStore(documents.persistence, "tenant", "user");
+    const read = await store.upsert({ conversationId: "conversation", turnId: "first", turnRevision: 2,
+      turnStatus: "error", unread: true });
+    const next = await store.upsert({ ...read, turnId: "second", turnRevision: 9 });
+    expect(await store.markRead("conversation", read)).toMatchObject({ turnId: "second", unread: true });
+    expect(await store.markRead("conversation", next)).toMatchObject({ turnStatus: "error", unread: false });
+    expect(await store.list()).toEqual([expect.objectContaining({ unread: false, turnStatus: "error" })]);
+  });
+
   it("retains usage admission decisions with durable idempotency", async () => {
     let providerCalls = 0;
     let retained: unknown;

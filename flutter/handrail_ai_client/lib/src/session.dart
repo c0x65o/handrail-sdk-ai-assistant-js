@@ -459,9 +459,12 @@ class HandrailConversationSession {
 
   Future<void> markRead() async {
     if (_disposed) throw StateError('Conversation session is disposed');
-    await client.markActivityRead(conversationId);
+    final observed = workspace.remoteActivityFor(conversationId);
+    if (observed == null || !observed.unread) return;
+    final saved =
+        await client.markActivityRead(conversationId, observed: observed);
     if (_disposed) return;
-    workspace.markRemoteRead(conversationId);
+    if (saved != null) workspace.acceptRemoteActivity(saved);
     _publish();
   }
 

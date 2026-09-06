@@ -9,7 +9,7 @@ import {
   type ApplicationGatewayResourceClient,
   type ApplicationGatewayTransportOptions,
 } from "../transports/application-gateway.js";
-import { PollingConversationActivity } from "../conversation/activity.js";
+import { PollingConversationActivity, type ConversationActivityRecord } from "../conversation/activity.js";
 import { ConversationRuntimeRegistry, type ConversationRuntimeFactory,
   type ConversationRuntimeRegistryPolicy } from "../conversation/runtime-registry.js";
 import { ConversationWorkspace } from "../conversation/workspace.js";
@@ -104,7 +104,7 @@ export interface HandrailAiClient<TEvent, TRequest, TAuthorizationContext> {
   /** Returns a stable, client-owned controller for the conversation when presence was negotiated/configured. */
   presenceControllerFor(conversationId: ConversationId): PresenceController | null;
   buildRequest(input: { readonly content: string; readonly attachments?: readonly unknown[] }): TRequest;
-  markActivityRead(conversationId: string): Promise<void>;
+  markActivityRead(conversationId: string, observed?: ConversationActivityRecord): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -220,9 +220,12 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
       if (!options.buildRequest) throw new TypeError("No application request builder is configured");
       return options.buildRequest({ content: input.content, attachments: input.attachments ?? [] });
     },
-    async markActivityRead(conversationId: string) {
+    async markActivityRead(conversationId: string, seen?: ConversationActivityRecord) {
       if (!activity || !resources.markActivityRead) return;
-      await resources.markActivityRead({ conversationId });
+      const observed = seen ?? activity.getSnapshot().find((record) => record.conversationId === conversationId);
+      if (!observed?.unread) return;
+      const saved = await resources.markActivityRead({ conversationId, observed });
+      if (saved) activity.accept(saved);
       await activity.refresh();
     },
     async dispose() {

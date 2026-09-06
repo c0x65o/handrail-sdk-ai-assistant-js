@@ -193,6 +193,45 @@ void main() {
     client.close();
   });
 
+  test('a delayed read response keeps a newer failed result unread', () async {
+    final old = HandrailConversationActivityRecord(
+        conversationId: 'c1',
+        turnId: 't1',
+        turnRevision: 1,
+        status: HandrailTurnStatus.completed,
+        unread: true,
+        updatedAt: DateTime.utc(2026, 9, 6));
+    final workspace = HandrailConversationWorkspace();
+    workspace.replaceRemoteActivity([old]);
+    final client = HandrailAiClient(
+        baseUri: Uri.parse('https://app.example/api/ai'),
+        httpClient: MockClient((request) async {
+          final body = jsonDecode(request.body) as Map;
+          expect(body['operation'], 'mark_read');
+          expect(body['observed'], old.toJson());
+          return ok({
+            ...old.toJson(),
+            'turnId': 't2',
+            'turnRevision': 2,
+            'turnStatus': 'error',
+            'unread': true,
+          });
+        }));
+    final session = HandrailConversationSession(
+        client: client,
+        conversationId: 'c1',
+        workspace: workspace,
+        pollingInterval: null);
+    await session.markRead();
+    expect(workspace.snapshot.unreadCount, 1);
+    expect(workspace.remoteActivityFor('c1')!.turnId, 't2');
+    expect(
+        workspace.remoteActivityFor('c1')!.status, HandrailTurnStatus.failed);
+    await session.dispose();
+    await workspace.dispose();
+    client.close();
+  });
+
   test('a failed synchronization keeps the last known server run', () async {
     var fail = false;
     final client = HandrailAiClient(

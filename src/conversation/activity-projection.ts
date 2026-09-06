@@ -48,3 +48,17 @@ export function projectConversationActivity(
   }
   return Object.freeze([...records.values()].map((record) => Object.freeze(record)));
 }
+
+/** Execution failure stays in the transcript; attention depends only on running/unread. */
+export function conversationAttentionStatus(record: Pick<ConversationActivityRecord, "turnStatus" | "unread"> | undefined): "running" | "unread" | "idle" {
+  return record?.turnStatus === "running" ? "running" : record?.unread ? "unread" : "idle";
+}
+
+export function summarizeConversationActivity(records: readonly ConversationActivityRecord[]): {
+  readonly runningCount: number; readonly unreadCount: number;
+} {
+  return Object.freeze({
+    runningCount: records.filter((record) => record.turnStatus === "running").length,
+    unreadCount: records.filter((record) => record.unread).length,
+  });
+}

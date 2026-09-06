@@ -44,7 +44,7 @@ export interface ConversationActivityStore extends ConversationActivityReadable 
 export interface DurableConversationActivityStore {
   list(): Promise<readonly ConversationActivityRecord[]>;
   upsert(record: ConversationActivityRecord): Promise<ConversationActivityRecord>;
-  markRead(conversationId: ConversationId | string): Promise<ConversationActivityRecord | null>;
+  markRead(conversationId: ConversationId | string, observed?: ConversationActivityRecord): Promise<ConversationActivityRecord | null>;
 }
 
 export const LIVE_CONVERSATION_ACTIVITY_PROTOCOL_VERSION =
@@ -272,6 +272,14 @@ export function parseConversationActivityRecord(input: ConversationActivityRecor
     ...(progress === undefined ? {} : { progress }) });
 }
 
+/** A delayed read acknowledgement must not consume a different or newer result. */
+export function matchesConversationActivityRead(current: ConversationActivityRecord, observed: ConversationActivityRecord): boolean {
+  return current.conversationId === observed.conversationId && current.turnId === observed.turnId &&
+    current.turnRevision === observed.turnRevision && current.turnStatus === observed.turnStatus &&
+    (current.updatedAt === observed.updatedAt || (current.updatedAt !== undefined && observed.updatedAt !== undefined &&
+      Date.parse(current.updatedAt) === Date.parse(observed.updatedAt)));
+}
+
 /** Prevent delayed writers from reviving finished work or replacing a newer turn. */
 export function retainConversationActivity(
   current: ConversationActivityRecord | undefined,
@@ -376,6 +384,11 @@ export class PollingConversationActivity implements ConversationActivityReadable
   }
   getSnapshot = () => this.#store.getSnapshot();
   subscribe = (listener: () => void) => this.#store.subscribe(listener);
+  /** Apply an authoritative write response without waiting for the next poll. */
+  accept(record: ConversationActivityRecord): void {
+    this.#pollLiveUpdates?.add(String(record.conversationId));
+    this.#store.upsert(record);
+  }
   start(): void {
     if (this.#timer === null && this.#controller === null) void this.refresh();
     if (this.#subscribe && this.#liveController === null) {

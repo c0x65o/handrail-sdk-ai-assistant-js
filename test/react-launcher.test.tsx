@@ -159,9 +159,9 @@ describe("ChatLauncher", () => {
     expect(badge.textContent).toBe("3+");
     const status = screen.getByTestId("status");
     expect(status.textContent).toBe(
-      "3 unread messages. Connection connecting. Turn error",
+      "3 unread messages",
     );
-    expect(status.dataset.busy).toBe("true");
+    expect(status.dataset.busy).toBe("false");
     expect(status.dataset.error).toBe("true");
     expect(status.dataset.connectionStatus).toBe("connecting");
     expect(status.dataset.turnStatus).toBe("error");
