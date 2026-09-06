@@ -1,5 +1,6 @@
 export * from "./attachments/index.js";
 export * from "./citations.js";
+export * from "./composer-approval.js";
 export * from "./conversation/index.js";
 export * from "./diagnostics.js";
 export * from "./presence/index.js";

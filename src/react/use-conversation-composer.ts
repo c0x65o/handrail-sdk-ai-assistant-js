@@ -106,7 +106,7 @@ export interface UseConversationComposerOptions<TRequest = undefined> {
   readonly attachmentIntake?: ConversationComposerAttachmentIntakeOptions;
   /**
    * Backward-compatible image-only intake alias. Existing defaults and behavior
-   * are retained when attachmentIntake is omitted.
+   * are retained when imageIntake is explicitly supplied. With neither option, mixed intake is enabled.
    */
   readonly imageIntake?: ConversationComposerImageIntakeOptions;
   /** Narrow cancellation seam; no runtime cancellation contract is assumed here. */
@@ -467,7 +467,7 @@ export function useConversationComposer<TRequest = undefined>(
     onCancel,
   } = options;
   const conversationId = options.conversationId ?? storeConversationId;
-  const generalizedIntake = options.attachmentIntake;
+  const generalizedIntake = options.attachmentIntake ?? (options.imageIntake === undefined ? {} : undefined);
   if (generalizedIntake !== undefined) validateAttachmentIntakeOptions(generalizedIntake);
   const acceptedMediaTypes: readonly AttachmentMimeType[] = generalizedIntake === undefined
     ? options.imageIntake?.acceptedMediaTypes ?? AI_RUNTIME_IMAGE_MIME_TYPES

@@ -1,3 +1,6 @@
+import { StandardChatComposer, type ComposerApprovalControlProps } from "./composer.js";
+import { withComposerApprovalMode } from "../composer-approval.js";
+export { StandardChatComposer, ComposerApprovalControl, ComposerIcon, BrowserDictationControl, HANDRAIL_CHAT_COMPOSER_CSS, type StandardChatComposerProps, type ComposerApprovalControlProps } from "./composer.js";
 import type { ConversationActivityRecord } from "../conversation/activity.js";
 import { useRealtimeWorkspaceActivity } from "../react/realtime-workspace.js";
 import { RealtimeWorkspaceMonitor, summarizeRealtimeWorkspace, type RealtimeWorkspaceMonitorOptions, type RealtimeWorkspaceSnapshot, type RealtimeWorkspaceSummary } from "../realtime/workspace.js";
@@ -27,8 +30,8 @@ import { useConversationLauncherBinding, useConversationWorkspaceSnapshot, useCo
   type ConversationActivityReadable, type ConversationWorkspaceReadable } from "../react/workspace.js";
 import type { ChatLauncherConnectionStatus, ChatLauncherState } from "../react/launcher.js";
 import {
-  AttachmentList, ChatRoot, Composer, ErrorList, FileInput, Form, LiveRegion,
-  AssistantActivityIndicator, Message, Retry, Stop, StreamStatus, Submit, Textarea, Transcript, TypingIndicator,
+  ChatRoot, LiveRegion,
+  AssistantActivityIndicator, Message, Retry, StreamStatus, Transcript, TypingIndicator,
 } from "../react/primitives.js";
 import { CopyMessageButton } from "../react/message-actions.js";
 import { ToolActivity } from "../react/tool-activity.js";
@@ -125,7 +128,7 @@ export function installToolRendererPlugins(
   return Object.freeze({ renderers: Object.freeze(renderers), toolRendererKeys: Object.freeze(toolRendererKeys) });
 }
 
-export interface StyledChatPresetProps {
+export interface StyledChatPresetProps extends ComposerApprovalControlProps {
   readonly title?: ReactNode;
   readonly layout?: StyledChatLayout;
   readonly composer?: ConversationComposerResult;
@@ -291,17 +294,13 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
       <LiveRegion/>
     </main>
     {(props.approvals || props.citations) && <aside className="hr-chat__aux">{props.approvals}{props.citations}</aside>}
-    <Composer className="hr-chat__composer">
-      <AttachmentList className="hr-chat__attachments"/>
-      <Form className="hr-chat__form">
-        {props.voiceControls && <div className="hr-chat__voice">{props.voiceControls}</div>}
-        <label className="hr-chat__file">{labels.attach}<FileInput hidden/></label>
-        <Textarea rows={1} placeholder={labels.placeholder}/>
-        {canStop ? <Stop>{labels.stop}</Stop> : null}
-        {retryableTurn ? <Retry className="hr-chat__retry" turnId={retryableTurn.turn_id} available>{labels.retry}</Retry> : null}
-        <Submit>{labels.send}</Submit><ErrorList className="hr-chat__errors"/>
-      </Form>
-    </Composer>
+    <StandardChatComposer key={resolvedState?.conversation_id ?? "unselected"} {...(props.composer ? { composer: props.composer } : {})} canStop={canStop}
+      placeholder={labels.placeholder} labels={labels}
+      {...(props.approvalMode === undefined ? {} : { approvalMode: props.approvalMode })}
+      {...(props.onApprovalModeChange === undefined ? {} : { onApprovalModeChange: props.onApprovalModeChange })}
+      {...(props.showApprovalControl === undefined ? {} : { showApprovalControl: props.showApprovalControl })}
+      {...(props.voiceControls === undefined ? {} : { voiceControls: props.voiceControls })}
+      actions={retryableTurn ? <Retry className="hr-chat__retry" turnId={retryableTurn.turn_id} available>{labels.retry}</Retry> : null}/>
     {props.footer}
   </ChatRoot>;
 }
@@ -1167,7 +1166,10 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
             return uploader;
       })(),
       conversationId,
-      createRequest: ({ text, attachments }) => state.client.buildRequest({ content: text, attachments }),
+      createRequest: ({ text, attachments }) => {
+        const request = state.client.buildRequest({ content: text, attachments });
+        return props.approvalMode === undefined ? request : withComposerApprovalMode(request, props.approvalMode);
+      },
       ...(attachmentIntake === undefined ? {} : { attachmentIntake }),
     }),
     approvals,

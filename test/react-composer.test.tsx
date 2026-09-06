@@ -776,3 +776,15 @@ it("blocks synchronous, keyboard and direct submissions until all local tasks re
   await act(async () => { await result.current.submit(); });
   expect(sendMessage).toHaveBeenCalledTimes(1);
 });
+
+
+it("accepts PDF documents with the default composer intake", async () => {
+  const { runtime } = fakeRuntime();
+  const uploader = immediateUploader();
+  const { result } = renderHook(() => useConversationComposer({ uploader }), { wrapper: wrapper(runtime) });
+  expect(result.current.getFileInputProps().accept).toContain("application/pdf");
+  act(() => result.current.getFileInputProps().onChange({ currentTarget: { files: fileList(file("report.pdf", "application/pdf", "%PDF-1.4")), value: "" } } as never));
+  await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
+  expect(result.current.attachments[0]?.kind).toBe("document");
+  expect(result.current.errors).toEqual([]);
+});

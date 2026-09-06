@@ -1,0 +1,14 @@
+name: handrail_ai_widgets
+description: Standard Handrail assistant composer for Flutter applications.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  speech_to_text: ^7.4.0
+  pasteboard: ^0.5.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

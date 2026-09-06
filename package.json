@@ -1,6 +1,6 @@
 {
   "name": "@handrail/ai-assistant",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Provider-neutral TypeScript primitives and runtime tooling for building AI applications with Handrail.",
   "license": "UNLICENSED",
   "type": "module",
@@ -140,7 +140,10 @@
     "flutter/handrail_ai_client/pubspec.yaml",
     "flutter/handrail_ai_client/README.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "flutter/handrail_ai_widgets/lib",
+    "flutter/handrail_ai_widgets/pubspec.yaml",
+    "flutter/handrail_ai_widgets/README.md"
   ],
   "sideEffects": false,
   "engines": {
