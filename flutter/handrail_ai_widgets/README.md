@@ -1,6 +1,6 @@
 # Handrail standard composer
 
-`HandrailComposer` places the multiline draft above a toolbar with Add and an optional shield on the left, and dictation and a green Send arrow on the right. Padding is 12 logical pixels, draft inset 4 pixels, corner radius 24 pixels, minimum draft height 64 pixels, and touch targets at least 44 pixels.
+`HandrailComposer` places the multiline draft above a toolbar with Add and an optional shield on the left, and dictation and a green Send arrow on the right. Padding is 8 logical pixels, draft inset 4 pixels, corner radius 16 pixels, minimum draft height 26 pixels, and controls 40 pixels with smaller icons. The draft starts at one line and grows with its content.
 
 Pass a controller, the host attachment picker, the host send/cancel callbacks, and current availability. The host owns uploads, authorization, and network persistence. `input` and `voiceControls` let existing authenticated text/paste/transcription implementations share the layout. Dictation appends to the draft and never sends it. Default device dictation uses speech_to_text; platform availability and microphone/speech permissions apply.
 

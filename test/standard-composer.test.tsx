@@ -25,7 +25,7 @@ it("keeps badge visibility separate from automatic execution and shows an access
         onApprovalModeChange={setMode} showApprovalControl={visible}/></>;
   }
   render(<Host/>);
-  expect(screen.getByRole("textbox").getAttribute("rows")).toBe("2");
+  expect(screen.getByRole("textbox").getAttribute("rows")).toBe("1");
   expect(screen.getByRole("button", { name: "Add files and images" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Approval settings" }));
   expect((screen.getByRole("switch") as HTMLInputElement).checked).toBe(false);

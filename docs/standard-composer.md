@@ -2,7 +2,7 @@
 
 All React styled presets now use `StandardChatComposer`, also exported from `@handrail/ai-assistant/react/styled` for custom application shells. Flutter consumers use the companion `flutter/handrail_ai_widgets` package. The composer follows the supplied two-row reference: multiline text at the upper left, Add and shield at the lower left, dictation and green circular Send at the lower right. The send arrow becomes Stop only while a response is running.
 
-React uses 16px padding (12px on narrow screens), a 4px draft inset, a 64px minimum draft, 26px corners (24px on narrow screens), and 44px control targets. Long drafts grow to 180px then scroll. Supported image/document uploads, drag/drop, and clipboard image paste use the existing composer uploader, including validation, progress, cancellation, retry, and removal. Voice input changes the draft without submitting. A supplied `voiceControls` adapter takes precedence over browser SpeechRecognition; unsupported browsers receive a visible availability message. Recognition is stopped on unmount and submission is blocked while listening.
+React uses 10px padding (8px on narrow screens), a 2px draft inset, a 26px minimum draft, 18px corners (16px on narrow screens), and 32px controls with a 34px Send button (40px on touch pointers). Long drafts grow to 120px then scroll. The default composer does not offer manual message, attachment, or voice Retry controls. Supported image/document uploads, drag/drop, and clipboard image paste use the existing composer uploader, including validation, progress, cancellation, and removal. Voice input changes the draft without submitting. A supplied `voiceControls` adapter takes precedence over browser SpeechRecognition; unsupported browsers receive a visible availability message. Recognition is stopped on unmount and submission is blocked while listening.
 
 ## Approval controls
 
@@ -16,3 +16,5 @@ These are local SDK/host candidates. They apply after the updated SDK artifact a
 
 Browser recognition contract: https://webaudio.github.io/web-speech-api/
 Flutter package documentation: https://pub.dev/packages/speech_to_text and https://pub.dev/packages/pasteboard
+
+The hosts retain their reviewed public Git SDK dependency. Compact compatibility styles cover that pinned version until the updated SDK source receives a reviewed release commit. No SDK archives are introduced.

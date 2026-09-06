@@ -288,7 +288,7 @@ describe("styled React preset", () => {
     expect(screen.getByRole("button", { name: "Speak" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy" }).classList.contains("hr-chat__copy")).toBe(true);
   });
-  it("only renders turn controls when an action is available", () => {
+  it("shows Stop for running work without offering Retry for past failures", () => {
     const initial = createInitialConversationState("conversation" as never);
     const turn = { turn_id: "turn" as never, continuation_of_turn_id: null, status: "failed" as const,
       input_message_ids: [], output_message_ids: [], outcome: null, cancellation_reason: null,
@@ -296,7 +296,7 @@ describe("styled React preset", () => {
       error: { code: "provider_failed", message: "Try again.", retryable: true }, retry_history: [],
       started_at: null, terminal_at: null, attribution: null };
     const view = render(<StyledChatPreset state={{ ...initial, turns: [turn] }}/>);
-    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Stop response" })).toBeNull();
     view.rerender(<StyledChatPreset state={{ ...initial, turns: [{ ...turn, status: "running", error: null }],
       active_turn_id: turn.turn_id }}/>);

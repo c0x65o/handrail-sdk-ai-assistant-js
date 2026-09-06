@@ -31,7 +31,7 @@ import { useConversationLauncherBinding, useConversationWorkspaceSnapshot, useCo
 import type { ChatLauncherConnectionStatus, ChatLauncherState } from "../react/launcher.js";
 import {
   ChatRoot, LiveRegion,
-  AssistantActivityIndicator, Message, Retry, StreamStatus, Transcript, TypingIndicator,
+  AssistantActivityIndicator, Message, StreamStatus, Transcript, TypingIndicator,
 } from "../react/primitives.js";
 import { CopyMessageButton } from "../react/message-actions.js";
 import { ToolActivity } from "../react/tool-activity.js";
@@ -244,8 +244,6 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
         : latestTurn ? "running" : "idle", unread: false,
   }, remoteActivity) : remoteActivity;
   const activityProgress = currentActivity?.progress;
-  const retryableTurn = [...(resolvedState?.turns ?? [])].reverse().find((turn) =>
-    (turn.status === "failed" && turn.error?.retryable === true) || turn.status === "cancelled");
   const canStop = Boolean(props.composer?.isSending || resolvedState?.active_turn_id);
   const renderContent = props.renderMessageContent ?? (props.markdown === false
     ? undefined
@@ -299,8 +297,7 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
       {...(props.approvalMode === undefined ? {} : { approvalMode: props.approvalMode })}
       {...(props.onApprovalModeChange === undefined ? {} : { onApprovalModeChange: props.onApprovalModeChange })}
       {...(props.showApprovalControl === undefined ? {} : { showApprovalControl: props.showApprovalControl })}
-      {...(props.voiceControls === undefined ? {} : { voiceControls: props.voiceControls })}
-      actions={retryableTurn ? <Retry className="hr-chat__retry" turnId={retryableTurn.turn_id} available>{labels.retry}</Retry> : null}/>
+      {...(props.voiceControls === undefined ? {} : { voiceControls: props.voiceControls })}/>
     {props.footer}
   </ChatRoot>;
 }

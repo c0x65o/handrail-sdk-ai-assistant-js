@@ -751,6 +751,8 @@ const AttachmentContext = createContext<AttachmentContextValue | null>(null);
 
 export interface AttachmentListProps
   extends Omit<HTMLAttributes<HTMLUListElement>, "children"> {
+  /** Show manual upload recovery in custom headless surfaces. */
+  showRetry?: boolean;
   attachments?: readonly AttachmentPrimitiveValue[];
   children?: ReactNode;
   composer?: ConversationComposerResult;
@@ -770,6 +772,7 @@ export const AttachmentList = forwardRef<HTMLUListElement, AttachmentListProps>(
       onCancel,
       onRemove,
       onRetry,
+      showRetry = true,
       renderAttachment,
       renderError,
       ...props
@@ -780,7 +783,7 @@ export const AttachmentList = forwardRef<HTMLUListElement, AttachmentListProps>(
     const attachments = explicitAttachments ?? composer?.attachments ?? [];
     const cancel = onCancel ?? composer?.cancelAttachment;
     const remove = onRemove ?? composer?.removeAttachment;
-    const retry = onRetry ?? composer?.retryAttachment;
+    const retry = showRetry ? onRetry ?? composer?.retryAttachment : undefined;
     return (
       <ul
         {...props}

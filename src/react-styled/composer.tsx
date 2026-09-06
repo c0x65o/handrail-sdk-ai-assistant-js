@@ -120,20 +120,22 @@ export function BrowserDictationControl({ composer }: { readonly composer: Conve
 }
 
 export const HANDRAIL_CHAT_COMPOSER_CSS = `
-.hr-composer{padding:12px;min-width:0;color:var(--hr-text,#202124);background:var(--hr-bg,#fff)}
-.hr-composer .hr-composer__form{position:relative;display:flex;flex-direction:column;gap:12px;border:1px solid var(--hr-border,#e9e9e9);border-radius:26px;padding:16px;background:var(--hr-bg,#fff);box-shadow:0 4px 18px #00000006}
-.hr-composer .hr-composer__draft{box-sizing:border-box;display:block;inline-size:100%;min-inline-size:0;min-block-size:64px;max-block-size:180px;resize:none;border:0;border-radius:0;outline:none;background:transparent;color:inherit;font:inherit;font-size:17px;line-height:1.5;padding:2px 4px;margin:0}
+.hr-composer{padding:8px;min-width:0;color:var(--hr-text,#202124);background:var(--hr-bg,#fff)}
+.hr-composer .hr-composer__form{position:relative;display:flex;flex-direction:column;gap:4px;border:1px solid var(--hr-border,#e9e9e9);border-radius:18px;padding:10px;background:var(--hr-bg,#fff);box-shadow:0 4px 18px #00000006}
+.hr-composer .hr-composer__draft{box-sizing:border-box;display:block;inline-size:100%;min-inline-size:0;min-block-size:26px;max-block-size:120px;resize:none;border:0;border-radius:0;outline:none;background:transparent;color:inherit;font:inherit;font-size:15px;line-height:1.4;padding:2px 2px;margin:0}
 .hr-composer .hr-composer__draft:focus-visible{outline:none}.hr-composer .hr-composer__form:focus-within{border-color:var(--hr-muted,#999)}
-.hr-composer__toolbar{display:flex;align-items:center;gap:8px;min-width:0}.hr-composer__spacer{flex:1}.hr-composer__voice{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;min-width:0}
-.hr-composer button.hr-composer__icon,.hr-composer .hr-composer__voice>button{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:44px;min-height:44px;border:0;border-radius:50%;padding:10px;background:transparent;color:inherit;font:inherit;cursor:pointer}
+.hr-composer__toolbar{display:flex;align-items:center;gap:4px;min-width:0}.hr-composer__spacer{flex:1}.hr-composer__voice{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;min-width:0}
+.hr-composer button.hr-composer__icon,.hr-composer .hr-composer__voice>button{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:32px;height:32px;min-height:32px;border:0;border-radius:50%;padding:7px;background:transparent;color:inherit;font:inherit;cursor:pointer}
 .hr-composer .hr-composer__voice>button:not(:has(svg)){width:auto;border-radius:12px;font-size:13px}
-.hr-composer button.hr-composer__send{width:46px;height:46px;color:#fff;background:var(--hr-composer-send,#55b653)}
+.hr-composer button.hr-composer__send{width:34px;height:34px;color:#fff;background:var(--hr-composer-send,#55b653)}
 .hr-composer button:disabled{opacity:.45;cursor:not-allowed}.hr-composer button:focus-visible,.hr-composer input:focus-visible{outline:3px solid var(--hr-accent,#55b653);outline-offset:2px}
 .hr-composer button.hr-composer__shield{color:var(--hr-muted,#999)}.hr-composer button.hr-composer__shield[data-mode=automatic]{color:var(--hr-text,#202124);background:var(--hr-panel,#f1f3f2)}
-.hr-composer__approval{position:relative}.hr-composer__approval-panel{position:absolute;z-index:20;bottom:54px;left:-52px;width:min(300px,calc(100vw - 64px));box-sizing:border-box;border:1px solid var(--hr-border,#e9e9e9);border-radius:16px;padding:16px;background:var(--hr-bg,#fff);box-shadow:0 8px 30px #0002;font-size:14px}
+.hr-composer__approval{position:relative}.hr-composer__approval-panel{position:absolute;z-index:20;bottom:42px;left:-36px;width:min(300px,calc(100vw - 64px));box-sizing:border-box;border:1px solid var(--hr-border,#e9e9e9);border-radius:16px;padding:16px;background:var(--hr-bg,#fff);box-shadow:0 8px 30px #0002;font-size:14px}
 .hr-composer__approval-panel label{display:flex;align-items:center;justify-content:space-between;gap:12px;font-weight:600}.hr-composer__approval-panel input{accent-color:var(--hr-composer-send,#55b653);width:20px;height:20px}.hr-composer__approval-panel p{margin:10px 0 0;line-height:1.45;color:var(--hr-muted,#666)}
 .hr-composer__attachments{display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:0;list-style:none}.hr-composer__attachments:empty,.hr-composer__errors:empty{display:none}.hr-composer__attachments li{max-width:100%;overflow-wrap:anywhere}.hr-composer__errors{margin:0;padding-left:20px;color:var(--hr-danger,#b42318);font-size:13px}.hr-composer__notice{font-size:12px;max-width:220px}
-@media(max-width:520px){.hr-composer{padding:8px}.hr-composer .hr-composer__form{padding:12px;border-radius:24px}.hr-composer__toolbar{gap:4px}}
+.hr-composer .hr-composer__toolbar svg{width:18px;height:18px}
+@media(pointer:coarse){.hr-composer button.hr-composer__icon,.hr-composer .hr-composer__voice>button{width:40px;height:40px;min-height:40px}}
+@media(max-width:520px){.hr-composer{padding:8px}.hr-composer .hr-composer__form{padding:8px;border-radius:16px}.hr-composer__toolbar{gap:4px}}
 `;
 
 export interface StandardChatComposerProps extends ComposerApprovalControlProps {
@@ -153,13 +155,13 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const node = textarea.current;
-    if (node) { node.style.height = "auto"; node.style.height = `${Math.min(Math.max(64, node.scrollHeight), 180)}px`; }
+    if (node) { node.style.height = "auto"; node.style.height = `${Math.min(Math.max(26, node.scrollHeight), 120)}px`; }
   }, [props.composer?.draft]);
   return <Composer {...(props.composer ? { composer: props.composer } : {})} className="hr-composer">
     <style>{HANDRAIL_CHAT_COMPOSER_CSS}</style>
     <Form className="hr-composer__form">
-      <AttachmentList className="hr-composer__attachments"/>
-      <Textarea ref={textarea} className="hr-composer__draft" rows={2} maxLength={props.maxLength} placeholder={props.placeholder ?? "Message…"}/>
+      <AttachmentList showRetry={false} className="hr-composer__attachments"/>
+      <Textarea ref={textarea} className="hr-composer__draft" rows={1} maxLength={props.maxLength} placeholder={props.placeholder ?? "Message…"}/>
       <div className="hr-composer__toolbar">
         {props.attachmentsEnabled !== false && <><FileInput ref={input} hidden/>
           <button className="hr-composer__icon" type="button" aria-label={props.labels?.attach ?? "Add files and images"}

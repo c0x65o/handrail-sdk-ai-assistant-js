@@ -40,7 +40,7 @@ void main() {
       expect((add.center.dy - send.center.dy).abs(), lessThanOrEqualTo(2));
       expect(draft.left, lessThan(add.center.dx));
       expect(send.right, lessThan(width));
-      expect(add.width, greaterThanOrEqualTo(44));
+      expect(add.width, greaterThanOrEqualTo(40));
       await tester.tap(find.byKey(const ValueKey('send')));
       expect(sent, 1);
       expect(tester.takeException(), isNull);

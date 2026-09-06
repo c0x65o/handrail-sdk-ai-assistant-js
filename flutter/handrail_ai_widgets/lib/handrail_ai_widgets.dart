@@ -55,8 +55,10 @@ class HandrailApprovalBadge extends StatelessWidget {
   Widget build(BuildContext context) => IconButton(
         tooltip: 'Approval settings',
         style: const ButtonStyle(
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            padding: WidgetStatePropertyAll(EdgeInsets.all(8)),
             backgroundColor: WidgetStatePropertyAll(Colors.transparent)),
-        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
         color: mode == HandrailApprovalMode.automatic
             ? const Color(0xff202124)
             : const Color(0xff999999),
@@ -64,7 +66,7 @@ class HandrailApprovalBadge extends StatelessWidget {
             mode == HandrailApprovalMode.automatic
                 ? Icons.shield
                 : Icons.shield_outlined,
-            size: 24),
+            size: 18),
         onPressed: () {
           var selected = mode;
           showModalBottomSheet<void>(
@@ -207,14 +209,14 @@ class _HandrailComposerState extends State<HandrailComposer> {
           key: widget.inputKey,
           controller: widget.controller,
           enabled: widget.enabled,
-          minLines: 2,
+          minLines: 1,
           maxLines: 6,
           maxLength: widget.maxLength,
           keyboardType: TextInputType.multiline,
           textInputAction: TextInputAction.newline,
           textCapitalization: TextCapitalization.sentences,
           style: const TextStyle(
-              color: Color(0xff202124), fontSize: 17, height: 1.5),
+              color: Color(0xff202124), fontSize: 15, height: 1.4),
           decoration: InputDecoration(
               hintText: widget.placeholder,
               counterText: '',
@@ -256,11 +258,11 @@ class _HandrailComposerState extends State<HandrailComposer> {
           }, child: input));
     }
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
           color: Colors.white,
           border: Border.all(color: const Color(0xffe9e9e9)),
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(16),
           boxShadow: const [
             BoxShadow(
                 color: Color(0x08000000), blurRadius: 18, offset: Offset(0, 4))
@@ -270,21 +272,23 @@ class _HandrailComposerState extends State<HandrailComposer> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 64), child: input),
-            const SizedBox(height: 12),
+                constraints: const BoxConstraints(minHeight: 26), child: input),
+            const SizedBox(height: 4),
             Row(children: [
               IconButton(
                   key: widget.attachKey,
                   tooltip: 'Add files and images',
                   style: const ButtonStyle(
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      padding: WidgetStatePropertyAll(EdgeInsets.all(8)),
                       backgroundColor:
                           WidgetStatePropertyAll(Colors.transparent)),
                   onPressed: widget.enabled && !widget.sending && !_dictating
                       ? widget.onAttach
                       : null,
-                  icon: const Icon(Icons.add_rounded, size: 28),
+                  icon: const Icon(Icons.add_rounded, size: 22),
                   constraints:
-                      const BoxConstraints(minWidth: 48, minHeight: 48)),
+                      const BoxConstraints(minWidth: 40, minHeight: 40)),
               if (widget.showApprovalControl)
                 HandrailApprovalBadge(
                     mode: widget.approvalMode,
@@ -308,7 +312,8 @@ class _HandrailComposerState extends State<HandrailComposer> {
                       ? 'Stop response'
                       : 'Send message',
                   style: IconButton.styleFrom(
-                      fixedSize: const Size.square(48),
+                      fixedSize: const Size.square(40),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       shape: const CircleBorder(),
                       backgroundColor: const Color(0xff55b653),
                       foregroundColor: Colors.white),
@@ -324,7 +329,7 @@ class _HandrailComposerState extends State<HandrailComposer> {
                       widget.sending && widget.onStop != null
                           ? Icons.stop_rounded
                           : Icons.arrow_upward_rounded,
-                      size: 26)),
+                      size: 20)),
             ]),
           ]),
     );
@@ -436,6 +441,8 @@ class _HandrailDictationButtonState extends State<HandrailDictationButton> {
   Widget build(BuildContext context) => IconButton(
         tooltip: _busy ? 'Stop dictation' : 'Dictate a message',
         style: const ButtonStyle(
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            padding: WidgetStatePropertyAll(EdgeInsets.all(8)),
             backgroundColor: WidgetStatePropertyAll(Colors.transparent)),
         onPressed: _busy
             ? () async {
@@ -451,8 +458,8 @@ class _HandrailDictationButtonState extends State<HandrailDictationButton> {
                 ? _start
                 : null,
         color: _busy ? Colors.red : const Color(0xff202124),
-        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
         icon: Icon(_busy ? Icons.stop_circle_outlined : Icons.mic_none_rounded,
-            size: 26),
+            size: 20),
       );
 }
