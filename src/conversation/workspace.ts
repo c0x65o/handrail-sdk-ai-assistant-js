@@ -85,18 +85,23 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
     let entry = this.#entries.get(input.conversationId);
     if (entry === undefined) {
       const runtime = await this.#registry.open(input);
-      entry = {
-        runtime, unsubscribe: () => undefined, turnStatus: statusOf(runtime), unread: false,
-        revision: runtime.store.getSnapshot().revision,
-      };
-      const captured = entry;
-      captured.unsubscribe = runtime.store.subscribe(() => this.#update(input.conversationId, captured));
-      this.#entries.set(input.conversationId, captured);
-      if (this.#options.restoreActiveTurns === true) {
-        // Recovery observes the whole run; never hold opening the UI until it finishes.
-        void Promise.resolve().then(() => runtime.restoreActiveTurn()).catch((error: unknown) => {
-          try { this.#options.onRecoveryError?.(input.conversationId, error); } catch { /* Diagnostics must not reject recovery. */ }
-        });
+      // A foreground click can join the registry construction already started
+      // by prefetch. Register only one subscription and recovery observer.
+      entry = this.#entries.get(input.conversationId);
+      if (entry === undefined) {
+        entry = {
+          runtime, unsubscribe: () => undefined, turnStatus: statusOf(runtime), unread: false,
+          revision: runtime.store.getSnapshot().revision,
+        };
+        const captured = entry;
+        captured.unsubscribe = runtime.store.subscribe(() => this.#update(input.conversationId, captured));
+        this.#entries.set(input.conversationId, captured);
+        if (this.#options.restoreActiveTurns === true) {
+          // Recovery observes the whole run; never hold opening the UI until it finishes.
+          void Promise.resolve().then(() => runtime.restoreActiveTurn()).catch((error: unknown) => {
+            try { this.#options.onRecoveryError?.(input.conversationId, error); } catch { /* Diagnostics must not reject recovery. */ }
+          });
+        }
       }
     }
     if (input.select !== false) this.select(input.conversationId);
@@ -105,8 +110,12 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
   }
 
   select(conversationId: ConversationId | null): void {
+    if (this.#selectedConversationId !== conversationId && this.#selectedConversationId !== null) {
+      this.#entries.get(this.#selectedConversationId)?.runtime.setSynchronizationActive?.(false);
+    }
     this.#selectedConversationId = conversationId;
     const selected = conversationId === null ? undefined : this.#entries.get(conversationId);
+    selected?.runtime.setSynchronizationActive?.(this.#visible);
     if (this.#visible && selected !== undefined) selected.unread = false;
     this.#publish();
   }
@@ -115,6 +124,9 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
   setVisible(visible: boolean): void {
     if (this.#visible === visible) return;
     this.#visible = visible;
+    if (this.#selectedConversationId !== null) {
+      this.#entries.get(this.#selectedConversationId)?.runtime.setSynchronizationActive?.(visible);
+    }
     if (visible && this.#selectedConversationId !== null) this.markRead(this.#selectedConversationId);
   }
 

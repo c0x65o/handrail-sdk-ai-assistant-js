@@ -60,7 +60,7 @@ export interface ReadConversationEventsInput {
   readonly conversationId: ConversationId;
   /** Omit to read from the first event. */
   readonly after?: ConversationEventReadPosition;
-  /** A positive safe integer. Omit to read every remaining event. */
+  /** A positive safe integer. Stores may apply a default page size; follow hasMore/nextCursor. */
   readonly limit?: number;
 }
 

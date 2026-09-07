@@ -24,6 +24,54 @@ function fakeRuntime(conversationId: string) {
 }
 
 describe("ConversationWorkspace", () => {
+  it("keeps only the visible selected conversation polling actively", async () => {
+    const first = fakeRuntime("first");
+    const second = fakeRuntime("second");
+    const firstPolling = vi.fn();
+    const secondPolling = vi.fn();
+    Object.assign(first.runtime, { setSynchronizationActive: firstPolling });
+    Object.assign(second.runtime, { setSynchronizationActive: secondPolling });
+    const registry = { open: async ({ conversationId }: { conversationId: string }) =>
+      conversationId === "first" ? first.runtime : second.runtime } as unknown as ConversationRuntimeRegistry<unknown>;
+    const workspace = new ConversationWorkspace(registry);
+    await workspace.open({ authorizationContext: undefined, conversationId: "first" as ConversationId });
+    expect(firstPolling).toHaveBeenLastCalledWith(true);
+    await workspace.open({ authorizationContext: undefined, conversationId: "second" as ConversationId, select: false });
+    expect(secondPolling).not.toHaveBeenCalled();
+    workspace.select("second" as ConversationId);
+    expect(firstPolling).toHaveBeenLastCalledWith(false);
+    expect(secondPolling).toHaveBeenLastCalledWith(true);
+    workspace.setVisible(false);
+    expect(secondPolling).toHaveBeenLastCalledWith(false);
+    workspace.setVisible(true);
+    expect(secondPolling).toHaveBeenLastCalledWith(true);
+    workspace.select(null);
+    expect(secondPolling).toHaveBeenLastCalledWith(false);
+  });
+
+  it("shares one subscription and recovery when a click joins an in-flight prefetch", async () => {
+    const first = fakeRuntime("first");
+    const subscribe = vi.spyOn(first.runtime.store, "subscribe");
+    const restore = vi.fn(async () => null);
+    Object.assign(first.runtime, { restoreActiveTurn: restore });
+    let finish!: (runtime: ConversationRuntime<unknown>) => void;
+    const pending = new Promise<ConversationRuntime<unknown>>((resolve) => { finish = resolve; });
+    const registry = { open: () => pending, release: vi.fn(async () => true) } as unknown as ConversationRuntimeRegistry<unknown>;
+    const workspace = new ConversationWorkspace(registry, { restoreActiveTurns: true });
+    const prefetch = workspace.open({ authorizationContext: undefined, conversationId: "first" as ConversationId, select: false });
+    const click = workspace.open({ authorizationContext: undefined, conversationId: "first" as ConversationId });
+    finish(first.runtime);
+    await Promise.all([prefetch, click]);
+    expect(subscribe).toHaveBeenCalledOnce();
+    expect(restore).toHaveBeenCalledOnce();
+    expect(workspace.getSnapshot().selectedConversationId).toBe("first");
+    await workspace.close("first" as ConversationId);
+    const changed = vi.fn();
+    workspace.subscribe(changed);
+    first.update(first.runtime.store.getSnapshot());
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it("opens while recovery is pending and observes background completion", async () => {
     const first = fakeRuntime("first");
     first.update({ ...first.runtime.store.getSnapshot(), active_turn_id: "turn-1" as never,

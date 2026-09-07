@@ -57,8 +57,18 @@ async function setup(status: "completed" | "cancelled" | "failed", output = fram
 }
 
 describe("server stored-output reconciliation", () => {
-  it.each([true, false])("repairs gateway state without rerunning work; completes before reload: %s", async (completeBeforeReload) => {
+  it.each([[true, 0], [false, 0], [true, 120], [false, 120]] as const)(
+    "repairs gateway state without rerunning work; completes before reload: %s, history events: %s", async (completeBeforeReload, historyEvents) => {
     const { input } = await setup("completed");
+    if (historyEvents > 0) {
+      await input.events.append({ conversationId: "conversation" as never, expectedRevision: 1 as never,
+        events: Array.from({ length: historyEvents }, (_, index) => parseConversationEvent({
+          version: 1, conversation_id: "conversation", event_id: `history-${index}`, revision: index + 2,
+          occurred_at: "2026-09-04T00:00:00.000Z", actor: { type: "system" }, source: { type: "runtime" },
+          payload: { type: "conversation.metadata_updated", metadata: { index } },
+        })) });
+    }
+    const readEvents = vi.spyOn(input.events, "read");
     const context = { principalId: "user", tenantId: "tenant", scopeId: "scope", attribution };
     const catalog = new InMemoryConversationCatalog({ authorize: () => "allow", createConversationId: () => "conversation" as never });
     await catalog.create({ authorizationContext: context, idempotencyKey: "create" as never, title: "Saved" });
@@ -109,7 +119,13 @@ describe("server stored-output reconciliation", () => {
       const observed = client.activity!.getSnapshot().find((record) => record.conversationId === "conversation");
       expect(observed?.unread).toBe(true);
       await client.markActivityRead("conversation", observed);
+      readEvents.mockClear();
       await client.catalog.list({ authorizationContext: context, lifecycle: "active", pageSize: 20, order: { field: "updated_at", direction: "desc" } });
+      if (historyEvents > 0) {
+        expect(await input.events.checkpoints.read("conversation" as never)).not.toBeNull();
+        expect(readEvents.mock.calls.length).toBeGreaterThan(0);
+        expect(readEvents.mock.calls.every(([read]) => read.after !== undefined)).toBe(true);
+      }
       expect(activity.getSnapshot()[0]?.unread).toBe(false);
       expect(execute).not.toHaveBeenCalled();
       const nextRequest: ChatRequest = { protocol_version: AI_RUNTIME_PROTOCOL_VERSION,

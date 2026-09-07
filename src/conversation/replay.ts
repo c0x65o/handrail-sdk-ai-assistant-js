@@ -104,6 +104,8 @@ export interface ReplayConversationOptions {
   readonly readBatchSize?: number;
   /** Set false to disable writes after replay. */
   readonly checkpointPolicy?: ConversationCheckpointPolicy | false;
+  /** Observe each validated, newly applied tail event without reading history again. */
+  readonly onEvent?: (event: ConversationEvent) => void;
 }
 
 export interface ReplayConversationResult {
@@ -132,11 +134,14 @@ export async function replayConversation(
     throw new RangeError("Conversation replay batch size must be a positive safe integer");
   }
 
-  const durableLatestRevision = await eventStore.getLatestRevision(conversationId);
   const rawCheckpoint =
     eventStore.checkpoints === undefined
       ? null
       : await eventStore.checkpoints.read(conversationId);
+  // The final event page carries an atomic head revision. A separate head read
+  // is only needed to validate a checkpoint before trusting its projection.
+  const durableLatestRevision = rawCheckpoint === null
+    ? null : await eventStore.getLatestRevision(conversationId);
   const checkpoint = parseCheckpoint(
     rawCheckpoint,
     conversationId,
@@ -220,6 +225,7 @@ export async function replayConversation(
             cause: state.replay_error,
           });
         }
+        options.onEvent?.(event);
         seenEventIds.add(event.event_id);
         if (event.mutation_id !== undefined) seenMutationIds.add(event.mutation_id);
         lastSafeRevision = event.revision;

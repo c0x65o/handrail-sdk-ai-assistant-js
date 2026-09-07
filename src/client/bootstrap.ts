@@ -73,6 +73,8 @@ extends ApplicationGatewayTransportOptions<TEvent, TSynchronization> {
   readonly activityPollingMilliseconds?: number;
   /** Canonical event polling for built-in server-backed runtimes. Defaults 1000ms. */
   readonly synchronizationPollingMilliseconds?: number;
+  /** Maximum interval for unchanged, inactive built-in runtimes. Defaults to at least 15000ms. */
+  readonly idleSynchronizationPollingMilliseconds?: number;
   readonly startActivityPolling?: boolean;
   /** Resume durably recorded active turns whenever a conversation is first opened. Defaults true. */
   readonly restoreActiveTurns?: boolean;
@@ -155,6 +157,8 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
       ...(multiple.deviceId === undefined ? {} : { deviceId: multiple.deviceId }), transport,
       ...(multiple.eventStoreFor ? {} : {
         synchronizationIntervalMilliseconds: options.synchronizationPollingMilliseconds ?? 1_000,
+        idleSynchronizationIntervalMilliseconds: options.idleSynchronizationPollingMilliseconds ??
+          Math.max(options.synchronizationPollingMilliseconds ?? 1_000, 15_000),
         onSynchronizationError: (cause: unknown) => emitAiDiagnostic(options.diagnostics, {
           domain: "persistence", operation: "conversation_synchronization", phase: "failed",
           conversationId: input.conversationId, code: "synchronization_failed", retryable: true, cause,

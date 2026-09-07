@@ -7,7 +7,7 @@ import type { ConversationTransport } from "../src/transports/types.js";
 import type { ChatRequest, StreamEvent } from "../src/protocol.js";
 import { createToolPlugin } from "../src/tools/plugin.js";
 import type { ApplicationToolExecutor } from "../src/tools/executor.js";
-import { InMemoryConversationEventStore } from "../src/conversation/event-store.js";
+import { InMemoryConversationEventStore, type ReadConversationEventsInput } from "../src/conversation/event-store.js";
 import { InMemoryApprovalProposalStore } from "../src/conversation/approval-proposal-store.js";
 import { InMemoryConversationCatalog } from "../src/conversation/in-memory-catalog.js";
 import { InMemoryToolExecutionLedger } from "../src/tools/executor.js";
@@ -28,6 +28,12 @@ const transport: ConversationTransport<StreamEvent, ChatRequest> = {
   async startTurn() { throw new Error("not used"); },
   async resumeTurn() { throw new Error("not used"); },
 };
+
+class PagedEventStore extends InMemoryConversationEventStore {
+  override read(input: ReadConversationEventsInput) {
+    return super.read({ ...input, limit: input.limit ?? 1000 });
+  }
+}
 
 describe("createHandrailAssistant", () => {
   it("derives isolated persistence and transports only from authenticated context", async () => {
@@ -74,7 +80,8 @@ describe("createHandrailAssistant", () => {
     expect(scopes).toEqual(["tenant-a/alice", "tenant-a/bob"]);
   });
 
-  it.each(["confirmed", "rejected"] as const)("owns approval creation and audit for %s decisions", async (status) => {
+  it.each([["confirmed", 0], ["rejected", 0], ["confirmed", 1166], ["rejected", 1166]] as const)(
+    "owns approval creation and audit for %s decisions after %s history events", async (status, historyEvents) => {
     type Context = HandrailAssistantAuthorizationContext;
     const context = (request: Request): Context => ({ principalId: request.headers.get("x-user") ?? "alice",
       tenantId: "tenant", scopeId: "alice", attribution: {
@@ -85,14 +92,14 @@ describe("createHandrailAssistant", () => {
         session: { id: null, source: "server_derived", trust: "authoritative" },
         automation: { id: null, source: "server_derived", trust: "authoritative" },
       } });
-    const events = new InMemoryConversationEventStore();
+    const events = new PagedEventStore();
     const approvals = new InMemoryApprovalProposalStore<Context>({ authorize: () => "allow" });
     const catalog = new InMemoryConversationCatalog<Context>({ authorize: (request) => request.authorizationContext.principalId === "alice" ? "allow" : "deny",
       createConversationId: () => "conversation-approved" as never });
     const durableTurns = new InMemoryDurableApplicationTurnStore();
     const activityRecords: import("../src/conversation/activity.js").ConversationActivityRecord[] = [];
     const bundle = { events,
-      approvals: new InMemoryApprovalProposalStore<Context>({ authorize: () => "deny" }),
+      approvals: historyEvents > 0 ? approvals : new InMemoryApprovalProposalStore<Context>({ authorize: () => "deny" }),
       catalog: new InMemoryConversationCatalog<Context>({ authorize: () => "deny",
         createConversationId: () => "wrong-conversation" as never }),
       durableTurns, toolLedger: new InMemoryToolExecutionLedger(),
@@ -121,7 +128,8 @@ describe("createHandrailAssistant", () => {
     const assistant = await createHandrailAssistant<Context>({ id: "approval-test", authorize: async (request) => context(request),
       persistence, tools: [plugin], toolPolicy: () => ({ outcome: "external_approval_required" }),
       activityForToolCall: () => ({ summary: "Preparing revenue account updates" }),
-      conversationCatalogFor: () => catalog, approvalStoreFor: () => approvals,
+      conversationCatalogFor: () => catalog,
+      ...(historyEvents === 0 ? { approvalStoreFor: () => approvals } : {}),
       provider: { metadata: { provider_id: "test", model_id: "test", capabilities: {
         streaming: true, text: true, tool_calls: true, parallel_tool_calls: false, reasoning: false,
         document_input: { supported: false }, provider_context: { supported: false, reason: "provider_not_supported" },
@@ -135,6 +143,14 @@ describe("createHandrailAssistant", () => {
         source: { type: "runtime" }, payload: { type: "message.created", message_id: "message-title",
           role: "user", content: [{ type: "text", text: "  Delete   record 42 safely  " }] } }),
     ] });
+    if (historyEvents > 0) {
+      await events.append({ conversationId: "conversation-approved" as never, expectedRevision: 1 as never,
+        events: Array.from({ length: historyEvents }, (_, index) => parseConversationEvent({
+          version: 1, event_id: `history-${index}`, conversation_id: "conversation-approved", revision: index + 2,
+          occurred_at: "2026-09-02T00:00:00.000Z", actor: { type: "system" }, source: { type: "import" },
+          payload: { type: "conversation.metadata_updated", metadata: { index } },
+        })) });
+    }
     await assistant.handle(new Request("https://example.test/capabilities", { headers: { "x-user": "alice" } }));
     const title = await assistant.handle(new Request("https://example.test/titles/generate", { method: "POST",
       headers: { "x-user": "alice", "content-type": "application/json" }, body: JSON.stringify({
@@ -150,7 +166,7 @@ describe("createHandrailAssistant", () => {
       call, signal: new AbortController().signal });
     let proposalId = "";
     await vi.waitFor(async () => {
-      const retained = await events.read({ conversationId: "conversation-approved" as never });
+      const retained = await events.read({ conversationId: "conversation-approved" as never, limit: 5000 });
       const created = retained.entries.find(({ event }) => event.payload.type === "approval.proposal_created");
       proposalId = created?.event.payload.type === "approval.proposal_created" ? created.event.payload.proposal_id : "";
       expect(proposalId).not.toBe("");
@@ -159,6 +175,11 @@ describe("createHandrailAssistant", () => {
       groupId: "conversation-approved" as never })).map((proposal) => proposal.proposal_id))
       .toEqual([proposalId]);
     expect(executions).toBe(0);
+    if (historyEvents > 0) {
+      const firstPage = await events.read({ conversationId: "conversation-approved" as never });
+      expect(firstPage.hasMore).toBe(true);
+      expect(firstPage.entries.some(({ event }) => event.payload.type === "approval.proposal_created")).toBe(false);
+    }
     const forbidden = await assistant.handle(new Request("https://example.test/approvals/transition", {
       method: "POST", headers: { "x-user": "bob", "content-type": "application/json" }, body: JSON.stringify({
         conversationId: "conversation-approved", proposalId, expectedVersion: 1, status,
@@ -175,8 +196,8 @@ describe("createHandrailAssistant", () => {
       }),
     }));
     expect(decision.status).toBe(200);
-    // An explicitly configured host authority also handles pre-SDK proposals,
-    // without fabricating a historical tool call or accepting a different group.
+    // An explicitly configured host authority also handles pre-SDK proposals.
+    // The SDK-owned store still requires canonical evidence, including on later pages.
     for (const group of ["conversation-approved", "another-conversation"]) {
       const legacyId = `legacy-${group}`;
       await approvals.create({ permissionContext: context(new Request("https://example.test")),
@@ -192,17 +213,18 @@ describe("createHandrailAssistant", () => {
           attribution: { actor: { type: "system" }, source: { type: "import" } },
         }),
       }));
-      expect(result.status).toBe(group === "conversation-approved" ? 200 : 404);
+      const authorizedLegacy = historyEvents === 0 && group === "conversation-approved";
+      expect(result.status).toBe(authorizedLegacy ? 200 : 404);
       const retained = await approvals.get({ permissionContext: context(new Request("https://example.test")), proposalId: legacyId as never });
-      expect(retained?.status).toBe(group === "conversation-approved" ? status : "pending");
-      if (group === "conversation-approved") expect(retained?.latest_attribution.actor).toEqual({ type: "user", id: "alice" });
-      expect((await events.read({ conversationId: "conversation-approved" as never })).entries.some(({ event }) =>
+      expect(retained?.status).toBe(authorizedLegacy ? status : "pending");
+      if (authorizedLegacy) expect(retained?.latest_attribution.actor).toEqual({ type: "user", id: "alice" });
+      expect((await events.read({ conversationId: "conversation-approved" as never, limit: 5000 })).entries.some(({ event }) =>
         event.payload.type === "approval.proposal_created" && event.payload.proposal_id === legacyId)).toBe(false);
     }
     if (status === "rejected") {
       expect(await pending).toMatchObject({ status: "completed", result: { is_error: true } });
       expect(executions).toBe(0);
-      const audit = await events.read({ conversationId: "conversation-approved" as never });
+      const audit = await events.read({ conversationId: "conversation-approved" as never, limit: 5000 });
       expect(audit.entries.some(({ event }) => event.payload.type === "tool_call.started")).toBe(false);
       expect(audit.entries.filter(({ event }) => event.payload.type === "tool_call.result_recorded")
         .map(({ event }) => event.payload)).toMatchObject([{ is_error: true }]);
@@ -213,7 +235,7 @@ describe("createHandrailAssistant", () => {
     expect(activityRecords.some((record) => record.summary === "Running approved work")).toBe(true);
     expect(activityRecords.at(-1)).toMatchObject({ summary: "Applying reviewed updates",
       progress: { completed: 43, total: 43, unit: "products" } });
-    const audit = await events.read({ conversationId: "conversation-approved" as never });
+    const audit = await events.read({ conversationId: "conversation-approved" as never, limit: 5000 });
     expect(audit.entries.filter(({ event }) => event.payload.type === "tool_call.started")).toHaveLength(1);
     expect(audit.entries.filter(({ event }) => event.payload.type === "tool_call.result_recorded")
       .map(({ event }) => event.payload)).toMatchObject([{ is_error: false }]);

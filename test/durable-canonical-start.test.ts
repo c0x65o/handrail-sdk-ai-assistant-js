@@ -1,12 +1,14 @@
 import { createHandrailAssistant, type HandrailAssistantAuthorizationContext } from "../src/server/assistant.js";
-import type { PostgresAssistantPersistence, PostgresAssistantPersistenceBundle } from "../src/postgres/index.js";
+import { PGlite } from "@electric-sql/pglite";
+import { PostgresAiPersistence, PostgresConversationEventStore, type PostgresSqlClient,
+  type PostgresAssistantPersistence, type PostgresAssistantPersistenceBundle } from "../src/postgres/index.js";
 import { InMemoryApprovalProposalStore } from "../src/conversation/approval-proposal-store.js";
 import { InMemoryConversationCatalog } from "../src/conversation/in-memory-catalog.js";
 import { InMemoryToolExecutionLedger } from "../src/tools/executor.js";
 import { replayConversation } from "../src/conversation/replay.js";
 import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { InMemoryConversationEventStore } from "../src/conversation/event-store.js";
+import { InMemoryConversationEventStore, type ConversationEventStore, type ReadConversationEventsInput } from "../src/conversation/event-store.js";
 import { parseConversationEvent, type ConversationEventPayload, type ConversationId, type ConversationTurnId } from "../src/conversation/events.js";
 import { qualifyDurableApplicationTurnStarts } from "../src/sync/durable-application-adapter.js";
 import { createDurableApplicationTransport, InMemoryDurableApplicationTurnStore } from "../src/transports/durable.js";
@@ -21,17 +23,34 @@ const request: ChatRequest = { protocol_version: "handrail.ai-runtime.v1", conti
   generation: { max_output_tokens: 1000, temperature: 0 }, correlation_hints: {} };
 const input = { conversationId, conversationTurnId: turnId, mutationId: "admission-1", idempotencyKey: "start-1", request };
 
-async function append(store: InMemoryConversationEventStore, payload: ConversationEventPayload, mutationId?: string) {
-  const previous = await store.read({ conversationId });
-  const revision = previous.entries.at(-1)?.event.revision ?? 0;
+async function append(store: ConversationEventStore, payload: ConversationEventPayload, mutationId?: string) {
+  const revision = await store.getLatestRevision(conversationId) ?? 0;
   await store.append({ conversationId, expectedRevision: revision || null, events: [parseConversationEvent({
     version: 1, event_id: `event-${revision + 1}`, conversation_id: conversationId, revision: revision + 1,
     occurred_at: "2026-09-04T00:00:00.000Z", actor: { type: "assistant" }, source: { type: "sync" },
     ...(mutationId ? { mutation_id: mutationId } : {}), payload,
   })] });
 }
-async function fixture() {
-  const events = new InMemoryConversationEventStore();
+class PagedEventStore extends InMemoryConversationEventStore {
+  override read(input: ReadConversationEventsInput) {
+    return super.read({ ...input, limit: Math.min(input.limit ?? 1000, 1000) });
+  }
+}
+
+async function fixture(historyEvents = 0, events: ConversationEventStore = new PagedEventStore()) {
+  if (historyEvents > 0) {
+    await events.append({ conversationId, expectedRevision: null,
+      events: Array.from({ length: historyEvents }, (_, index) => parseConversationEvent({
+        version: 1, event_id: `history-${index}`, conversation_id: conversationId, revision: index + 1,
+        occurred_at: "2026-09-04T00:00:00.000Z", actor: { type: "system" }, source: { type: "import" },
+        payload: index === 0 ? { type: "message.created", message_id: "old-message", role: "user",
+          content: [{ type: "text", text: "Previous action request" }] }
+          : index === 1 ? { type: "turn.started", turn_id: "old-turn", input_message_ids: ["old-message"] }
+          : index === 2 ? { type: "turn.failed", turn_id: "old-turn",
+            error: { code: "invalid_request", message: "The previous action failed.", retryable: false } }
+          : { type: "conversation.metadata_updated", metadata: { index } },
+      })) });
+  }
   await append(events, { type: "message.created", message_id: "message-1" as never, role: "user",
     content: [{ type: "text", text: "Update once" }] }, input.mutationId);
   await append(events, { type: "turn.started", turn_id: turnId, input_message_ids: ["message-1" as never] });
@@ -52,6 +71,73 @@ async function fixture() {
       fingerprint: (value: ChatRequest) => createHash("sha256").update(JSON.stringify(value)).digest("hex") }, checkpointForEvent: () => checkpoint });
   return { events, turns, durable, start, delegate };
 }
+
+it.each([999, 1000, 1166, 2001])("starts a follow-up after %s history events and never replays completed work", async (historyEvents) => {
+  const { events, durable, start } = await fixture(historyEvents);
+  expect((await events.read({ conversationId })).hasMore).toBe(true);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const handle = await durable.startTurn(input);
+    if (!handle.ok) throw new Error(handle.error.message);
+    for await (const event of handle.value.observation.events) { void event; }
+    expect(await handle.value.observation.result).toMatchObject({ status: "completed" });
+  }
+  expect(start).toHaveBeenCalledOnce();
+});
+
+it("admits a saved follow-up at PostgreSQL revision 1167 after a failed action", async () => {
+  const database = new PGlite();
+  const adapt = (db: Pick<PGlite, "query">): PostgresSqlClient => {
+    const client: PostgresSqlClient = {
+      async query<T extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) {
+        const result = await db.query<T>(sql, values ? [...values] : []);
+        return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
+      },
+      transaction: (operation) => operation(client),
+    };
+    return client;
+  };
+  const persistence = new PostgresAiPersistence({ query: adapt(database).query,
+    transaction: (operation) => database.transaction((tx) => operation(adapt(tx as unknown as Pick<PGlite, "query">))) });
+  try {
+    await persistence.migrate();
+    const { events, durable, delegate, start } = await fixture(1166, new PostgresConversationEventStore(persistence, "tenant"));
+    const firstPage = await events.read({ conversationId });
+    expect(firstPage.entries).toHaveLength(1000);
+    expect(firstPage.hasMore).toBe(true);
+    expect(firstPage.entries.some(({ event }) => event.mutation_id === input.mutationId)).toBe(false);
+    const tail = await events.read({ conversationId, after: { cursor: firstPage.nextCursor! } });
+    expect(tail.entries.find(({ event }) => event.mutation_id === input.mutationId)?.event.revision).toBe(1167);
+    const unauthorized = await qualifyDurableApplicationTurnStarts(delegate, events).startTurn({ ...input, mutationId: "wrong-admission" });
+    expect(unauthorized).toMatchObject({ ok: false, error: { code: "invalid_request", retryable: false,
+      message: "The turn identity does not match its saved user message." } });
+    expect(start).not.toHaveBeenCalled();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const handle = await durable.startTurn(input);
+      if (!handle.ok) throw new Error(handle.error.message);
+      for await (const event of handle.value.observation.events) { void event; }
+      expect(await handle.value.observation.result).toMatchObject({ status: "completed" });
+    }
+    expect(start).toHaveBeenCalledExactlyOnceWith(input);
+  } finally { await database.close(); }
+}, 15000);
+
+it.each(["identity", "message", "attachments", "conversation"] as const)(
+  "still rejects mismatched %s after the first history page", async (mismatch) => {
+    const { events, delegate, start } = await fixture(1166);
+    if (mismatch === "attachments") {
+      await append(events, { type: "message.attachment_referenced", message_id: "message-1" as never,
+        attachment: { attachment_id: "att_saved-image" as never, media_type: "image/png", filename: "saved.png", size_bytes: 10 } });
+    }
+    const changed = { ...input,
+      ...(mismatch === "identity" ? { mutationId: "someone-elses-admission" } : {}),
+      ...(mismatch === "conversation" ? { conversationId: "another-conversation" } : {}),
+      ...(mismatch === "message" ? { request: { ...request,
+        messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "Different instructions" }] }] } } : {}),
+    };
+    const result = await qualifyDurableApplicationTurnStarts(delegate, events).startTurn(changed);
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_request", retryable: false } });
+    expect(start).not.toHaveBeenCalled();
+  });
 
 it.each(["cancelled", "completed", "failed", "cancellation_requested"] as const)("does not execute a delayed start after canonical %s", async (status) => {
   const { events, durable, start } = await fixture();

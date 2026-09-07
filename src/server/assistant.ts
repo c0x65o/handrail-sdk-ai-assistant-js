@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { recordToolLifecycle } from "./tool-lifecycle.js";
 import { reconcileDurableConversationTurn } from "./reconcile-conversation.js";
 import { replayConversation } from "../conversation/replay.js";
+import { findConversationEvent } from "../conversation/find-event.js";
 
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 import type { ApplicationToolResult, AuthoritativeAttribution, ChatRequest, JsonObject, JsonValue, StreamEvent } from "../protocol.js";
@@ -222,9 +223,9 @@ async function recordProposalCreated(
       return;
     } catch (error) {
       if (!(error instanceof ConversationEventStoreConflictError) || error.code !== "revision_conflict") throw error;
-      const retained = await eventStore.read({ conversationId: conversationId as never });
-      if (retained.entries.some(({ event }) => event.payload.type === "approval.proposal_created" &&
-        event.payload.proposal_id === proposal.proposal_id)) return;
+      const retained = await findConversationEvent(eventStore, conversationId as never,
+        (event) => event.payload.type === "approval.proposal_created" && event.payload.proposal_id === proposal.proposal_id);
+      if (retained) return;
     }
   }
   throw new ApprovalProposalStoreError("unavailable", "create");
@@ -337,7 +338,9 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     const bundle = bundleFor(context);
     let turnId = knownTurnId;
     if (turnId === undefined) {
-      const replay = await replayConversation({ conversationId: conversationId as never, eventStore: bundle.events, checkpointPolicy: false });
+      // Retain the SDK's versioned projection checkpoint for long histories.
+      // Later authorization-checked reads replay only its canonical event tail.
+      const replay = await replayConversation({ conversationId: conversationId as never, eventStore: bundle.events });
       turnId = replay.state.turns.at(-1)?.turn_id;
       replay.store.destroy();
     }
@@ -599,9 +602,9 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         }
         throw error;
       }
-      const history = await bundle.events.read({ conversationId: supplied.conversationId as never });
-      if (!history.entries.some(({ event }) => event.payload.type === "approval.proposal_created" &&
-        event.payload.proposal_id === input.proposalId)) {
+      const created = await findConversationEvent(bundle.events, supplied.conversationId as never,
+        (event) => event.payload.type === "approval.proposal_created" && event.payload.proposal_id === input.proposalId);
+      if (!created) {
         // Older application proposals may predate the SDK event history. Only
         // an explicitly configured host authority can prove their membership;
         // SDK-owned proposals still require their canonical creation event.

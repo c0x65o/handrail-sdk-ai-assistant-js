@@ -5,6 +5,7 @@ import type { ConversationTransport } from "../transports/types.js";
 import type { ConversationEvent, ConversationEventPayload, ConversationId } from "../conversation/events.js";
 import type { ConversationSyncMutationEvent } from "./types.js";
 import type { ConversationEventStore } from "../conversation/event-store.js";
+import { findConversationEvent } from "../conversation/find-event.js";
 import { replayConversation } from "../conversation/replay.js";
 import type { AiDiagnosticSink } from "../diagnostics.js";
 import { createEventStoreConversationSyncAdapter, type CanonicalConversationSyncMutation } from "./event-store-adapter.js";
@@ -63,11 +64,15 @@ export function qualifyDurableApplicationTurnStarts(
           ? state.messages.find((candidate) => candidate.message_id === turn.input_message_ids[0]) : undefined;
         const proposed = input.request.messages.filter((candidate) => candidate.role === "user").at(-1);
         const proposedText = proposed?.content.filter((part) => part.type === "text") ?? [];
-        if (!turn || !message || message.role !== "user" || !proposed || json(message.content) !== json(proposedText)) deny();
-        const admission = (await eventStore.read({ conversationId: input.conversationId as ConversationId })).entries.find(
-          ({ event }) => event.payload.type === "message.created" && event.payload.message_id === message.message_id,
-        )?.event;
-        if (!admission || admission.mutation_id !== input.mutationId) deny();
+        if (!turn || !message || message.role !== "user" || !proposed || json(message.content) !== json(proposedText)) {
+          throw new TypeError("The turn does not match its saved user message.");
+        }
+        const admission = await findConversationEvent(eventStore, input.conversationId as ConversationId,
+          (event) => event.payload.type === "message.created" && event.payload.message_id === message.message_id);
+        if (!admission) throw new TypeError("The saved user message for this turn could not be found.");
+        if (admission.mutation_id !== input.mutationId) {
+          throw new TypeError("The turn identity does not match its saved user message.");
+        }
         const retainedAttachments = message.attachments.map((attachment) => ({ attachment_id: attachment.attachment_id,
           media_type: attachment.media_type, byte_size: attachment.size_bytes ?? null,
           filename: attachment.filename ?? null })).sort(byAttachmentId);
@@ -75,7 +80,9 @@ export function qualifyDurableApplicationTurnStarts(
           attachment_id: part.attachment.attachment_id, media_type: part.attachment.media_type,
           byte_size: part.attachment.byte_size, filename: part.attachment.filename ?? null,
         })).sort(byAttachmentId);
-        if (json(retainedAttachments) !== json(requestedAttachments)) deny();
+        if (json(retainedAttachments) !== json(requestedAttachments)) {
+          throw new TypeError("The turn attachments do not match its saved user message.");
+        }
         return guardCanonicalTurnExecution(transport, eventStore).startTurn(input);
       } catch (error) {
         return { ok: false as const, error: { code: "invalid_request" as const, retryable: false,

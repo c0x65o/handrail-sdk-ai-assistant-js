@@ -154,6 +154,8 @@ export interface ConversationRuntimeOptions<TRequest> {
   readonly replayBatchSize?: number;
   /** Poll canonical events independently of provider frames. Omitted disables polling. */
   readonly synchronizationIntervalMilliseconds?: number;
+  /** Back off unchanged, inactive conversations up to this interval. Defaults to the polling interval. */
+  readonly idleSynchronizationIntervalMilliseconds?: number;
   readonly onSynchronizationError?: (cause: unknown) => void;
   /** Bounded retry behavior. Defaults to createRetryPolicy(). */
   readonly retryPolicy?: RetryPolicy;
@@ -243,6 +245,8 @@ export interface ConversationRuntime<TRequest> {
   observe(observer: ConversationRuntimeObserver): () => void;
   /** Pull canonical events through the same mutation boundary as stream writes. */
   synchronize?(): Promise<void>;
+  /** Keep regular polling while this conversation is visible; inactive threads may back off. */
+  setSynchronizationActive?(active: boolean): void;
   sendMessage(
     input: ConversationRuntimeSendMessageInput<TRequest>,
   ): Promise<ConversationRuntimeTurnResult>;
@@ -366,9 +370,14 @@ const EMPTY_CHECKPOINT: TurnResumePoint = Object.freeze({
 export async function createConversationRuntime<TRequest>(
   options: ConversationRuntimeOptions<TRequest>,
 ): Promise<ConversationRuntime<TRequest>> {
+  const protocolByTurn = new Map<string, TurnProtocolState>();
+  const durableFrameKeys = new Set<string>();
+  const durableFrameFingerprints = new Map<string, string>();
   const replay = await replayConversation({
     conversationId: options.conversationId,
     eventStore: options.eventStore,
+    onEvent: (event) => rememberRuntimeMetadata(event, protocolByTurn,
+      durableFrameKeys, durableFrameFingerprints),
     ...(options.replayBatchSize === undefined
       ? {}
       : { readBatchSize: options.replayBatchSize }),
@@ -383,14 +392,18 @@ export async function createConversationRuntime<TRequest>(
       (!Number.isSafeInteger(synchronizationInterval) || synchronizationInterval < 100 || synchronizationInterval > 300_000)) {
     throw new TypeError("synchronizationIntervalMilliseconds must be between 100 and 300000");
   }
+  const idleSynchronizationInterval = options.idleSynchronizationIntervalMilliseconds ?? synchronizationInterval;
+  if (idleSynchronizationInterval !== undefined &&
+      (!Number.isSafeInteger(idleSynchronizationInterval) || idleSynchronizationInterval < (synchronizationInterval ?? 100) ||
+        idleSynchronizationInterval > 300_000)) {
+    store.destroy();
+    throw new TypeError("idleSynchronizationIntervalMilliseconds must be between the polling interval and 300000");
+  }
   let synchronizationTimer: ReturnType<typeof setTimeout> | undefined;
-  const protocolByTurn = new Map<string, TurnProtocolState>();
   const usageReceiptsByTurn = new Map<
     string,
     Map<string, NormalizedUsageReceipt>
   >();
-  const durableFrameKeys = new Set<string>();
-  const durableFrameFingerprints = new Map<string, string>();
   const activeObservations = new Map<string, TurnObservation<unknown>>();
   const runningTurns = new Map<string, Promise<ConversationRuntimeTurnResult>>();
   const retryControllers = new Map<string, AbortController>();
@@ -406,13 +419,21 @@ export async function createConversationRuntime<TRequest>(
   let mutationBoundary: Promise<void> = Promise.resolve();
   let turnAdmissionPending = false;
 
-  await hydrateRuntimeMetadata(
-    options.conversationId,
-    options.eventStore,
-    protocolByTurn,
-    durableFrameKeys,
-    durableFrameFingerprints,
-  );
+  if (replay.checkpointStatus === "used") {
+    // Projection checkpoints do not contain transport resume identities. Keep
+    // full metadata hydration for those stores; remote event-only stores have
+    // already supplied everything in the validated replay above.
+    protocolByTurn.clear();
+    durableFrameKeys.clear();
+    durableFrameFingerprints.clear();
+    try {
+      await hydrateRuntimeMetadata(options.conversationId, options.eventStore,
+        protocolByTurn, durableFrameKeys, durableFrameFingerprints);
+    } catch (cause) {
+      store.destroy();
+      throw cause;
+    }
+  }
 
   const assertUsable = (): void => {
     if (destroyed) throw new ConversationRuntimeDestroyedError();
@@ -1584,23 +1605,55 @@ export async function createConversationRuntime<TRequest>(
     }
   };
 
+  let synchronizationDelay = synchronizationInterval;
+  let synchronizationActive = false;
+  let polling = false;
   const scheduleSynchronization = (): void => {
     if (destroyed || synchronizationInterval === undefined) return;
     synchronizationTimer = setTimeout(() => {
+      polling = true;
+      const previousRevision = store.getSnapshot().revision;
       void synchronize().catch((cause: unknown) => {
         if (!destroyed) {
           try { options.onSynchronizationError?.(cause); } catch { /* Diagnostics cannot stop polling. */ }
         }
-      }).finally(scheduleSynchronization);
-    }, synchronizationInterval);
+      }).finally(() => {
+        polling = false;
+        const state = store.getSnapshot();
+        synchronizationDelay = synchronizationActive || state.active_turn_id !== null || state.revision !== previousRevision
+          ? synchronizationInterval : Math.min((synchronizationDelay ?? synchronizationInterval) * 2,
+            idleSynchronizationInterval ?? synchronizationInterval);
+        scheduleSynchronization();
+      });
+    }, synchronizationDelay);
     synchronizationTimer.unref?.();
   };
+  const setSynchronizationActive = (active: boolean): void => {
+    if (destroyed || synchronizationActive === active) return;
+    synchronizationActive = active;
+    if (active) {
+      synchronizationDelay = synchronizationInterval;
+      clearTimeout(synchronizationTimer);
+      if (!polling) scheduleSynchronization();
+    }
+  };
+  let previouslyActive = store.getSnapshot().active_turn_id !== null;
+  const stopPollingObserver = store.subscribe(() => {
+    const active = store.getSnapshot().active_turn_id !== null;
+    if (active && !previouslyActive) {
+      synchronizationDelay = synchronizationInterval;
+      clearTimeout(synchronizationTimer);
+      if (!polling) scheduleSynchronization();
+    }
+    previouslyActive = active;
+  });
   scheduleSynchronization();
 
   const destroy = (): void => {
     if (destroyed) return;
     destroyed = true;
     clearTimeout(synchronizationTimer);
+    stopPollingObserver();
     for (const controller of retryControllers.values()) {
       controller.abort(new ConversationRuntimeDestroyedError());
     }
@@ -1619,6 +1672,7 @@ export async function createConversationRuntime<TRequest>(
     getSnapshot: () => store.getSnapshot(),
     observe,
     synchronize,
+    setSynchronizationActive,
     sendMessage,
     continueTurn,
     recordToolLoopEvents,
