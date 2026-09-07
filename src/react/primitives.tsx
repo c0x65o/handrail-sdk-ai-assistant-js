@@ -1032,7 +1032,7 @@ export interface ComposerProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 export const Composer = forwardRef<HTMLDivElement, ComposerProps>(function Composer(
-  { composer: explicitComposer, onDrop, render, ...props },
+  { composer: explicitComposer, onDragOver, onDrop, render, ...props },
   forwardedRef,
 ) {
   const outer = useContext(PrimitiveContext);
@@ -1047,6 +1047,10 @@ export const Composer = forwardRef<HTMLDivElement, ComposerProps>(function Compo
   const nativeProps: HTMLAttributes<HTMLDivElement> = {
     ...props,
     "aria-busy": props["aria-busy"] ?? Boolean(composer?.isSending),
+    onDragOver: (event) => {
+      onDragOver?.(event);
+      if (!event.defaultPrevented) drop?.onDragOver?.(event);
+    },
     onDrop: (event) => {
       onDrop?.(event);
       if (!event.defaultPrevented) drop?.onDrop(event);

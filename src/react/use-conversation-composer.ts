@@ -189,6 +189,7 @@ export interface ConversationComposerFileInputProps {
 }
 
 export interface ConversationComposerDropProps {
+  readonly onDragOver: (event: DragEvent<HTMLElement>) => void;
   readonly onDrop: (event: DragEvent<HTMLElement>) => void;
 }
 
@@ -428,12 +429,14 @@ function compactHash(value: string): string {
 }
 
 function durableAttachment(reference: AttachmentReference): ConversationAttachmentReference {
-  return {
+  const mediaType = AI_RUNTIME_DOCUMENT_MIME_TYPES.find((type) => type === reference.media_type);
+  const attachment = {
     attachment_id: reference.attachment_id as ConversationAttachmentId,
     media_type: reference.media_type,
     ...(reference.filename === undefined ? {} : { filename: reference.filename }),
     size_bytes: reference.byte_size,
   };
+  return mediaType ? { ...attachment, kind: "document", media_type: mediaType } : attachment;
 }
 
 function sendError(error: ConversationRuntimeError): ConversationComposerError {
@@ -807,8 +810,18 @@ export function useConversationComposer<TRequest = undefined>(
     pdfOptions,
   ]);
 
+  const handleDragOver = useCallback((event: DragEvent<HTMLElement>): void => {
+    // Files are hidden during dragover; inspect the transfer types instead.
+    if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
   const handleDrop = useCallback((event: DragEvent<HTMLElement>): void => {
     const sources = filesFromTransfer(event.dataTransfer);
+    if (sources.length === 0) return;
+    // Even a rejected file must not navigate away from the conversation.
+    event.preventDefault();
     const imageResult = acceptedImageMediaTypes.length === 0
       ? undefined
       : intakeDroppedImages(event.dataTransfer, imageOptions());
@@ -816,7 +829,6 @@ export function useConversationComposer<TRequest = undefined>(
       ? undefined
       : intakeDroppedPdfs(event.dataTransfer, pdfOptions());
     const result = combineIntake(sources, imageResult, pdfResult);
-    if (result.shouldPreventDefault) event.preventDefault();
     acceptIntake(result);
   }, [
     acceptIntake,
@@ -996,8 +1008,9 @@ export function useConversationComposer<TRequest = undefined>(
     onChange: handleFileInputChange,
   }), [acceptedMediaTypes, handleFileInputChange]);
   const dropProps = useMemo<ConversationComposerDropProps>(() => ({
+    onDragOver: handleDragOver,
     onDrop: handleDrop,
-  }), [handleDrop]);
+  }), [handleDragOver, handleDrop]);
 
   return useMemo(() => Object.freeze({
     draft,

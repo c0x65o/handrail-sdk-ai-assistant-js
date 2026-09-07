@@ -209,6 +209,29 @@ describe("useConversationComposer", () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
+  it("enables file drops and prevents rejected files from navigating away", () => {
+    const { runtime } = fakeRuntime();
+    const uploader = immediateUploader();
+    const { result } = renderHook(() => useConversationComposer({
+      uploader, createRequest: () => ({}),
+    }), { wrapper: wrapper(runtime) });
+    const fileDrag = { dataTransfer: { types: ["Files"], dropEffect: "none" }, preventDefault: vi.fn() };
+    act(() => result.current.getDropProps().onDragOver(fileDrag as never));
+    expect(fileDrag.preventDefault).toHaveBeenCalledOnce();
+    expect(fileDrag.dataTransfer.dropEffect).toBe("copy");
+    const textDrag = { dataTransfer: { types: ["text/plain"] }, preventDefault: vi.fn() };
+    act(() => result.current.getDropProps().onDragOver(textDrag as never));
+    expect(textDrag.preventDefault).not.toHaveBeenCalled();
+    const rejected = file("script.exe", "application/octet-stream");
+    const drop = { dataTransfer: { items: itemList(fileItem(rejected)), files: fileList(rejected) },
+      preventDefault: vi.fn() };
+    act(() => result.current.getDropProps().onDrop(drop as never));
+    expect(drop.preventDefault).toHaveBeenCalledOnce();
+    expect(result.current.attachments).toHaveLength(0);
+    expect(result.current.errors).toHaveLength(1);
+    uploader.dispose();
+  });
+
   it("accepts paste, picker, and drop images and sends a ready image-only message", async () => {
     const { runtime, sendMessage } = fakeRuntime<{ refs: readonly string[] }>();
     const uploader = immediateUploader();
@@ -335,7 +358,7 @@ describe("useConversationComposer", () => {
     await act(() => result.current.submit());
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       attachments: [
-        expect.objectContaining({ filename: "picked.pdf", media_type: "application/pdf" }),
+        expect.objectContaining({ filename: "picked.pdf", media_type: "application/pdf", kind: "document" }),
         expect.objectContaining({ filename: "picked.png", media_type: "image/png" }),
       ],
     }));

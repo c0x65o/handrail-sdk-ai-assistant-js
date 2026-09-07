@@ -130,7 +130,7 @@ function composer(
       multiple: true,
       onChange: vi.fn(),
     }),
-    getDropProps: () => ({ onDrop: vi.fn() }),
+    getDropProps: () => ({ onDragOver: vi.fn(), onDrop: vi.fn() }),
     ...overrides,
   };
 }
@@ -172,6 +172,23 @@ describe("headless chat primitives", () => {
       .toBe(true);
     expect(screen.getByRole("button", { name: "Stop response" }).hasAttribute("disabled"))
       .toBe(false);
+  });
+
+  it("forwards file drag events while honoring a consumer's prevention", () => {
+    const onDragOver = vi.fn();
+    const onDrop = vi.fn();
+    const bindings = composer({ getDropProps: () => ({ onDragOver, onDrop }) });
+    const { rerender } = render(<Composer composer={bindings} data-testid="drop-target" />);
+    fireEvent.dragOver(screen.getByTestId("drop-target"));
+    fireEvent.drop(screen.getByTestId("drop-target"));
+    expect(onDragOver).toHaveBeenCalledOnce();
+    expect(onDrop).toHaveBeenCalledOnce();
+    rerender(<Composer composer={bindings} data-testid="drop-target"
+      onDragOver={(event) => event.preventDefault()} onDrop={(event) => event.preventDefault()}/>);
+    fireEvent.dragOver(screen.getByTestId("drop-target"));
+    fireEvent.drop(screen.getByTestId("drop-target"));
+    expect(onDragOver).toHaveBeenCalledOnce();
+    expect(onDrop).toHaveBeenCalledOnce();
   });
 
   it("uses the native form path and handles Enter without duplicate submission", () => {
