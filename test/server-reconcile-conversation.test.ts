@@ -103,7 +103,12 @@ describe("server stored-output reconciliation", () => {
       expect(runtime.getSnapshot().active_turn_id).toBeNull();
       expect(runtime.getSnapshot().messages[0]?.content).toEqual([{ type: "text", text: "Stored answer" }]);
       expect(activity.getSnapshot()[0]).toMatchObject({ turnStatus: "completed", unread: true, turnId: "turn" });
-      await client.markActivityRead("conversation");
+      // Catalog reconciliation updates the server; this polling-disabled client
+      // must observe that exact result before it can acknowledge it as read.
+      await client.activity!.refresh();
+      const observed = client.activity!.getSnapshot().find((record) => record.conversationId === "conversation");
+      expect(observed?.unread).toBe(true);
+      await client.markActivityRead("conversation", observed);
       await client.catalog.list({ authorizationContext: context, lifecycle: "active", pageSize: 20, order: { field: "updated_at", direction: "desc" } });
       expect(activity.getSnapshot()[0]?.unread).toBe(false);
       expect(execute).not.toHaveBeenCalled();

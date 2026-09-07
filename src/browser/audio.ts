@@ -30,7 +30,7 @@ export interface BrowserAudioSafeError {
 
 const ERROR_MESSAGES: Readonly<Record<BrowserAudioCaptureErrorCode, string>> =
   Object.freeze({
-    unsupported_format: "No declared audio format is available for recording.",
+    unsupported_format: "This browser cannot record audio in a supported format.",
     media_devices_unavailable: "Microphone capture is unavailable.",
     recorder_unavailable: "Audio recording is unavailable.",
     permission_denied: "Microphone access was not granted.",
@@ -800,7 +800,9 @@ export function createBrowserAudioCaptureController(
       dataListener = (event): void => {
         const data = (event as Partial<BrowserAudioDataEvent> | null)?.data;
         if (chunks === null || !blobLike(data) || data.size === 0) return;
-        if (data.type.length > 0 && data.type !== selected.media_type) {
+        // MediaRecorder commonly includes codec parameters in emitted chunks.
+        // The host contract describes the container MIME type, not its codecs.
+        if (data.type.length > 0 && data.type.split(";", 1)[0]?.trim().toLowerCase() !== selected.media_type) {
           fail("unsupported_format");
           return;
         }

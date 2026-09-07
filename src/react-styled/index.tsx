@@ -158,8 +158,10 @@ export interface StyledChatPresetProps extends ComposerApprovalControlProps {
   readonly resolveAttachmentUrl?: (
     attachment: ConversationAttachmentReference,
     message: ConversationMessageRecord,
+    conversationId: ConversationId | null,
   ) => string | undefined;
   readonly toolRendererKeys?: Readonly<Record<string, string>>;
+  /** Only registered presentations appear in the transcript; other tool results stay in activity. */
   readonly toolResultRenderers?: ToolResultRendererRegistry;
   readonly className?: string;
   readonly style?: CSSProperties;
@@ -192,7 +194,7 @@ export const handrailChatPresetCss = `
 .hr-chat{--hr-accent:#635bff;--hr-bg:#fff;--hr-panel:#f6f7fb;--hr-text:#171927;--hr-muted:#687083;--hr-border:#dfe3eb;--hr-danger:#a32020;--hr-activity:#6750a4;--hr-radius-panel:16px;--hr-radius-message:12px;--hr-radius-control:9px;--hr-font:ui-sans-serif,system-ui,sans-serif;color:var(--hr-text);background:var(--hr-bg);border:1px solid var(--hr-border);border-radius:var(--hr-radius-panel);display:grid;grid-template-rows:auto minmax(12rem,1fr) auto;inline-size:min(100%,48rem);block-size:min(80dvh,48rem);font:400 14px/1.5 var(--hr-font);overflow:hidden;box-shadow:0 18px 55px #1719272b}
 .hr-chat[data-theme=dark]{--hr-accent:#9f9aff;--hr-bg:#171927;--hr-panel:#242735;--hr-text:#f4f5fa;--hr-muted:#aeb5c4;--hr-border:#3b4051;--hr-danger:#ff8c8c;--hr-activity:#c7b8ff}@media(prefers-color-scheme:dark){.hr-chat[data-theme=system]{--hr-accent:#9f9aff;--hr-bg:#171927;--hr-panel:#242735;--hr-text:#f4f5fa;--hr-muted:#aeb5c4;--hr-border:#3b4051;--hr-danger:#ff8c8c;--hr-activity:#c7b8ff}}
 .hr-chat[data-layout=page]{inline-size:100%;block-size:100%;min-block-size:30rem}.hr-chat[data-layout=drawer]{border-radius:var(--hr-radius-panel) 0 0 var(--hr-radius-panel);max-inline-size:30rem}.hr-chat[data-layout=launcher]{inline-size:min(48rem,calc(100vw - 2rem));block-size:min(46rem,calc(100dvh - 6rem))}.hr-chat__sr{block-size:1px;clip:rect(0 0 0 0);clip-path:inset(50%);inline-size:1px;overflow:hidden;position:absolute;white-space:nowrap}.hr-chat__header{align-items:center;background:var(--hr-bg);border-block-end:1px solid var(--hr-border);display:flex;gap:.75rem;padding:.9rem 1rem}.hr-chat__header h2{font-size:1rem;font-weight:700;margin:0}.hr-chat__picker{margin-inline-start:auto}.hr-chat__body{background:color-mix(in srgb,var(--hr-panel),var(--hr-bg) 52%);display:grid;grid-template-columns:minmax(0,1fr);min-block-size:0}.hr-chat__transcript{overflow:auto;padding:1rem;scrollbar-gutter:stable}.hr-chat [role=listitem]{background:var(--hr-bg);border:1px solid color-mix(in srgb,var(--hr-border),transparent 25%);border-radius:var(--hr-radius-message);box-shadow:0 1px 2px #1719270d;margin:.65rem 0;max-inline-size:88%;padding:.75rem .9rem;white-space:pre-wrap}.hr-chat [aria-label='user message']{background:var(--hr-accent);border-color:var(--hr-accent);color:white;margin-inline-start:auto}.hr-chat__message-row{display:grid}.hr-chat__message-actions{display:flex;justify-content:flex-end;margin-block-start:.15rem}.hr-message-action-status:not(:empty){margin-inline-start:.4rem}.hr-chat__status{align-items:center;background:var(--hr-bg);color:var(--hr-muted);display:flex;gap:.75rem;min-block-size:2rem;padding-inline:1rem}.hr-chat__composer{background:var(--hr-bg);border-block-start:1px solid var(--hr-border);padding:.75rem}.hr-chat__attachments{display:flex;gap:.5rem;list-style:none;margin:0 0 .5rem;padding:0}.hr-chat__voice{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.hr-chat__form{align-items:end;display:grid;gap:.5rem;grid-template-columns:auto minmax(0,1fr) auto auto}.hr-chat textarea{background:var(--bg,var(--hr-bg));border:1px solid var(--hr-border);border-radius:var(--hr-radius-control);color:inherit;font:inherit;min-block-size:2.75rem;padding:.65rem .75rem;resize:none}.hr-chat button,.hr-chat__file{align-items:center;background:var(--hr-panel);border:1px solid var(--hr-border);border-radius:var(--hr-radius-control);color:inherit;cursor:pointer;display:inline-flex;font:inherit;justify-content:center;padding:.6rem .75rem}.hr-chat button:hover:not(:disabled),.hr-chat__file:hover{border-color:color-mix(in srgb,var(--hr-accent),var(--hr-border) 45%)}.hr-chat button[type=submit]{background:var(--hr-accent);border-color:var(--hr-accent);color:#fff;font-weight:650}.hr-chat .hr-chat__copy{background:transparent;border-color:transparent;color:var(--hr-muted);font-size:.75rem;line-height:1;padding:.25rem .35rem}.hr-chat button:focus-visible,.hr-chat textarea:focus-visible,.hr-chat input:focus-visible,.hr-chat summary:focus-visible{outline:3px solid color-mix(in srgb,var(--hr-accent),transparent 55%);outline-offset:2px}.hr-chat button:disabled{cursor:not-allowed;opacity:.5}.hr-chat__errors{color:var(--hr-danger);grid-column:1/-1;margin:.25rem 0 0;padding-inline-start:1.25rem}.hr-chat__aux{background:var(--hr-bg);border-block-start:1px solid var(--hr-border);padding:.75rem 1rem}@media(max-width:520px){.hr-chat,.hr-chat[data-layout=launcher]{block-size:100dvh;border:0;border-radius:0;inline-size:100vw}.hr-chat__form{grid-template-columns:auto minmax(0,1fr) auto}.hr-chat__header{padding-inline:.75rem}.hr-chat__transcript{padding:.75rem}}@media(prefers-reduced-motion:reduce){.hr-chat *{scroll-behavior:auto!important;transition:none!important}}
-.hr-chat__markdown{overflow-wrap:anywhere;white-space:normal}.hr-chat__markdown>:first-child{margin-block-start:0}.hr-chat__markdown>:last-child{margin-block-end:0}.hr-chat__markdown pre{max-inline-size:100%;overflow:auto;white-space:pre}.hr-chat__markdown code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.hr-chat__markdown a{color:inherit;text-decoration:underline}.hr-chat__message-citations{font-size:.78rem;margin:.5rem 0 0;padding-inline-start:1.25rem}.hr-chat__message-citations li{background:transparent;margin:.15rem 0;max-inline-size:none;padding:0}.hr-chat__message-citations li>span:last-child{color:var(--hr-muted);margin-inline-start:.35rem}.hr-chat__attachment-card{align-items:center;border:1px solid var(--hr-border);border-radius:10px;color:inherit;display:flex;gap:.65rem;min-inline-size:11rem;overflow:hidden;padding:.5rem;text-decoration:none}.hr-chat__attachment-card img{block-size:5rem;inline-size:7rem;object-fit:cover}.hr-chat__attachment-copy{display:flex;min-inline-size:0;flex-direction:column}.hr-chat__attachment-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hr-chat__attachment-copy small{color:var(--hr-muted)}.hr-chat__voice{align-items:center;display:flex}
+.hr-chat__markdown{overflow-wrap:anywhere;white-space:normal}.hr-chat__markdown>:first-child{margin-block-start:0}.hr-chat__markdown>:last-child{margin-block-end:0}.hr-chat__markdown pre{max-inline-size:100%;overflow:auto;white-space:pre}.hr-chat__markdown code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.hr-chat__markdown a{color:inherit;text-decoration:underline}.hr-chat__message-citations{font-size:.78rem;margin:.5rem 0 0;padding-inline-start:1.25rem}.hr-chat__message-citations li{background:transparent;margin:.15rem 0;max-inline-size:none;padding:0}.hr-chat__message-citations li>span:last-child{color:var(--hr-muted);margin-inline-start:.35rem}.hr-chat__attachment-card{align-items:center;border:1px solid var(--hr-border);border-radius:10px;color:inherit;display:flex;gap:.65rem;min-inline-size:11rem;overflow:hidden;padding:.5rem;text-decoration:none}.hr-chat__attachment-card img{block-size:5rem;inline-size:7rem;object-fit:cover}.hr-chat__attachment-copy{display:flex;min-inline-size:0;flex-direction:column}.hr-chat__attachment-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hr-chat__attachment-copy small{color:var(--hr-muted)}.hr-chat__voice{align-items:center;display:flex}.hr-chat [aria-label="Message attachments"]{display:flex;flex-wrap:wrap;gap:.6rem;list-style:none;margin:.65rem 0 0;padding:0}.hr-chat [aria-label="Message attachments"]>li{min-inline-size:0;max-inline-size:100%}.hr-chat__attachment-card{min-inline-size:0;max-inline-size:100%}
 .hr-chat__transcript-wrap{display:grid;min-block-size:0;position:relative}.hr-chat__transcript-wrap>.hr-chat__transcript{min-block-size:0}.hr-chat__jump{inset-block-end:.75rem;inset-inline-end:.75rem;position:absolute;z-index:1}.hr-chat__assistant-activity:not(:empty){font-weight:600}.hr-chat__body{grid-template-rows:minmax(0,1fr) auto auto}.hr-chat__tool-activity{background:var(--hr-bg);border-block-start:1px solid var(--hr-border);max-block-size:12rem;overflow:auto;padding:.5rem 1rem}.hr-chat__tool-activity summary{cursor:pointer;color:var(--hr-muted)}.hr-chat__tool-activity ol{margin:.5rem 0;padding-inline-start:1.5rem}.hr-chat__tool-activity li{padding:.2rem 0}
 .hr-chat__launcher-trigger{align-items:center;display:inline-flex;gap:.45rem}.hr-chat__launcher-status{font-size:.75rem;font-weight:600}.hr-chat__launcher-trigger[data-busy=true] .hr-chat__launcher-status{color:var(--hr-activity)}.hr-chat__launcher-badge:empty{display:none}.hr-chat__launcher-badge{align-items:center;background:var(--hr-activity);border-radius:999px;color:#fff;display:inline-flex;font-size:.7rem;justify-content:center;min-block-size:1.2rem;min-inline-size:1.2rem;padding-inline:.25rem}
 .hr-chat__voice-activity{display:block;font-size:.75rem;font-weight:400;line-height:1.35;max-inline-size:18rem;overflow-wrap:anywhere}.hr-chat__workspace-picker li .hr-chat__voice-activity{flex-basis:100%;margin-block-start:.25rem}.hr-chat__workspace-picker li button:first-child{flex-wrap:wrap}
@@ -248,13 +250,13 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
   const renderContent = props.renderMessageContent ?? (props.markdown === false
     ? undefined
     : renderSafeMessageMarkdown);
-  const renderAttachment = props.renderMessageAttachment ?? (props.resolveAttachmentUrl
-    ? defaultAttachmentRenderer(props.resolveAttachmentUrl)
-    : undefined);
+  const renderAttachment = props.renderMessageAttachment ?? defaultAttachmentRenderer(
+    props.resolveAttachmentUrl, resolvedState?.conversation_id ?? null,
+  );
   const renderToolResult: ToolResultRenderer | undefined = props.toolResultRenderers ? (result, toolCall) => {
     const key = props.toolRendererKeys?.[toolCall.name ?? ""];
     const renderer = key ? props.toolResultRenderers?.[key] : undefined;
-    return renderer ? renderer(result) : <pre>{JSON.stringify(result.content, null, 2)}</pre>;
+    return renderer ? renderer(result) : null;
   } : undefined;
   return <ChatRoot
     className={["hr-chat", props.className].filter(Boolean).join(" ")}
@@ -269,12 +271,13 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
     <main className="hr-chat__body">
       <FollowedTranscript className="hr-chat__transcript" {...(renderToolResult ? { renderToolResult } : { toolCalls: [] })}
         renderToolCall={(call, message, renderResult) => call.result && renderResult ? renderResult(call.result, call, message) : null}
-        {...(renderAttachment ? { renderAttachment } : {})}
+        {...(renderContent ? { renderContent } : {})}
+        renderAttachment={renderAttachment}
         {...(props.messageActions === false ? {} : { renderMessage: (message, _index, context) => <div className="hr-chat__message-row">
           <Message message={message} error={context.error} toolCalls={renderToolResult ? context.toolCalls : []}
             renderToolCall={(call, message, renderResult) => call.result && renderResult ? renderResult(call.result, call, message) : null}
             {...(renderContent ? { renderContent } : {})}
-            {...(renderAttachment ? { renderAttachment } : {})}
+            renderAttachment={renderAttachment}
             {...(renderToolResult ? { renderToolResult } : {})}/>
           {props.messageCitations === false ? null : <CitationList
             className="hr-chat__message-citations" messageId={message.message_id}/>}
@@ -285,7 +288,8 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
           ? ` (${activityProgress.completed}/${activityProgress.total}${activityProgress.unit ? ` ${activityProgress.unit}` : ""})`
           : ""}</span>
         : currentActivity?.turnStatus === "completed" || currentActivity?.turnStatus === "error"
-          ? <span role="status">{currentActivity.turnStatus === "completed" ? "Done" : "Failed"}</span>
+          ? <span role="status">{currentActivity.turnStatus === "completed" ? "Done"
+            : latestTurn?.error?.message ?? "The assistant could not complete this request."}</span>
           : <><StreamStatus/><AssistantActivityIndicator className="hr-chat__assistant-activity"/></>}<TypingIndicator/></div>
       <ToolActivity className="hr-chat__tool-activity" {...(props.toolActivity ? { display: props.toolActivity } : {})}
         {...(props.renderToolActivity ? { children: props.renderToolActivity } : {})}/>
@@ -466,24 +470,35 @@ function attachmentSize(value: number | undefined): string | null {
 }
 
 function defaultAttachmentRenderer(
-  resolve: NonNullable<StyledChatPresetProps["resolveAttachmentUrl"]>,
+  resolve: StyledChatPresetProps["resolveAttachmentUrl"],
+  conversationId: ConversationId | null,
 ): MessageAttachmentRenderer {
   return (attachment, message) => {
-    const url = safeAttachmentUrl(resolve(attachment, message));
-    const name = attachment.filename ?? (attachment.media_type === "application/pdf" ? "PDF document" : "Image");
-    const size = attachmentSize(attachment.size_bytes);
-    const content = <>
-      {attachment.media_type.startsWith("image/") && url
-        ? <img alt={`${name} preview`} loading="lazy" src={url}/>
-        : <strong aria-hidden="true">{attachment.media_type === "application/pdf" ? "PDF" : "FILE"}</strong>}
-      <span className="hr-chat__attachment-copy"><strong>{name}</strong>
-        <small>{[attachment.media_type, size].filter(Boolean).join(" · ")}</small></span>
-    </>;
-    return url
-      ? <a className="hr-chat__attachment-card" href={url}
-          {...(url.startsWith("http") ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{content}</a>
-      : <span className="hr-chat__attachment-card">{content}</span>;
+    const url = safeAttachmentUrl(resolve?.(attachment, message, conversationId));
+    return <MessageAttachmentPreview attachment={attachment} {...(url === undefined ? {} : { url })}/>;
   };
+}
+
+/** Saved attachment display with a recoverable fallback for expired or unavailable images. */
+export function MessageAttachmentPreview({ attachment, url: rawUrl }: {
+  readonly attachment: ConversationAttachmentReference;
+  readonly url?: string;
+}): ReactNode {
+  const url = safeAttachmentUrl(rawUrl);
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const name = attachment.filename ?? (attachment.media_type.startsWith("image/") ? "Image" : "Document");
+  const size = attachmentSize(attachment.size_bytes);
+  const content = <>
+    {attachment.media_type.startsWith("image/") && url && failedUrl !== url
+      ? <img alt={`${name} preview`} loading="lazy" src={url} onError={() => setFailedUrl(url)}/>
+      : <strong aria-hidden="true">{attachment.media_type === "application/pdf" ? "PDF" : "FILE"}</strong>}
+    <span className="hr-chat__attachment-copy"><strong>{name}</strong>
+      <small>{[attachment.media_type, size].filter(Boolean).join(" · ")}</small>
+      {url && failedUrl === url ? <small>Preview unavailable. Open the attachment to try again.</small> : null}</span>
+  </>;
+  return url
+    ? <a className="hr-chat__attachment-card" href={url} target="_blank" rel="noopener noreferrer">{content}</a>
+    : <span className="hr-chat__attachment-card">{content}</span>;
 }
 
 function BoundHandrailChat<TRequest>(props: HandrailChatProps<TRequest>): ReactNode {
@@ -722,6 +737,7 @@ export interface HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>
     conversationId: ConversationId,
   ) => UseConversationComposerOptions<TRequest>;
   readonly createConversation?: () => Promise<ConversationWorkspaceOpenInput<TAuthorizationContext>>;
+  /** Set to false to disable New and Threads; the selected conversation and composer remain active. */
   readonly conversationPicker?: ReactNode;
   /** Enables full authorized catalog hydration plus archive/restore UI. */
   readonly catalogOptions?: ConversationCatalogWorkspaceOptions<TAuthorizationContext>;
@@ -758,7 +774,7 @@ export function HandrailChatWorkspace<TRequest, TAuthorizationContext>(
   if (!selected) return <section className={["hr-chat", props.className].filter(Boolean).join(" ")}
     data-layout={props.layout ?? "page"} style={props.style}>
     <header className="hr-chat__header"><h2>{props.title ?? "Assistant"}</h2>
-      <div className="hr-chat__picker">{picker}</div></header>
+      {picker && <div className="hr-chat__picker">{picker}</div>}</header>
     <div className="hr-chat__empty">{props.noConversation ?? "Start or select a conversation."}</div>
   </section>;
   const { workspace: _workspace, composerForConversation: _composerFor, createConversation: _create,

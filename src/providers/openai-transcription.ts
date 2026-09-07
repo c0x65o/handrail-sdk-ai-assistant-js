@@ -1,4 +1,8 @@
 import { parseOpenAIReportedAudioUsage, type OpenAIReportedAudioUsage } from "./openai-audio-usage.js";
+import { openAITranscriptionHintFields, parseTranscriptionSpeechHints,
+  type TranscriptionSpeechHints } from "../transcription-speech-hints.js";
+export { openAITranscriptionHintFields, parseTranscriptionSpeechHints, transcriptionSpeechHintsFromEnvironment,
+  TRANSCRIPTION_SPEECH_HINT_LIMITS, type TranscriptionSpeechHints, type OpenAITranscriptionHintFields } from "../transcription-speech-hints.js";
 export { parseOpenAIReportedAudioUsage, type OpenAIReportedAudioUsage, type OpenAIAudioTokenDetails } from "./openai-audio-usage.js";
 import {
   TRANSCRIPTION_AUDIO_FORMATS,
@@ -58,6 +62,9 @@ export interface OpenAITranscriptionRequest {
   readonly file: OpenAITranscriptionFile;
   readonly response_format: "json";
   readonly language?: string;
+  readonly languages?: readonly string[];
+  readonly keywords?: readonly string[];
+  readonly prompt?: string;
 }
 
 export interface OpenAITranscriptionRequestOptions {
@@ -81,6 +88,8 @@ export interface OpenAITranscriptionUsageObservation {
 
 export interface OpenAITranscriptionOptions {
   readonly model: string;
+  /** Trusted project defaults, copied and validated when the capability is created. */
+  readonly speech_hints?: TranscriptionSpeechHints;
   readonly resolve_audio: OpenAITranscriptionAudioResolver;
   readonly request: OpenAITranscriptionRequestFunction;
   /** Trusted-server durable capture. Awaited before returning/validating the transcript.
@@ -360,6 +369,7 @@ class OpenAITranscriptionCapability implements SupportedTranscriptionCapability 
     private readonly resolveAudio: OpenAITranscriptionAudioResolver,
     private readonly requestProvider: OpenAITranscriptionRequestFunction,
     private readonly captureUsage: OpenAITranscriptionOptions["capture_usage"],
+    private readonly speechHints: TranscriptionSpeechHints,
   ) {}
 
   async transcribe(value: TranscriptionRequest): Promise<TranscriptionResult> {
@@ -409,9 +419,6 @@ class OpenAITranscriptionCapability implements SupportedTranscriptionCapability 
       request.idempotency_key,
     );
     rejectIfAborted(request.signal);
-    // The public contract accepts BCP 47; OpenAI expects an ISO-639-1 hint.
-    // Unsupported primary subtags are left to provider language detection.
-    const primaryLanguage = request.language?.split("-")[0];
     const providerRequest = Object.freeze({
       model: this.model,
       file: Object.freeze({
@@ -420,8 +427,7 @@ class OpenAITranscriptionCapability implements SupportedTranscriptionCapability 
         filename: `audio.${audio.format.container}`,
       }),
       response_format: "json" as const,
-      ...(primaryLanguage !== undefined && /^[a-z]{2}$/u.test(primaryLanguage)
-        ? { language: primaryLanguage } : {}),
+      ...openAITranscriptionHintFields(this.model, this.speechHints, request.language),
     });
 
     let response: unknown;
@@ -475,10 +481,13 @@ export function createOpenAITranscriptionCapability(
   if (options.capture_usage !== undefined && typeof options.capture_usage !== "function") {
     throw new TypeError("OpenAI transcription usage capture must be a function");
   }
+  const speechHints = parseTranscriptionSpeechHints(options.speech_hints);
+  openAITranscriptionHintFields(options.model, speechHints);
   return new OpenAITranscriptionCapability(
     options.model,
     options.resolve_audio,
     options.request,
     options.capture_usage,
+    speechHints,
   );
 }

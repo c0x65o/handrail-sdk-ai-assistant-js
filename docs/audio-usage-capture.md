@@ -174,3 +174,43 @@ modality/duration pricing. Current platform validation rejects extra audio field
 and its price calculator uses aggregate token dimensions. Completing this goal
 requires the corresponding platform receipt/pricing decision and durable host/SDK
 delivery work; the evidence store alone is not completion.
+
+## Recorded voice host update — 2026-09-06
+
+Spartan's web composer candidate replaces browser SpeechRecognition with an
+authenticated host transcription endpoint, defaulting to `gpt-transcribe` and
+reusing the provisioned server OpenAI key. It uses the provider-operation ledger,
+SQL receipt outbox, and audio evidence store described above. Mills already uses
+that model and server credential path.
+
+Browser capture now compares the MIME container independently of native codec
+parameters: `audio/webm;codecs=opus` matches a declared `audio/webm`. Different
+containers still fail. Both hosts include metadata-only compatibility adapters
+for the reviewed SDK pin; bytes are not transcoded. This fixes the false
+unsupported-format failure after native recording.
+
+Handrail read-only source revision `2b74faa6bcd6c26d96f62321ecb48745674939fd`
+still limits receipts/pricing to aggregate token dimensions in
+`src/server/services/ai-runtime-usage.js`. Platform completion requires:
+
+1. A versioned receipt extension for provider-reported audio/text/cache token
+   dimensions and duration, preserving unknown quantities.
+2. Matching Telemetry ingestion, durable deduplication and forwarding of those
+   fields with server-derived project/service-environment attribution.
+3. Effective-dated audio model pricing and reconciliation of the retained
+   evidence using the original receipt identity, without duplicate charges.
+4. Service-scoped AI Runtime credentials delivered alongside the shared OpenAI
+   capability and a deployed end-to-end charging check.
+
+These platform changes are outside the current AI Chatbot group's repository
+scope (Mills Family Office, Spartan Cyber ERP, Handrail AI Assistant SDK).
+No platform configuration or billing schema was changed by this candidate.
+
+Validation: 19 SDK recorder tests, 39 Mills voice/provider/durable-usage tests,
+and 9 Spartan recorder/transcription/HTTP-route tests passed. SDK typecheck,
+Spartan qualification typecheck, Mills scoped voice typecheck, and scoped lint
+passed. A broader Spartan legacy launcher check still expects "Done" where the
+unchanged launcher renders "Unread"; Mills' broader qualification includes a
+separately edited attachment test assigning to a readonly property. Those checks
+are not a passing full-suite result. Provider and Telemetry responses were test
+fixtures; no deployed microphone session or live charge was verified.

@@ -677,8 +677,10 @@ does not authorize a retry under a new identity. The OpenAI implementation is
 available from `@handrail/ai-assistant/providers/openai/transcription` through
 `createOpenAITranscriptionCapability` with injected resolution and request
 functions. The adapter requests `json`, which supports text-only responses from
-the transcription models. A BCP 47 language hint is reduced to its two-letter
-primary subtag when available; otherwise the provider detects the language.
+the transcription models. Project `speech_hints` supplies vocabulary, context,
+and languages; see [project speech hints](docs/speech-hints.md) for the SDK option,
+shared environment setting, and OpenAI bridge. Current models use plural
+`languages`; legacy models retain their single-language hint behavior.
 Detected language is nullable, including multilingual results. If the provider
 omits duration, output metadata uses the trusted audio resolver's validated
 duration. This display metadata is not a provider usage receipt. The host request

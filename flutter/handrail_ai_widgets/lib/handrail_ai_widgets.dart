@@ -6,6 +6,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 import 'approval_mode.dart';
 
 export 'approval_mode.dart';
+export 'attachment_preview.dart';
 
 class HandrailClipboardImage {
   const HandrailClipboardImage(this.bytes, this.mediaType, this.filename);

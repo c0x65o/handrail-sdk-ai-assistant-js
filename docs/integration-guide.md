@@ -67,6 +67,12 @@ The older `runtime`, `createRuntime`, and `authorizeRuntime` options remain
 supported. Do not combine them with `conversations`; migrate one client at a
 time to the explicit mode.
 
+For an endpoint-driven assistant that should show only the current conversation,
+set `conversationPicker={false}` on `HandrailAssistantLauncher` (or
+`HandrailChatWorkspace`). This removes both New and Threads, including their
+catalog controls, while keeping conversation restoration, messages, uploads,
+and voice controls active. Omit the prop to use the default thread picker.
+
 ## Theme contract
 
 `HandrailChatTheme` supports `mode: "light" | "dark" | "system"` and typed
@@ -94,3 +100,33 @@ The styled preset's safe Markdown subset covers headings, paragraphs, lists,
 links, inline code, and fenced code without installing a Markdown/React parser
 for headless consumers. Use `renderMessageContent` for a richer host-owned
 renderer.
+
+Tool results appear in the styled transcript only when a matching renderer is
+registered through `rendererPlugins`. Unregistered results remain available to
+the runtime and tool activity; the styled UI does not dump their JSON into an
+assistant message. Intentional code blocks in assistant Markdown still render.
+
+### Saved image attachments
+
+React presets render attachment cards even when filenames are absent. Supply
+`resolveAttachmentUrl(attachment, message, conversationId)` to resolve the saved
+attachment ID through your authenticated content route; never treat an opaque ID
+as a URL. The third argument supplies the selected canonical conversation, so a
+preview also works after a reload or a send from another device. The exported
+`MessageAttachmentPreview` renders the same card in custom transcripts and keeps
+an open action when image loading fails. Hosts using bearer authorization can
+fetch bytes with their protected transport, provide an object URL, and revoke it
+when the preview is released.
+
+Flutter hosts can use `HandrailAttachmentPreview` from `handrail_ai_widgets` with
+an account/conversation-scoped `attachmentId`, `label`, `mediaType`, and an
+asynchronous `loadBytes` callback. Keep authorization in that callback. The widget
+ignores responses after disposal or a change of attachment scope and presents
+loading, preview, and retry states without leaking server errors. `onOpen` lets
+the host open its document viewer.
+
+Both clients should retain canonical attachment messages if execution fails
+before an application-specific history mirror is written. Reconcile using
+attachment identity; polling or loading history must never resubmit a failed
+request. Ready uploads remain subject to the host's conversation ownership,
+retention, and content validation rules.

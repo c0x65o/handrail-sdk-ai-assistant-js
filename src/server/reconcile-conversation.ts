@@ -30,7 +30,7 @@ function storedObservation(record: DurableApplicationTurnRecord<ChatRequest, Str
       request_id: preceding.request_id, trace_id: preceding.trace_id, sequence: preceding.sequence + 1,
       ...(record.status === "cancelled" ? { type: "response.cancelled", reason: record.cancellation?.reason === "timeout"
         ? "deadline_exceeded" : "runtime_shutdown" } : { type: "response.error", error: { category: "internal", code: "internal_error",
-        message: "The stored turn failed before a terminal response was recorded.", retryable: record.terminal.status === "failed" && record.terminal.error.retryable } }) }));
+        message: "The assistant could not complete this request. Your message and attachments are saved.", retryable: record.terminal.status === "failed" && record.terminal.error.retryable } }) }));
   }
   const result: TurnObservationResult = { ...record.terminal, checkpoint: emptyCheckpoint };
   return { events: (async function* () { yield* frames; })(), result: Promise.resolve(result), disconnect() {} };

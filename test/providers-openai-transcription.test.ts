@@ -94,6 +94,49 @@ async function safeFailure(promise: Promise<unknown>, signal?: AbortSignal) {
 }
 
 describe("OpenAI trusted-server transcription capability", () => {
+  it("forwards project hints without adding them to results or usage observations", async () => {
+    const requestProvider = vi.fn<OpenAITranscriptionRequestFunction>(async () => ({ text: "Only the spoken words.", usage: { type: "duration", seconds: 2.5 } }));
+    const captureUsage = vi.fn(async () => {});
+    const keywords = ["Private project term"];
+    const adapter = createOpenAITranscriptionCapability({
+      model: "gpt-transcribe", speech_hints: { keywords, context: "Private project context", languages: ["en", "es"] },
+      resolve_audio: async () => resolvedAudio(), request: requestProvider, capture_usage: captureUsage,
+    });
+    keywords.push("Changed after creation");
+    const requestWithoutLanguage = { ...transcriptionRequest() };
+    delete requestWithoutLanguage.language;
+    const result = await adapter.transcribe(requestWithoutLanguage);
+    expect(requestProvider).toHaveBeenCalledWith(expect.objectContaining({
+      model: "gpt-transcribe", keywords: ["Private project term"], prompt: "Private project context", languages: ["en", "es"],
+    }), expect.anything());
+    expect(requestProvider.mock.calls[0]![0]).not.toHaveProperty("language");
+    expect(JSON.stringify(result)).not.toContain("Private project");
+    expect(JSON.stringify(captureUsage.mock.calls)).not.toContain("Private project");
+    expect(captureUsage).toHaveBeenCalledWith(expect.objectContaining({ usage: { type: "duration", seconds: 2.5 } }));
+  });
+
+  it("rejects malformed project hints before resolving audio or invoking the provider", () => {
+    const resolveAudio = vi.fn(async () => resolvedAudio());
+    const requestProvider = vi.fn(async () => providerResponse());
+    expect(() => createOpenAITranscriptionCapability({
+      model: "gpt-transcribe", speech_hints: { keywords: ["Invalid\nkeyword"] },
+      resolve_audio: resolveAudio, request: requestProvider,
+    })).toThrow(TypeError);
+    expect(resolveAudio).not.toHaveBeenCalled();
+    expect(requestProvider).not.toHaveBeenCalled();
+  });
+
+  it("keeps vocabulary isolated between project capabilities", async () => {
+    const mills = vi.fn(async () => providerResponse());
+    const spartan = vi.fn(async () => providerResponse());
+    await createOpenAITranscriptionCapability({ model: "gpt-transcribe", speech_hints: { keywords: ["Mills Family Office"] },
+      resolve_audio: async () => resolvedAudio(), request: mills }).transcribe(transcriptionRequest());
+    await createOpenAITranscriptionCapability({ model: "gpt-transcribe", speech_hints: { keywords: ["Aegis"] },
+      resolve_audio: async () => resolvedAudio(), request: spartan }).transcribe(transcriptionRequest());
+    expect(mills).toHaveBeenCalledWith(expect.objectContaining({ keywords: ["Mills Family Office"], languages: ["en"] }), expect.anything());
+    expect(spartan).toHaveBeenCalledWith(expect.objectContaining({ keywords: ["Aegis"], languages: ["en"] }), expect.anything());
+  });
+
   it("advertises only the exact OpenAI formats and conservative limits", () => {
     const adapter = capability();
     expect(adapter).toMatchObject({

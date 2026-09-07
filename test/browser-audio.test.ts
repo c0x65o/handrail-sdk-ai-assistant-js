@@ -66,7 +66,7 @@ class FakeRecorder implements BrowserAudioMediaRecorder {
     this.listeners.get(type)?.delete(listener);
   }
 
-  emitData(size: number, type = WEBM.media_type): void {
+  emitData(size: number, type: string = WEBM.media_type): void {
     this.emit("dataavailable", {
       data: new Blob([new Uint8Array(size)], { type }),
     });
@@ -209,7 +209,7 @@ describe("browser audio capture", () => {
       status: "failed",
       error: {
         code: "unsupported_format",
-        message: "No declared audio format is available for recording.",
+        message: "This browser cannot record audio in a supported format.",
       },
     });
   });
@@ -265,6 +265,25 @@ describe("browser audio capture", () => {
     await capture.controller.cancel();
     await capture.controller.dispose();
     await capture.controller.dispose();
+    expect(capture.track.stopCount).toBe(1);
+  });
+
+  it.each(["audio/webm;codecs=opus", "Audio/WebM ; codecs=opus"])("accepts native recorder codec parameters: %s", async (mediaType) => {
+    const capture = setup();
+    await capture.controller.start();
+    capture.recorder.emitData(10, mediaType);
+    const result = await capture.controller.stop();
+    expect(result?.source.type).toBe("audio/webm");
+    expect(result?.source.size).toBe(10);
+    expect(capture.track.stopCount).toBe(1);
+  });
+
+  it("rejects a different container even when codec parameters are present", async () => {
+    const capture = setup();
+    await capture.controller.start();
+    capture.recorder.emitData(10, "audio/mp4;codecs=mp4a.40.2");
+    expect(capture.controller.getState()).toMatchObject({ status: "failed", error: { code: "unsupported_format" } });
+    expect(capture.onResult).not.toHaveBeenCalled();
     expect(capture.track.stopCount).toBe(1);
   });
 

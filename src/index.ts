@@ -14,6 +14,8 @@ export * from "./runtime.js";
 export * from "./sync/index.js";
 export * from "./tools/index.js";
 export * from "./transcription.js";
+export { TRANSCRIPTION_SPEECH_HINT_LIMITS, parseTranscriptionSpeechHints,
+  transcriptionSpeechHintsFromEnvironment, type TranscriptionSpeechHints } from "./transcription-speech-hints.js";
 export * from "./transports/index.js";
 export * from "./usage.js";
 export * from "./web-search.js";

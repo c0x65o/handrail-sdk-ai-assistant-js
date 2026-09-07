@@ -10,7 +10,7 @@ it("discovers voice in unopened conversations while the launcher is closed and d
   const observerDispose = vi.spyOn(RealtimeWorkspaceMonitor.prototype, "dispose");
   const onWorkingChange = vi.fn();
   const snapshot = { selectedConversationId: null, threads: [], runningCount: 0, errorCount: 0, unreadCount: 0 };
-  const workspace = { getSnapshot: () => snapshot, subscribe: () => () => {}, open: vi.fn(async () => {}), select: vi.fn(), markRead: vi.fn() };
+  const workspace = { getSnapshot: () => snapshot, subscribe: () => () => {}, open: vi.fn(async () => {}), select: vi.fn(), markRead: vi.fn(), setVisible: vi.fn() };
   const list = vi.fn(async (input: { pageSize: number; cursor?: string }) => input.pageSize === 1
     ? { items: [{ conversationId: "one" }], hasMore: false, nextCursor: null }
     : input.cursor ? { items: [{ conversationId: "two" }], hasMore: false, nextCursor: null }
