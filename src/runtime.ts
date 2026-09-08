@@ -1,3 +1,4 @@
+import { jsonValuesEqual } from "./json-equality.js";
 import {
   CONVERSATION_CITATION_RECORDS_VERSION,
   CONVERSATION_EVENT_VERSION,
@@ -1521,13 +1522,22 @@ export async function createConversationRuntime<TRequest>(
 
       cancellationRequestedTurns.add(turnId);
       requestedCancellationReasons.set(turnId, reason);
-      await persist([cancellationDraft(
-        "turn.cancellation_requested",
-        turnId,
-        reason,
-        mutationId,
-        clientSource(),
-      )]);
+      try {
+        await persist([cancellationDraft(
+          "turn.cancellation_requested",
+          turnId,
+          reason,
+          mutationId,
+          clientSource(),
+        )]);
+      } catch (cause) {
+        // Completion can win while the cancellation mutation is being saved.
+        if (await refreshCanonicalTerminalResult(turnId)) {
+          activeObservations.get(turnId)?.disconnect();
+          return cancellationResult(turnId, reason, "already_terminal", false);
+        }
+        throw cause;
+      }
       let transportTurnId = protocol?.transportTurnId;
       if (transportTurnId === null || transportTurnId === undefined) {
         transportTurnId = await waitForTransportTurnId(turnId, controller.signal);
@@ -1561,6 +1571,9 @@ export async function createConversationRuntime<TRequest>(
       if (!cancelled.ok) {
         return cancellationResult(turnId, reason, "failed", true, cancelled.error);
       }
+      if (cancelled.value.status === "already_terminal" && await refreshCanonicalTerminalResult(turnId)) {
+        activeObservations.get(turnId)?.disconnect();
+      }
       return cancellationResult(
         turnId,
         reason,
@@ -1569,7 +1582,14 @@ export async function createConversationRuntime<TRequest>(
       );
     })();
     cancellationOperations.set(turnId, operation);
-    void operation.finally(() => {
+    const forgetFailedCancellation = () => {
+      if (cancellationOperations.get(turnId) === operation) cancellationOperations.delete(turnId);
+    };
+    // Coalesce in-flight requests and retain accepted cancellation identities,
+    // but let a later Stop retry a failed write or transport request.
+    void operation.then((outcome) => {
+      if (outcome.status === "failed") forgetFailedCancellation();
+    }, forgetFailedCancellation).finally(() => {
       if (cancellationControllers.get(turnId) === controller) {
         cancellationControllers.delete(turnId);
       }
@@ -1951,7 +1971,7 @@ function toolLoopEventAlreadyRecorded(
         ? {}
         : { citation_records: result.citation_records }),
     };
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    if (!jsonValuesEqual(actual, expected)) {
       throw new TypeError("A durable tool result conflicts with a retry");
     }
     return true;
@@ -1962,7 +1982,7 @@ function toolLoopEventAlreadyRecorded(
         (candidate) => candidate.source_id === source.source_id,
       );
       if (existing === undefined) return false;
-      if (JSON.stringify(existing) !== JSON.stringify(source)) {
+      if (!jsonValuesEqual(existing, source)) {
         throw new TypeError("A durable citation source conflicts with a retry");
       }
     }
@@ -1971,7 +1991,7 @@ function toolLoopEventAlreadyRecorded(
         (candidate) => candidate.citation_id === citation.citation_id,
       );
       if (existing === undefined) return false;
-      if (JSON.stringify(existing) !== JSON.stringify(citation)) {
+      if (!jsonValuesEqual(existing, citation)) {
         throw new TypeError("A durable citation link conflicts with a retry");
       }
     }

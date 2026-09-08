@@ -34,3 +34,4 @@ export {
 export { useConversationApprovals, type ConversationApprovalResources } from "../react/use-conversation-approvals.js";
 
 export { useRealtimeWorkspaceActivity } from "../react/realtime-workspace.js";
+export { useConversationTitles, type UseConversationTitlesOptions } from "../react/use-conversation-titles.js";

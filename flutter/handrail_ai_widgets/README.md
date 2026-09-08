@@ -9,3 +9,16 @@ Pass a controller, the host attachment picker, the host send/cancel callbacks, a
 Image paste is opt-in via `onPasteImage`. The default editor includes a Paste image context action and Control/Command+V handling with normal text fallback. All pasted bytes go through the host's normal attachment validation and upload path. A custom `input` retains its own platform paste handling.
 
 Add NSMicrophoneUsageDescription and NSSpeechRecognitionUsageDescription on iOS. On Android declare RECORD_AUDIO and query android.speech.RecognitionService. See the speech_to_text and pasteboard package documentation for supported platforms. Pasteboard's FileProvider, if configured, should expose only the application cache required by the integration.
+
+
+## Shared message Markdown
+
+Use `HandrailMarkdown(data: answer)` for assistant messages in custom or legacy
+transcripts. CommonMark/GFM parsing (including aligned tables) is owned by this
+SDK. Wide tables scroll horizontally inside the message. `selectable: true`
+retains text selection; `isUserMessage: true` displays the source literally.
+Links only navigate through the optional safe `onTapLink(text, href, title)` host
+callback; inline images stay disabled. `styleSheet` accepts `MarkdownStyleSheet`
+(re-exported by this library) for host typography/colors. Table scrolling remains
+SDK-owned. See `docs/markdown-rendering.md` in the repository for the shared
+React/Flutter contract and examples.

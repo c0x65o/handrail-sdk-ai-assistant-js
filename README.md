@@ -6,6 +6,11 @@ immutable `@handrail/ai` pin. New and migrated hosts must follow the
 [adoption standard](./docs/adoption-standard.md), which is also the source for
 Handrail's implementation Knowledge Base entry.
 
+For styled React chat or Markdown components, install the optional UI peers
+`react-markdown@^10.1.0` and `remark-gfm@^4.0.1` alongside React.
+Core, client, server, and headless entry points do not load these peers. See
+[shared Markdown rendering](./docs/markdown-rendering.md).
+
 ## Production assistant in one boundary
 
 ```ts
@@ -36,13 +41,21 @@ import { HandrailAssistantLauncher } from "@handrail/ai-assistant/react/styled";
 
 The constructor owns the authenticated gateway, normalized streaming, bounded
 provider/tool continuation, durable replay and cancellation, approvals,
-attachments, conversation synchronization, activity/presence, title fallback,
+attachments, conversation synchronization, activity/presence, automatic saved titles,
 usage admission and receipts, authenticated-scope recovery, diagnostics, and capability negotiation. The
 application continues to own authentication, domain tools/policy, provider
 credentials, and its Postgres pool. See the
 [Aegis qualification fixture](./examples/spartan-aegis-high-level.ts) for an
 under-100-line migration target; legacy dual-write is deliberately outside the
 reusable template.
+
+`openaiResponses` includes a separate text-only Responses API title generator.
+The server starts it after a saved turn completes, even when the client has
+disconnected. It owns bounded user-message context, usage capture, duplicate
+dispatch protection, and catalog persistence. Custom providers can supply
+`generateTitle`; custom React surfaces use the shared `useConversationTitles`
+hook rather than adding title logic to Send or Enter handlers. See
+[conversation titles](./docs/conversation-titles.md) for migration and retry behavior.
 
 `@handrail/ai-assistant` is a headless-first TypeScript SDK for provider-neutral chat
 state, durable event replay, streaming transports, bounded application tools,
@@ -63,6 +76,7 @@ Node.js 20 or newer is required for package tooling and trusted-server use.
 | `@handrail/ai-assistant/conformance` | Deterministic protocol and adapter qualification helpers | Tests and CI; no production side effects |
 | `@handrail/ai-assistant/react/headless` | Runtime provider, selectors, and actions with no DOM elements or `react-dom` import | React Native and fully custom React renderers |
 | `@handrail/ai-assistant/react` | Optional unstyled React bindings and accessible composition seams for chat, citations, conversation picking, approvals, transcription, and realtime voice | Browser/React; React is an optional peer |
+| `@handrail/ai-assistant/react/markdown` | Shared CommonMark/GFM message renderer with scrollable tables | Browser/React; optional Markdown UI peers |
 | `@handrail/ai-assistant/react/styled` | Optional responsive styled launcher/dialog/drawer/page preset | Browser/React; theme variables and renderers are application-owned |
 | `@handrail/ai-assistant/server/application-gateway` | Express-compatible adapter for the web-standard streaming gateway | Trusted application server only |
 | `@handrail/ai-assistant/server/application` | One-call trusted assembly for plugins, MCP connectors, policy, approvals, bounded tools, runtime, and gateway routing | Trusted application server only |

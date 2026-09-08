@@ -1,3 +1,4 @@
+import { jsonValuesEqual } from "../json-equality.js";
 import {
   isLegalConversationApprovalProposalTransition,
   type ConversationApprovalReviewedArguments,
@@ -758,7 +759,7 @@ function mergeCitationRecords(
   for (const source of records.sources) {
     const existing = sources.find((candidate) => candidate.source_id === source.source_id);
     if (existing !== undefined) {
-      if (JSON.stringify(existing) !== JSON.stringify(source)) return null;
+      if (!jsonValuesEqual(existing, source)) return null;
       continue;
     }
     sources.push(cloneCitationSource(source));
@@ -768,7 +769,7 @@ function mergeCitationRecords(
       (candidate) => candidate.citation_id === citation.citation_id,
     );
     if (existing !== undefined) {
-      if (JSON.stringify(existing) !== JSON.stringify(citation)) return null;
+      if (!jsonValuesEqual(existing, citation)) return null;
       continue;
     }
     citations.push(cloneCitation(citation));

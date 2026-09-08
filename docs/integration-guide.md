@@ -96,10 +96,12 @@ tokens. `theme` values become stable CSS properties, and a component's explicit
 
 Applications can continue using CSS variables/classes, `className`, `style`,
 message/attachment/tool renderers, the unstyled primitives, or headless hooks.
-The styled preset's safe Markdown subset covers headings, paragraphs, lists,
-links, inline code, and fenced code without installing a Markdown/React parser
-for headless consumers. Use `renderMessageContent` for a richer host-owned
-renderer.
+The styled preset uses the shared `HandrailMarkdown` component, also exported
+from `@handrail/ai-assistant/react/markdown`. It supports CommonMark and GFM tables,
+nested lists, emphasis, links, and code. Install its optional UI peers
+`react-markdown@^10.1.0` and `remark-gfm@^4.0.1` for styled/Markdown consumers;
+headless and server consumers do not need them. Custom transcript screens should
+use the same component. See [the rendering contract](./markdown-rendering.md).
 
 Tool results appear in the styled transcript only when a matching renderer is
 registered through `rendererPlugins`. Unregistered results remain available to

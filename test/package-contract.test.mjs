@@ -36,6 +36,12 @@ test("declares the React subpath as an optional peer boundary", () => {
 test("keeps styled-only Markdown dependencies out of headless installs", () => {
   assert.equal(packageJson.dependencies["react-markdown"], undefined);
   assert.equal(packageJson.optionalDependencies?.["react-markdown"], undefined);
+  for (const name of ["react-markdown", "remark-gfm"]) {
+    assert.equal(packageJson.dependencies[name], undefined);
+    assert.equal(packageJson.optionalDependencies?.[name], undefined);
+    assert.deepEqual(packageJson.peerDependenciesMeta[name], { optional: true });
+    assert.ok(packageJson.peerDependencies[name]);
+  }
 });
 
 test("declares managed runtime support as an explicit trusted-server boundary", () => {
@@ -408,6 +414,17 @@ test("imports core and browser entries when React resolution is unavailable", ()
   );
 });
 
+test("core, client, server, and headless imports do not require Markdown peers", () => {
+  const entries = [".", "./browser", "./client", "./server/assistant", "./react/headless"].map(name =>
+    pathToFileURL(path.join(packageRoot, packageJson.exports[name].import)).href);
+  const result = spawnSync(process.execPath, [
+    "--experimental-loader", fileURLToPath(new URL("./fixtures/reject-markdown-loader.mjs", import.meta.url)),
+    "--input-type=module", "--eval",
+    `await Promise.all(${JSON.stringify(entries)}.map(entry => import(entry)));`,
+  ], { cwd: packageRoot, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
 test("dry pack contains only intended package assets", () => {
   const output = execFileSync(
     process.platform === "win32" ? "npm.cmd" : "npm",
@@ -442,6 +459,9 @@ test("dry pack contains only intended package assets", () => {
     "dist/providers/openai.d.ts",
     "dist/providers/openai-transcription.js",
     "dist/providers/openai-transcription.d.ts",
+    "dist/react-markdown/index.js",
+    "dist/react-markdown/index.d.ts",
+    "flutter/handrail_ai_widgets/lib/markdown.dart",
     "dist/providers/openai-realtime.js",
     "dist/providers/openai-realtime.d.ts",
     "dist/providers/anthropic.js",
@@ -466,6 +486,6 @@ test("dry pack contains only intended package assets", () => {
       filePath,
       /\.(?:css|less|sass|scss|eot|otf|ttf|woff2?)$/u,
     );
-    assert.match(filePath, /^(?:dist\/|docs\/|flutter\/handrail_ai_client\/|scripts\/adopt\.mjs$|templates\/standard-react-node\/|LICENSE$|README\.md$|package\.json$)/u);
+    assert.match(filePath, /^(?:dist\/|docs\/|flutter\/handrail_ai_(?:client|widgets)\/|scripts\/adopt\.mjs$|templates\/standard-react-node\/|LICENSE$|README\.md$|package\.json$)/u);
   }
 });

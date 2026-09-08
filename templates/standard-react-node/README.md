@@ -7,3 +7,6 @@ shutdown, apply the SDK Postgres migrations, and run the conformance checker.
 
 The scaffold intentionally contains no credentials, tenant selection, domain
 tools, or application database policy. Those stay owned by the host.
+
+The web host installs the SDK optional UI peers `react-markdown@^10.1.0` and
+`remark-gfm@^4.0.1` alongside React; the SDK owns Markdown/GFM configuration.

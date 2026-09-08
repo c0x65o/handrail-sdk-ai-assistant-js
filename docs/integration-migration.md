@@ -24,13 +24,13 @@ transport, gateway, React primitive, and CSS-variable APIs remain supported.
 - Model context is explicit rather than automatic. The SDK will not disclose a
   principal or profile to a provider unless the host places approved fields in
   `model` and uses them in its provider adapter.
-- A separate published UI package would permit arbitrary large renderer
-  dependencies without affecting the core install. This release instead
-  removes the only styled-only runtime dependency and retains the existing
-  subpath for compatibility.
-- The built-in safe Markdown renderer is intentionally bounded. Applications
-  needing tables, math, raw HTML, or plugins should provide
-  `renderMessageContent` and own that dependency/security policy.
+- Styled and standalone React Markdown now use optional UI peers (`react-markdown`
+  and `remark-gfm`). Install them in web consumers; they are not required by core,
+  client, server, or headless consumers.
+- Replace host Markdown parsers with `HandrailMarkdown` from `react/markdown` or
+  the Flutter `handrail_ai_widgets` library. Tables and other formatting are
+  maintained in the SDK. Keep host themes and navigation callbacks; see
+  [the shared Markdown contract](./markdown-rendering.md).
 
 ## Usage outbox delivery retention
 

@@ -6,6 +6,7 @@ import {
   createConversationRuntime,
   createDirectProviderTransport,
   createRetryPolicy,
+  parseConversationEvent,
   type AuthoritativeAttribution,
   type AuthoritativeCancelTurnResult,
   type CancelTurnInput,
@@ -229,6 +230,77 @@ async function activeTurnId(runtime: Awaited<ReturnType<typeof runtimeFor>>["run
 }
 
 describe("ConversationRuntime cancellation", () => {
+  it.each(["acknowledgement", "history race"])("synchronizes a saved completion when Stop encounters an %s", async (mode) => {
+    let complete!: () => Promise<void>;
+    const transport = new TestTransport(async () => {
+      await complete();
+      return { ok: true, value: { status: "already_terminal" } };
+    });
+    const observation = new ControlledObservation([started()]);
+    transport.starts.push(observation);
+    const { runtime, eventStore } = await runtimeFor(transport);
+    const sending = runtime.sendMessage({ content: "Already finished", request });
+    const turnId = await activeTurnId(runtime);
+    const append = eventStore.append.bind(eventStore);
+    complete = async () => {
+      const revision = await eventStore.getLatestRevision(conversationId);
+      await append({ conversationId, expectedRevision: revision, events: [parseConversationEvent({
+        version: 1, conversation_id: conversationId, event_id: "server-completion", revision: (revision ?? 0) + 1,
+        occurred_at: "2026-08-27T12:01:00.000Z", actor: { type: "assistant" }, source: { type: "runtime" },
+        payload: { type: "turn.completed", turn_id: turnId, outcome: "stop", output_message_ids: [] },
+      })] });
+    };
+    if (mode === "history race") vi.spyOn(eventStore, "append").mockImplementation(async (input) => {
+      if (input.events.some((event) => event.payload.type === "turn.cancellation_requested")) {
+        await complete();
+        throw new Error("The turn completed during cancellation");
+      }
+      return append(input);
+    });
+    try {
+      await expect(runtime.cancelTurn(turnId, "user")).resolves.toMatchObject({ status: "already_terminal", remoteMayStillBeRunning: false });
+      await expect(sending).resolves.toMatchObject({ status: "completed" });
+      expect(runtime.getSnapshot().active_turn_id).toBeNull();
+      expect(runtime.getSnapshot().turns[0]?.status).toBe("completed");
+    } finally { runtime.destroy(); await sending.catch(() => undefined); }
+  });
+
+  it.each(["write", "transport", "exception"])("retries Stop after a failed %s without repeating accepted cancellation", async (failure) => {
+    let calls = 0;
+    const transport = new TestTransport(async () => {
+      calls += 1;
+      if (calls === 1 && failure === "exception") throw new Error("Connection interrupted");
+      if (calls === 1 && failure === "transport") return { ok: false, error: { code: "unavailable", message: "Try again", retryable: true } };
+      return { ok: true, value: { status: "cancellation_requested" } };
+    });
+    const observation = new ControlledObservation([started()]);
+    transport.starts.push(observation);
+    const { runtime, eventStore } = await runtimeFor(transport);
+    const sending = runtime.sendMessage({ content: "Stop retry", request });
+    const turnId = await activeTurnId(runtime);
+    const originalAppend = eventStore.append.bind(eventStore);
+    let failWrite = failure === "write";
+    vi.spyOn(eventStore, "append").mockImplementation(async (input) => {
+      if (failWrite && input.events.some((event) => event.payload.type === "turn.cancellation_requested")) {
+        failWrite = false;
+        throw new Error("History temporarily unavailable");
+      }
+      return originalAppend(input);
+    });
+    try {
+      const first = runtime.cancelTurn(turnId, "user");
+      if (failure === "write") await expect(first).rejects.toThrow("History temporarily unavailable");
+      else await expect(first).resolves.toMatchObject({ status: "failed" });
+      const retry = runtime.cancelTurn(turnId, "user");
+      expect(retry).not.toBe(first);
+      await expect(retry).resolves.toMatchObject({ status: "cancellation_requested" });
+      expect(runtime.cancelTurn(turnId, "user")).toBe(retry);
+      expect(calls).toBe(failure === "write" ? 1 : 2);
+      observation.finish(cancelled(), { status: "cancelled", checkpoint: checkpoint(cancelled()) });
+      await expect(sending).resolves.toMatchObject({ status: "cancelled" });
+    } finally { runtime.destroy(); await sending.catch(() => undefined); }
+  });
+
   it("stops only local observation and permits a later explicit resume", async () => {
     const transport = new TestTransport();
     transport.starts.push(new ControlledObservation([started()]));

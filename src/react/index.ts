@@ -308,3 +308,4 @@ export { ToolActivity, type ToolActivityProps } from "./tool-activity.js";
 export { useConversationApprovals, type ConversationApprovalResources } from "./use-conversation-approvals.js";
 
 export { useRealtimeWorkspaceActivity } from "./realtime-workspace.js";
+export { useConversationTitles, type UseConversationTitlesOptions } from "./use-conversation-titles.js";

@@ -1,6 +1,6 @@
 {
   "name": "@handrail/ai-assistant",
-  "version": "0.2.18",
+  "version": "0.2.19",
   "description": "Provider-neutral TypeScript primitives and runtime tooling for building AI applications with Handrail.",
   "license": "UNLICENSED",
   "type": "module",
@@ -129,6 +129,11 @@
       "types": "./dist/providers/xai.d.ts",
       "import": "./dist/providers/xai.js",
       "default": "./dist/providers/xai.js"
+    },
+    "./react/markdown": {
+      "types": "./dist/react-markdown/index.d.ts",
+      "import": "./dist/react-markdown/index.js",
+      "default": "./dist/react-markdown/index.js"
     }
   },
   "files": [
@@ -162,7 +167,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "prepack": "npm run build",
-    "pack:dry-run": "npm pack --dry-run --json"
+    "pack:dry-run": "npm pack --dry-run --json",
+    "check:markdown-layout": "npm run build && node scripts/check-markdown-layout.mjs"
   },
   "publishConfig": {
     "access": "public",
@@ -178,8 +184,11 @@
     "eslint": "10.9.1",
     "fake-indexeddb": "6.2.5",
     "jsdom": "26.1.0",
+    "playwright": "1.61.1",
     "react": "19.1.1",
     "react-dom": "19.1.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "typescript": "5.9.2",
     "typescript-eslint": "8.68.0",
     "vite": "7.3.6",
@@ -190,13 +199,21 @@
   },
   "peerDependencies": {
     "react": ">=18",
-    "react-dom": ">=18"
+    "react-dom": ">=18",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "peerDependenciesMeta": {
     "react": {
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "react-markdown": {
+      "optional": true
+    },
+    "remark-gfm": {
       "optional": true
     }
   }

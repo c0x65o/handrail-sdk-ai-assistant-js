@@ -24,6 +24,20 @@ import {
 
 afterEach(() => cleanup());
 
+it("clears the failed Stop error after a successful retry and preserves the draft", async () => {
+  const { runtime } = fakeRuntime();
+  const uploader = immediateUploader();
+  const onCancel = vi.fn().mockRejectedValueOnce(new Error("Offline")).mockResolvedValue(undefined);
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, onCancel, initialDraft: "My next question" }),
+    { wrapper: wrapper(runtime) });
+  await act(async () => { expect(await result.current.cancel()).toBe(false); });
+  expect(result.current.errors).toContainEqual(expect.objectContaining({ source: "cancel" }));
+  await act(async () => { expect(await result.current.cancel()).toBe(true); });
+  expect(result.current.errors).toEqual([]);
+  expect(result.current.draft).toBe("My next question");
+  unmount(); uploader.dispose();
+});
+
 const completed = (status: ConversationRuntimeTurnResult["status"] = "completed") => ({
   turnId: "turn_composer",
   status,

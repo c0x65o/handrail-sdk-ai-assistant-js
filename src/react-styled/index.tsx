@@ -1,3 +1,6 @@
+import { HandrailMarkdown } from "../react-markdown/index.js";
+export { HandrailMarkdown, type HandrailMarkdownProps } from "../react-markdown/index.js";
+import { useConversationTitles, type UseConversationTitlesOptions } from "../react/use-conversation-titles.js";
 import { StandardChatComposer, type ComposerApprovalControlProps } from "./composer.js";
 import { withComposerApprovalMode } from "../composer-approval.js";
 export { StandardChatComposer, ComposerApprovalControl, ComposerIcon, BrowserDictationControl, HANDRAIL_CHAT_COMPOSER_CSS, type StandardChatComposerProps, type ComposerApprovalControlProps } from "./composer.js";
@@ -5,7 +8,7 @@ import type { ConversationActivityRecord } from "../conversation/activity.js";
 import { useRealtimeWorkspaceActivity } from "../react/realtime-workspace.js";
 import { RealtimeWorkspaceMonitor, summarizeRealtimeWorkspace, type RealtimeWorkspaceMonitorOptions, type RealtimeWorkspaceSnapshot, type RealtimeWorkspaceSummary } from "../realtime/workspace.js";
 import { useConversationApprovals } from "../react/use-conversation-approvals.js";
-import { Fragment, createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type CSSProperties, type ReactNode } from "react";
 import { createHandrailAiClient, type HandrailAiClient } from "../client/bootstrap.js";
 import { createAttachmentUploader, type AttachmentUploader } from "../attachments/uploader.js";
 import type { ApplicationGatewayAttachmentSource, ApplicationGatewayCapabilities } from "../transports/application-gateway.js";
@@ -326,129 +329,8 @@ function messageText(parts: ConversationMessageRecord["content"]): string {
   return parts.map((part) => part.text).join("");
 }
 
-function safeMarkdownUrl(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) return trimmed;
-  if (trimmed.startsWith("#")) return trimmed;
-  try {
-    const url = new URL(trimmed);
-    return ["http:", "https:", "mailto:", "tel:"].includes(url.protocol)
-      ? url.toString()
-      : "";
-  } catch {
-    return "";
-  }
-}
-
-const renderSafeMessageMarkdown: MessageContentRenderer = (parts, message) => {
-  const text = messageText(parts);
-  if (message?.role === "user") return <span>{text}</span>;
-  return <div className="hr-chat__markdown">{safeMarkdownBlocks(text)}</div>;
-};
-
-function safeMarkdownInline(text: string, blockKey: string): ReactNode[] {
-  const output: ReactNode[] = [];
-  const pattern = /\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<!\*)\*([^*]+)\*(?!\*)|(?<!_)_([^_]+)_(?!_)/gu;
-  let cursor = 0;
-  let index = 0;
-  for (const match of text.matchAll(pattern)) {
-    const offset = match.index;
-    if (offset > cursor) output.push(text.slice(cursor, offset));
-    const label = match[1];
-    const destination = match[2];
-    const code = match[3];
-    const strong = match[4] ?? match[5];
-    const emphasis = match[6] ?? match[7];
-    if (code !== undefined) {
-      output.push(<code key={`${blockKey}-code-${index}`}>{code}</code>);
-    } else if (strong !== undefined) {
-      output.push(<strong key={`${blockKey}-strong-${index}`}>{strong}</strong>);
-    } else if (emphasis !== undefined) {
-      output.push(<em key={`${blockKey}-em-${index}`}>{emphasis}</em>);
-    } else if (label !== undefined && destination !== undefined) {
-      const href = safeMarkdownUrl(destination);
-      const external = href.startsWith("http://") || href.startsWith("https://");
-      output.push(href === ""
-        ? <span key={`${blockKey}-link-${index}`}>{label}</span>
-        : <a key={`${blockKey}-link-${index}`} href={href} {...(external
-          ? { target: "_blank", rel: "noopener noreferrer" }
-          : {})}>{label}</a>);
-    }
-    cursor = offset + match[0].length;
-    index += 1;
-  }
-  if (cursor < text.length) output.push(text.slice(cursor));
-  return output;
-}
-
-/** A deliberately small safe Markdown presentation with no parser/runtime dependency. */
-function safeMarkdownBlocks(text: string): ReactNode[] {
-  const lines = text.replaceAll("\r\n", "\n").split("\n");
-  const output: ReactNode[] = [];
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index] ?? "";
-    if (line.trim() === "") { index += 1; continue; }
-    if (line.startsWith("```")) {
-      const code: string[] = [];
-      index += 1;
-      while (index < lines.length && !(lines[index] ?? "").startsWith("```")) {
-        code.push(lines[index] ?? ""); index += 1;
-      }
-      if (index < lines.length) index += 1;
-      output.push(<pre key={`pre-${index}`}><code>{code.join("\n")}</code></pre>);
-      continue;
-    }
-    const heading = /^(#{1,6})\s+(.+)$/u.exec(line);
-    if (heading !== null) {
-      const level = heading[1]!.length;
-      output.push(createElement(`h${level}`, { key: `heading-${index}` },
-        ...safeMarkdownInline(heading[2]!, `heading-${index}`)));
-      index += 1;
-      continue;
-    }
-    if (/^[-*]\s+/u.test(line)) {
-      const items: ReactNode[] = [];
-      while (index < lines.length && /^[-*]\s+/u.test(lines[index] ?? "")) {
-        const item = (lines[index] ?? "").replace(/^[-*]\s+/u, "");
-        items.push(<li key={`item-${index}`}>{safeMarkdownInline(item, `item-${index}`)}</li>);
-        index += 1;
-      }
-      output.push(<ul key={`list-${index}`}>{items}</ul>);
-      continue;
-    }
-    if (/^\d+[.)]\s+/u.test(line)) {
-      const items: ReactNode[] = [];
-      while (index < lines.length && /^\d+[.)]\s+/u.test(lines[index] ?? "")) {
-        const item = (lines[index] ?? "").replace(/^\d+[.)]\s+/u, "");
-        items.push(<li key={`ordered-item-${index}`}>{safeMarkdownInline(item, `ordered-item-${index}`)}</li>);
-        index += 1;
-      }
-      output.push(<ol key={`ordered-list-${index}`}>{items}</ol>);
-      continue;
-    }
-    if (/^>\s?/u.test(line)) {
-      const quoted: string[] = [];
-      while (index < lines.length && /^>\s?/u.test(lines[index] ?? "")) {
-        quoted.push((lines[index] ?? "").replace(/^>\s?/u, "")); index += 1;
-      }
-      output.push(<blockquote key={`quote-${index}`}>{quoted.map((value, quoteIndex) =>
-        <Fragment key={`quote-line-${quoteIndex}`}>{quoteIndex === 0 ? null : <br/>}
-          {safeMarkdownInline(value, `quote-${index}-${quoteIndex}`)}</Fragment>)}</blockquote>);
-      continue;
-    }
-    const paragraph: string[] = [line];
-    index += 1;
-    while (index < lines.length && (lines[index] ?? "").trim() !== "" &&
-      !/^(?:#{1,6}\s+|[-*]\s+|\d+[.)]\s+|>\s?|```)/u.test(lines[index] ?? "")) {
-      paragraph.push(lines[index] ?? ""); index += 1;
-    }
-    output.push(<p key={`paragraph-${index}`}>{paragraph.map((value, lineIndex) =>
-      <Fragment key={`line-${lineIndex}`}>{lineIndex === 0 ? null : <br/>}
-        {safeMarkdownInline(value, `paragraph-${index}-${lineIndex}`)}</Fragment>)}</p>);
-  }
-  return output;
-}
+const renderSafeMessageMarkdown: MessageContentRenderer = (parts, message) =>
+  <HandrailMarkdown role={message?.role === "user" ? "user" : "assistant"}>{messageText(parts)}</HandrailMarkdown>;
 
 function safeAttachmentUrl(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -940,52 +822,8 @@ function AssistantWorkingObserver({ workspace, activity, voiceActivity, onChange
 }
 
 /** Shared first-turn title QoL; failures are diagnostic-only and never block chat. */
-export function StandardConversationTitleObserver({ client, enabled = true, onTitle, diagnostics }: {
-  readonly client: HandrailAiClient<StreamEvent, ChatRequest, object>;
-  readonly enabled?: boolean;
-  readonly onTitle?: (conversationId: ConversationId, title: string) => void;
-  readonly diagnostics?: AiDiagnosticSink;
-}) {
-  const snapshot = useConversationWorkspaceSnapshot(client.workspace!);
-  const settled = useRef(new Set<ConversationId>());
-  const pending = useRef(new Set<ConversationId>());
-  useEffect(() => {
-    if (!enabled || !client.catalog.capabilities.rename.supported) return;
-    for (const thread of snapshot.threads) {
-      const conversationId = thread.conversationId;
-      if (thread.turnStatus !== "completed" || settled.current.has(conversationId) ||
-          pending.current.has(conversationId)) continue;
-      pending.current.add(conversationId);
-      void (async () => {
-        try {
-          const found = await client.catalog.get({ authorizationContext: EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT,
-            conversationId });
-          if (found.descriptor.title !== null) {
-            settled.current.add(conversationId);
-            onTitle?.(conversationId, found.descriptor.title);
-            return;
-          }
-          const token = String(conversationId).replaceAll(/[^A-Za-z0-9._:-]/gu, "-").slice(0, 96);
-          const generated = await client.resources.generateTitle({ conversationId,
-            idempotencyKey: `assistant-title-v1-${token}` });
-          const renamed = await client.catalog.rename({
-            authorizationContext: EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT,
-            conversationId,
-            expectedVersion: found.descriptor.version,
-            idempotencyKey: `assistant-rename-v1-${token}` as never,
-            title: generated,
-          });
-          settled.current.add(conversationId);
-          onTitle?.(conversationId, renamed.descriptor.title ?? generated);
-        } catch (cause) {
-          emitAiDiagnostic(diagnostics, { domain: "gateway", operation: "automatic_title",
-            phase: "failed", retryable: true, conversationId, cause });
-        } finally {
-          pending.current.delete(conversationId);
-        }
-      })();
-    }
-  }, [client, diagnostics, enabled, onTitle, snapshot.threads]);
+export function StandardConversationTitleObserver(options: UseConversationTitlesOptions) {
+  useConversationTitles(options);
   return null;
 }
 

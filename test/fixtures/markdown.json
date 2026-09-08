@@ -1,0 +1,58 @@
+[
+  {
+    "id": "rich-table",
+    "markdown": "## Portfolio\n\n| Asset | Owner | Value |\n| :--- | :---: | ---: |\n| **Cash** | *Mills* | `$100` |\n| Trust \\| Reserve | [Details](https://example.com) | $200 |",
+    "headers": [
+      "Asset",
+      "Owner",
+      "Value"
+    ],
+    "cells": [
+      "Cash",
+      "Mills",
+      "$100",
+      "Trust | Reserve",
+      "Details",
+      "$200"
+    ],
+    "alignments": [
+      "left",
+      "center",
+      "right"
+    ]
+  },
+  {
+    "id": "nested-formatting",
+    "markdown": "# Summary\n\nA **bold and *italic*** answer.\n\n1. First\n   - Nested\n2. Second\n\n> Quoted\n\n```text\n| literal | code |\n```",
+    "text": [
+      "Summary",
+      "Nested",
+      "Quoted",
+      "| literal | code |"
+    ]
+  },
+  {
+    "id": "incomplete-table",
+    "markdown": "| Name | Amount |\n| --- | ---: |\n| Pending | **12",
+    "headers": [
+      "Name",
+      "Amount"
+    ],
+    "cells": [
+      "Pending",
+      "**12"
+    ],
+    "alignments": [
+      "left",
+      "right"
+    ]
+  },
+  {
+    "id": "unsafe-links",
+    "markdown": "[Safe](https://example.com) [Unsafe](javascript:alert%281%29)\n\n<img src=x onerror=alert(1)>",
+    "text": [
+      "Safe",
+      "Unsafe"
+    ]
+  }
+]

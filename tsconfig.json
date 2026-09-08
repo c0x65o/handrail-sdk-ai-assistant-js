@@ -19,7 +19,8 @@
       "@handrail/ai-assistant/providers/anthropic": ["./src/providers/anthropic.ts"],
       "@handrail/ai-assistant/providers/gemini": ["./src/providers/gemini.ts"],
       "@handrail/ai-assistant/providers/xai": ["./src/providers/xai.ts"],
-      "@handrail/ai-assistant/adapters/spartan-aegis": ["./src/adapters/spartan-aegis.ts"]
+      "@handrail/ai-assistant/adapters/spartan-aegis": ["./src/adapters/spartan-aegis.ts"],
+      "@handrail/ai-assistant/react/markdown": ["./src/react-markdown/index.tsx"]
     },
     "jsx": "react-jsx",
     "strict": true,
@@ -28,7 +29,8 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "resolveJsonModule": true
   },
   "include": [
     "src/**/*.ts",

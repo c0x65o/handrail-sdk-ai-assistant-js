@@ -952,6 +952,7 @@ export function useConversationComposer<TRequest = undefined>(
     if (onCancel === undefined) return false;
     try {
       await onCancel();
+      setOperationErrors((current) => current.filter((error) => error.source !== "cancel"));
       presence?.stopTyping("explicit");
       return true;
     } catch {

@@ -181,6 +181,27 @@ describe("styled React preset", () => {
     view.unmount();
   });
 
+  it.each(["Generated title", "Manual title"])("refreshes a persisted %s without a second rename", async (savedTitle) => {
+    const conversationId = "conversation-title" as never;
+    let descriptor = { conversationId, title: "New thread", lifecycle: "active", archivedAt: null,
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", version: 1, metadata: {} };
+    const get = vi.fn(async () => ({ operation: "get", status: "found", descriptor }));
+    const rename = vi.fn();
+    const generateTitle = vi.fn(async () => { descriptor = { ...descriptor, title: savedTitle, version: 2 }; return "Generated title"; });
+    const onTitle = vi.fn();
+    const snapshot = { selectedConversationId: null, runningCount: 0, errorCount: 0, unreadCount: 1,
+      threads: [{ conversationId, runtime: {}, turnStatus: "completed", unread: true, revision: 4 }] };
+    const workspace = { getSnapshot: () => snapshot, subscribe: () => () => undefined };
+    const view = render(<StandardConversationTitleObserver client={{ workspace,
+      catalog: { capabilities: { rename: { supported: true } }, get, rename }, resources: { generateTitle } } as never}
+      placeholderTitles={["New thread"]} onTitle={onTitle}/>);
+    await waitFor(() => expect(onTitle).toHaveBeenCalledWith(conversationId, savedTitle));
+    expect(generateTitle).toHaveBeenCalledOnce();
+    expect(rename).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
   it("loads and confirms conversation-grouped approvals in the standard UI", async () => {
     const proposal = { proposal_id: "proposal-1", group_id: "conversation-1", turn_id: "turn-1",
       tool_call_id: "call-1", tool_name: "update_household", reviewed_arguments: {

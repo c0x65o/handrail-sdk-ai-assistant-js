@@ -11,3 +11,6 @@ coverage/
 *.tgz
 .DS_Store
 .dart_tool/
+
+# Local SDK source qualification (never a shipped dependency override).
+.markdown-qualification/

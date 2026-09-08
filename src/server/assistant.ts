@@ -5,6 +5,8 @@ import { recordToolLifecycle } from "./tool-lifecycle.js";
 import { reconcileDurableConversationTurn } from "./reconcile-conversation.js";
 import { replayConversation } from "../conversation/replay.js";
 import { findConversationEvent } from "../conversation/find-event.js";
+import { createAssistantConversationTitles, type AssistantAutomaticTitleOptions,
+  type AssistantTitleProviderRequest } from "./conversation-titles.js";
 
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 import type { ApplicationToolResult, AuthoritativeAttribution, ChatRequest, JsonObject, JsonValue, StreamEvent } from "../protocol.js";
@@ -45,6 +47,7 @@ export { waitForApplicationApproval, ApplicationApprovalWaitExpiredError,
 export type { HandrailAssistantToolObserver } from "./tool-observer.js";
 export { openaiResponses, type HandrailOpenAIResponsesOptions } from "./openai-responses.js";
 export { createProviderToolLoopTransport, type ProviderToolLoopTransportOptions } from "./provider-tool-loop.js";
+export type { AssistantAutomaticTitleOptions, AssistantTitleProviderRequest } from "./conversation-titles.js";
 
 export const HANDRAIL_ASSISTANT_VERSION = "handrail.assistant.v1" as const;
 
@@ -56,6 +59,8 @@ export interface HandrailAssistantAuthorizationContext extends ApplicationGatewa
 
 export interface HandrailAssistantProvider<TContext extends HandrailAssistantAuthorizationContext> {
   readonly metadata: ProviderAdapterMetadata;
+  /** Text-only generation hook. The SDK owns completion triggers, persistence, and usage attribution. */
+  generateTitle?(input: AssistantTitleProviderRequest<TContext>): Promise<string>;
   /** SDK-owned provider packages return this transport with their bounded tool loop already installed. */
   createTransport(input: {
     readonly context: TContext;
@@ -136,6 +141,9 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   /** Optional multi-instance presence fan-out; process-local delivery remains the zero-config default. */
   readonly presence?: LivePresenceDelivery | { readonly pubSub: LivePresencePubSub; readonly channelPrefix?: string };
   readonly activityPubSub?: LiveConversationActivityPubSub;
+  /** Server-owned first-completed-turn titles, enabled when the provider supports generation. */
+  readonly automaticTitles?: false | AssistantAutomaticTitleOptions;
+  /** Legacy generate endpoint override. Prefer provider.generateTitle so the SDK owns persistence and automatic triggers. */
   readonly titleGeneration?: (input: { readonly conversationId: string; readonly idempotencyKey: string },
     context: TContext, signal: AbortSignal) => Promise<string>;
 }
@@ -290,6 +298,9 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const catalogFor = (context: TContext) => options.conversationCatalogFor?.({
     context, persistence: bundleFor(context),
   }) ?? bundleFor(context).catalog;
+  const titles = createAssistantConversationTitles({ assistantId, catalogFor, bundleFor, provider: options.provider,
+    ...(options.automaticTitles === undefined ? {} : { automatic: options.automaticTitles }),
+    ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }) });
   const approvalStoreFor = (context: TContext) => options.approvalStoreFor?.({
     context, persistence: bundleFor(context),
   }) ?? bundleFor(context).approvals;
@@ -354,6 +365,8 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         turns: bundle.durableTurns as never, attribution: context.attribution,
         ...(bundle.usageReceiptSink ? { usageReceiptSink: bundle.usageReceiptSink } : {}) });
     }
+    // Title work is independent of the observing browser and never delays the answer.
+    if (status === "completed") void titles.afterCompletion(conversationId, context);
     const turnStatus = running ? "running" : status === "failed" ? "error" : "completed";
     const retained = (await bundle.activity.list()).find((record) => record.conversationId === conversationId);
     if (retained?.turnId === turnId && retained.turnStatus === turnStatus) return;
@@ -563,7 +576,11 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     }),
     list: async (input: Parameters<ConversationCatalog<TContext>["list"]>[0]) => {
       const page = await catalogFor(input.authorizationContext).list(input);
-      for (const descriptor of page.items) await reconcileSafely(input.authorizationContext, descriptor.conversationId);
+      for (const descriptor of page.items) {
+        await reconcileSafely(input.authorizationContext, descriptor.conversationId);
+        // Also covers completed imported conversations without a durable turn document.
+        void titles.afterCompletion(descriptor.conversationId, input.authorizationContext);
+      }
       return page;
     },
     create: (input: Parameters<ConversationCatalog<TContext>["create"]>[0]) => catalogFor(input.authorizationContext).create(input),
@@ -698,14 +715,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const generateTitle = async (input: { readonly conversationId: string; readonly idempotencyKey: string },
     context: TContext, signal: AbortSignal): Promise<string> => {
     if (options.titleGeneration !== undefined) return options.titleGeneration(input, context, signal);
-    await ownsConversation(context, input.conversationId);
-    const history = await bundleFor(context).events.read({ conversationId: input.conversationId as never });
-    const first = history.entries.map(({ event }) => event.payload).find((payload) =>
-      payload.type === "message.created" && payload.role === "user");
-    if (first?.type !== "message.created") return "New conversation";
-    const text = first.content.flatMap((part) => part.type === "text" ? [part.text] : []).join(" ")
-      .replace(/\s+/gu, " ").trim();
-    return text.length === 0 ? "New conversation" : text.slice(0, 80);
+    return titles.generate(input.conversationId, context);
   };
   const gateway: ApplicationGateway = createApplicationGateway({
     authorize: async (request, action) => options.authorize(request, action),

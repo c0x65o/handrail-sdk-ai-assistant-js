@@ -14,7 +14,7 @@ import { InMemoryDurableApplicationTurnStore, type DurableApplicationTurnRecord 
 import { parseConversationEvent } from "../src/conversation/events.js";
 import { replayConversation } from "../src/conversation/replay.js";
 import { parseNormalizedUsageReceipt, type NormalizedUsageReceipt } from "../src/usage.js";
-import { AI_RUNTIME_PROTOCOL_VERSION, type AuthoritativeAttribution, type ChatRequest, type StreamEvent } from "../src/protocol.js";
+import { AI_RUNTIME_PROTOCOL_VERSION, parseStreamEvent, type AuthoritativeAttribution, type ChatRequest, type StreamEvent } from "../src/protocol.js";
 
 const attribution: AuthoritativeAttribution = {
   organization: { id: "org", source: "server_derived", trust: "authoritative" },
@@ -57,6 +57,47 @@ async function setup(status: "completed" | "cancelled" | "failed", output = fram
 }
 
 describe("server stored-output reconciliation", () => {
+  it.each([false, true])("recovers repeated citations from reordered JSON checkpoints; conflicting source: %s", async (conflicting) => {
+    const source = { source_id: "report", type: "tool" as const, label: "Report", locator: "app:/report" };
+    const target = { type: "assistant_message" as const, message_id: "provider-output" };
+    const output = [frames[0]!, frames[1]!,
+      { ...envelope, type: "response.usage", sequence: 2, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+      { ...envelope, type: "response.citation_batch", sequence: 3, target,
+        sources: [{ ...source, label: conflicting ? "Different report" : source.label }],
+        citations: [{ citation_id: "current-citation", source_id: source.source_id, order: 0, target }] },
+      { ...envelope, type: "response.completed", sequence: 4, outcome: "stop" }].map(parseStreamEvent);
+    const { input, state } = await setup("completed", output);
+    const previousTarget = { type: "assistant_message", message_id: "previous-answer" };
+    await input.events.append({ conversationId: "conversation" as never, expectedRevision: 1 as never,
+      events: [
+        { type: "message.created", message_id: "previous-answer", role: "assistant", content: [{ type: "text", text: "Previous answer" }] },
+        { type: "citation.records_linked", citation_records_version: 1, target: previousTarget,
+          sources: [source], citations: [{ citation_id: "previous-citation", source_id: source.source_id, order: 0, target: previousTarget }] },
+      ].map((payload, index) => parseConversationEvent({ version: 1, conversation_id: "conversation",
+        event_id: `previous-${index}`, revision: index + 2, occurred_at: "2026-09-04T00:00:00.000Z",
+        actor: { type: "assistant" }, source: { type: "runtime" }, payload })) });
+    const saved = await state();
+    // JSONB does not preserve insertion order, including objects inside a checkpoint.
+    const reorder = (value: unknown): unknown => Array.isArray(value) ? value.map(reorder)
+      : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).reverse().map(([key, item]) => [key, reorder(item)])) : value;
+    await input.events.checkpoints.write({ conversationId: "conversation" as never, revision: saved.revision!,
+      schemaVersion: 3, state: reorder(saved) as never });
+    if (conflicting) {
+      await expect(reconcileDurableConversationTurn(input)).rejects.toThrow();
+      expect((await state()).active_turn_id).toBe("turn");
+    } else {
+      expect(await reconcileDurableConversationTurn(input)).toBe(true);
+      const recovered = await state();
+      expect(recovered.active_turn_id).toBeNull();
+      expect(recovered.turns[0]?.status).toBe("completed");
+      expect(recovered.citation_sources).toHaveLength(1);
+      expect(recovered.citations.map((citation) => citation.citation_id)).toEqual(["previous-citation", "current-citation"]);
+      expect(recovered.messages.map((message) => message.content)).toEqual([[{ type: "text", text: "Previous answer" }], [{ type: "text", text: "Stored answer" }]]);
+      await reconcileDurableConversationTurn(input);
+      expect((await state()).revision).toBe(recovered.revision);
+    }
+  });
+
   it.each([[true, 0], [false, 0], [true, 120], [false, 120]] as const)(
     "repairs gateway state without rerunning work; completes before reload: %s, history events: %s", async (completeBeforeReload, historyEvents) => {
     const { input } = await setup("completed");

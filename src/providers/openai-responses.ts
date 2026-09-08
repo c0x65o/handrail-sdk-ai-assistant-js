@@ -367,11 +367,13 @@ export class OpenAIResponsesProviderAdapter implements ProviderAdapter {
       const fallbackCalls: JsonObject[] = [];
       const citations = new Map<string, WebCitation>();
       let toolCalls = 0;
+      let streamedText = false;
       for await (const item of source) {
         if (invocation.signal.aborted) throw new DOMException("Aborted", "AbortError");
         const event = record(item);
         collectWebCitations(event, citations);
         if (event.type === "response.output_text.delta" && typeof event.delta === "string" && event.delta) {
+          streamedText = true;
           yield { ...envelope(invocation, "response.text.delta", sequence++), type: "response.text.delta", delta: event.delta };
         } else if (event.type === "response.function_call_arguments.done") {
           if (typeof event.call_id !== "string" || typeof event.arguments !== "string") throw new OpenAIResponsesMalformedStreamError("OpenAI Responses function call is invalid");
@@ -389,6 +391,15 @@ export class OpenAIResponsesProviderAdapter implements ProviderAdapter {
           const response = record(event.response);
           finalUsage = usage(response.usage);
           if (Array.isArray(response.output)) completedOutput = response.output.map((output) => jsonObject(output, "OpenAI Responses output item is invalid"));
+          if (!streamedText) {
+            const text = completedOutput.flatMap((output) => output.type === "message" && Array.isArray(output.content)
+              ? output.content.flatMap((part) => part && typeof part === "object" && !Array.isArray(part) &&
+                part.type === "output_text" && typeof part.text === "string" ? [part.text] : []) : []).join("");
+            if (text) {
+              streamedText = true;
+              yield { ...envelope(invocation, "response.text.delta", sequence++), type: "response.text.delta", delta: text };
+            }
+          }
           completed = true;
         } else if (event.type === "response.failed" || event.type === "error") {
           throw new TypeError("OpenAI Responses request failed");

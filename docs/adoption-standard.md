@@ -131,11 +131,20 @@ Every standard host supplies only:
 - `uploaderForConversation` only when a migrating host retains an authorized
   application-specific upload route.
 
-Automatic titles are enabled by default and are generated only after a
-completed turn, then persisted with the catalog's optimistic version and stable
-idempotency identities. Set `autoTitle={false}` only when the product has a
-documented title policy or a headless host owns the equivalent coordinator.
-Title failure is non-blocking and emits a safe diagnostic for retry.
+Automatic title generation and persistence belong to `createHandrailAssistant`.
+`openaiResponses` supplies the title provider by default; a custom provider
+supplies only `generateTitle`. The server starts generation after canonical
+completion and repairs eligible imported history when its catalog is read.
+It uses optimistic catalog writes, durable dispatch claims, and separate usage
+receipts. Title failures never fail the conversational answer.
+
+Styled and headless React surfaces share `useConversationTitles` to refresh
+labels and support older generate-only gateways. Do not put title requests in
+application Send/Enter handlers or copy a title coordinator into a host.
+`autoTitle={false}` disables that React observer; `automaticTitles: false`
+disables automatic generation on the server. See
+[conversation titles](./conversation-titles.md) for placeholder configuration,
+provider hooks, durable failure semantics, and consumer migration.
 
 The standard is multi-conversation by default. Use the single-conversation
 `HandrailChat` composition only for a product requirement that prohibits thread
