@@ -84,7 +84,12 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
   async open(input: ConversationWorkspaceOpenInput<TAuthorizationContext>): Promise<ConversationRuntime<TRequest>> {
     let entry = this.#entries.get(input.conversationId);
     if (entry === undefined) {
-      const runtime = await this.#registry.open(input);
+      // Selection belongs to the workspace; the registry accepts only the
+      // catalog lookup fields and rejects extra options such as `select`.
+      const runtime = await this.#registry.open({
+        authorizationContext: input.authorizationContext,
+        conversationId: input.conversationId,
+      });
       // A foreground click can join the registry construction already started
       // by prefetch. Register only one subscription and recovery observer.
       entry = this.#entries.get(input.conversationId);

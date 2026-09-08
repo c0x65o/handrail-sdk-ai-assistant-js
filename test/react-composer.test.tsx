@@ -141,7 +141,7 @@ function keyEvent(overrides: Record<string, unknown> = {}) {
 }
 
 describe("useConversationComposer", () => {
-  it("sends text, manages typing, keeps Enter opt-in and IME-safe, and uses injected cancel", async () => {
+  it("sends on Enter by default, supports explicit newline mode, and stays IME-safe", async () => {
     const { runtime, sendMessage } = fakeRuntime<{ model: string }>();
     const uploader = immediateUploader();
     const presence = {
@@ -152,18 +152,18 @@ describe("useConversationComposer", () => {
     };
     const onCancel = vi.fn();
     const { result, rerender } = renderHook(
-      ({ enterBehavior }: { enterBehavior: "newline" | "send" }) =>
+      ({ enterBehavior }: { enterBehavior: "newline" | "send" | undefined }) =>
         useConversationComposer({
           uploader,
           presence,
           request: { model: "test" },
-          enterBehavior,
+          ...(enterBehavior === undefined ? {} : { enterBehavior }),
           onCancel,
           imageIntake: { previews: false },
         }),
       {
         initialProps: {
-          enterBehavior: "newline" as "newline" | "send",
+          enterBehavior: "newline" as "newline" | "send" | undefined,
         },
         wrapper: wrapper(runtime),
       },
@@ -179,7 +179,21 @@ describe("useConversationComposer", () => {
     expect(newline.preventDefault).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
 
-    rerender({ enterBehavior: "send" });
+    rerender({ enterBehavior: undefined });
+    for (const overrides of [
+      { shiftKey: true }, { altKey: true }, { ctrlKey: true }, { metaKey: true },
+      { nativeEvent: { isComposing: true } }, { nativeEvent: { keyCode: 229 } },
+      { defaultPrevented: true },
+    ]) {
+      const event = keyEvent(overrides);
+      act(() => result.current.getTextareaProps().onKeyDown(event as never));
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+    }
+    const repeat = keyEvent({ repeat: true });
+    act(() => result.current.getTextareaProps().onKeyDown(repeat as never));
+    expect(repeat.preventDefault).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
     act(() => result.current.getTextareaProps().onCompositionStart({} as never));
     const composing = keyEvent();
     act(() => result.current.getTextareaProps().onKeyDown(composing as never));

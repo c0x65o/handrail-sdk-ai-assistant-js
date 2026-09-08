@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ConversationWorkspace,
+  ConversationRuntimeRegistry,
+  InMemoryConversationCatalog,
+  InMemoryConversationEventStore,
+  createConversationRuntime,
   createInitialConversationState,
   type ConversationId,
   type ConversationRuntime,
-  type ConversationRuntimeRegistry,
   type ConversationState,
 } from "../src/index.js";
 
@@ -24,6 +27,58 @@ function fakeRuntime(conversationId: string) {
 }
 
 describe("ConversationWorkspace", () => {
+  it("opens saved history through the real registry without forwarding workspace selection options", async () => {
+    const authorizationContext = { userId: "owner" };
+    const catalog = new InMemoryConversationCatalog<typeof authorizationContext>({ authorize: () => "allow" });
+    const created = await catalog.create({ authorizationContext, idempotencyKey: "saved-history" as never });
+    const conversationId = created.descriptor.conversationId;
+    const eventStore = new InMemoryConversationEventStore();
+    await eventStore.append({ conversationId, expectedRevision: null, events: [{
+      version: 1, event_id: "saved-message" as never, conversation_id: conversationId, revision: 1 as never,
+      occurred_at: "2026-09-07T00:00:00.000Z" as never, actor: { type: "user" }, source: { type: "import" },
+      payload: { type: "message.created", message_id: "question" as never, role: "user",
+        content: [{ type: "text", text: "Saved question" }] },
+    }] });
+    const get = vi.spyOn(catalog, "get");
+    const authorize = vi.fn(() => "allow" as const);
+    const createRuntime = vi.fn(({ conversationId }: { conversationId: ConversationId }) =>
+      createConversationRuntime({ conversationId, clientId: "web" as never, eventStore, transport: {} as never }));
+    const registry = new ConversationRuntimeRegistry({ catalog, authorize, createRuntime });
+    const workspace = new ConversationWorkspace(registry);
+    try {
+      const runtime = await workspace.open({ authorizationContext, conversationId, select: false });
+      expect(workspace.getSnapshot().selectedConversationId).toBeNull();
+      expect(workspace.getSnapshot().threads).toHaveLength(1);
+      expect(runtime.getSnapshot().messages[0]?.content).toEqual([{ type: "text", text: "Saved question" }]);
+      expect(get).toHaveBeenCalledExactlyOnceWith({ authorizationContext, conversationId });
+      expect(authorize).toHaveBeenCalledWith({ action: "open", authorizationContext, descriptor: created.descriptor });
+      await workspace.open({ authorizationContext, conversationId, select: true });
+      expect(workspace.getSnapshot().selectedConversationId).toBe(conversationId);
+      expect(createRuntime).toHaveBeenCalledOnce();
+      await workspace.close(conversationId);
+      // Picker opens also supply select:true to a cold workspace.
+      await workspace.pickerRegistry().open({ authorizationContext, conversationId });
+      expect(workspace.getSnapshot().selectedConversationId).toBe(conversationId);
+      expect(createRuntime).toHaveBeenCalledTimes(2);
+    } finally { await workspace.dispose(); }
+  });
+
+  it("keeps real catalog authorization in force when prefetching history", async () => {
+    const catalog = new InMemoryConversationCatalog<string>({
+      authorize: ({ authorizationContext }) => authorizationContext === "owner" ? "allow" : "deny",
+    });
+    const created = await catalog.create({ authorizationContext: "owner", idempotencyKey: "private-history" as never });
+    const createRuntime = vi.fn();
+    const registry = new ConversationRuntimeRegistry({ catalog, authorize: () => "allow", createRuntime });
+    const workspace = new ConversationWorkspace(registry);
+    try {
+      await expect(workspace.open({ authorizationContext: "other", conversationId: created.descriptor.conversationId,
+        select: false })).rejects.toMatchObject({ name: "ConversationCatalogError", code: "forbidden" });
+      expect(createRuntime).not.toHaveBeenCalled();
+      expect(workspace.getSnapshot()).toMatchObject({ selectedConversationId: null, threads: [] });
+    } finally { await workspace.dispose(); }
+  });
+
   it("keeps only the visible selected conversation polling actively", async () => {
     const first = fakeRuntime("first");
     const second = fakeRuntime("second");

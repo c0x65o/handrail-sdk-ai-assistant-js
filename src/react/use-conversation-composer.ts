@@ -95,7 +95,7 @@ export interface UseConversationComposerOptions<TRequest = undefined> {
   readonly request?: TRequest;
   /** Build the transport request from the exact draft and ready references submitted. */
   readonly createRequest?: (submission: ConversationComposerSubmission) => TRequest;
-  /** Defaults to newline, so Enter-to-send is always an explicit opt-in. */
+  /** Defaults to send. Shift+Enter inserts a newline; use newline to opt out. */
   readonly enterBehavior?: ConversationComposerEnterBehavior;
   /** Overrides the provider store identity for lifecycle switching. */
   readonly conversationId?: ConversationId;
@@ -466,7 +466,7 @@ export function useConversationComposer<TRequest = undefined>(
     presence,
     request,
     createRequest,
-    enterBehavior = "newline",
+    enterBehavior = "send",
     onCancel,
   } = options;
   const conversationId = options.conversationId ?? storeConversationId;
@@ -968,6 +968,7 @@ export function useConversationComposer<TRequest = undefined>(
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>): void => {
     const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent;
     if (
+      event.defaultPrevented ||
       enterBehavior !== "send" ||
       event.key !== "Enter" ||
       event.shiftKey ||
@@ -985,7 +986,7 @@ export function useConversationComposer<TRequest = undefined>(
     // instead of unexpectedly inserting a newline. Shift+Enter remains the
     // explicit newline gesture.
     event.preventDefault();
-    if (!canSend) return;
+    if (event.repeat || !canSend) return;
     void submit();
   }, [canSend, enterBehavior, submit]);
 
