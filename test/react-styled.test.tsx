@@ -155,7 +155,7 @@ describe("styled React preset", () => {
     });
   });
 
-  it("generates and persists a title after the first completed turn", async () => {
+  it.each(["running", "completed"])("generates and persists a title for a %s turn", async (turnStatus) => {
     const conversationId = "conversation-1" as never;
     const descriptor = { conversationId, title: null, lifecycle: "active", archivedAt: null,
       createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
@@ -167,7 +167,7 @@ describe("styled React preset", () => {
     const onTitle = vi.fn();
     const snapshot = { selectedConversationId: conversationId,
       runningCount: 0, errorCount: 0, unreadCount: 1,
-      threads: [{ conversationId, runtime: {}, turnStatus: "completed", unread: true, revision: 4 }] };
+      threads: [{ conversationId, runtime: {}, turnStatus, unread: true, revision: 4 }] };
     const workspace = { getSnapshot: () => snapshot,
       subscribe: () => () => undefined };
     const view = render(<StandardConversationTitleObserver client={{ workspace,

@@ -27,7 +27,7 @@ export function useConversationTitles({ client, enabled = true, placeholderTitle
     const isUntitled = (title: string | null) => title === null || placeholders.has(title);
     for (const thread of snapshot.threads) {
       const conversationId = thread.conversationId;
-      if (thread.turnStatus !== "completed" || owner.settled.has(conversationId) || owner.pending.has(conversationId)) continue;
+      if ((thread.turnStatus !== "completed" && thread.turnStatus !== "running") || owner.settled.has(conversationId) || owner.pending.has(conversationId)) continue;
       owner.pending.add(conversationId);
       void (async () => {
         try {
@@ -41,13 +41,13 @@ export function useConversationTitles({ client, enabled = true, placeholderTitle
             // Re-read before the compatibility write to preserve concurrent renames.
             descriptor = (await client.catalog.get({ authorizationContext: AUTHORIZATION_CONTEXT, conversationId })).descriptor;
             if (!owner.active || descriptor.lifecycle === "archived") return;
-            if (isUntitled(descriptor.title)) {
+            if (isUntitled(descriptor.title) && !isUntitled(generated)) {
               descriptor = (await client.catalog.rename({ authorizationContext: AUTHORIZATION_CONTEXT, conversationId,
                 expectedVersion: descriptor.version,
                 idempotencyKey: `assistant-rename-v2-${token}-${descriptor.version}` as never, title: generated })).descriptor;
             }
           }
-          if (owner.active && descriptor.title !== null) {
+          if (owner.active && descriptor.title !== null && !isUntitled(descriptor.title)) {
             owner.settled.add(conversationId);
             onTitle?.(conversationId, descriptor.title);
           }

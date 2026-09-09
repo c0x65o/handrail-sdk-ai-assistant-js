@@ -89,6 +89,22 @@ describe("SDK-owned conversation titles", () => {
     expect(f.request).toHaveBeenCalledOnce();
   });
 
+  it("names a running turn and reuses its durable result after completion", async () => {
+    const f = await fixture();
+    await f.append({ type: "message.created", message_id: "question" as never, role: "user",
+      content: [{ type: "text", text: "Plan quarterly cash" }] });
+    await f.append({ type: "turn.started", turn_id: "first-turn" as never, input_message_ids: ["question" as never] });
+    const rename = vi.spyOn(f.bundle.catalog, "rename").mockRejectedValueOnce(new Error("Temporary catalog failure"));
+    await createAssistantConversationTitles(f.options).afterActivity(f.conversationId, f.context);
+    expect(f.request).toHaveBeenCalledOnce();
+    expect(await f.currentTitle()).toBeNull();
+    rename.mockRestore();
+    await f.append({ type: "turn.completed", turn_id: "first-turn" as never, outcome: "stop", output_message_ids: [] });
+    await createAssistantConversationTitles(f.options).afterCompletion(f.conversationId, f.context);
+    expect(await f.currentTitle()).toBe("Quarterly Cash Planning");
+    expect(f.request).toHaveBeenCalledOnce();
+  });
+
   it("preserves a concurrent manual rename", async () => {
     const f = await fixture(); await f.complete();
     let finish!: () => void;
@@ -163,9 +179,8 @@ describe("SDK-owned conversation titles", () => {
     let finishTitle!: () => void;
     const titleGate = new Promise<void>((resolve) => { finishTitle = resolve; });
     const response = f.request.getMockImplementation()!;
-    let calls = 0;
-    f.request.mockImplementation(async function* () {
-      if (++calls === 2) await titleGate;
+    f.request.mockImplementation(async function* (...args: unknown[]) {
+      if ((args[0] as { instructions?: string }).instructions?.includes("conversation title")) await titleGate;
       yield* response();
     });
     const paths: string[] = [];

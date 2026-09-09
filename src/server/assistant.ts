@@ -366,7 +366,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         ...(bundle.usageReceiptSink ? { usageReceiptSink: bundle.usageReceiptSink } : {}) });
     }
     // Title work is independent of the observing browser and never delays the answer.
-    if (status === "completed") void titles.afterCompletion(conversationId, context);
+    void titles.afterActivity(conversationId, context);
     const turnStatus = running ? "running" : status === "failed" ? "error" : "completed";
     const retained = (await bundle.activity.list()).find((record) => record.conversationId === conversationId);
     if (retained?.turnId === turnId && retained.turnStatus === turnStatus) return;
@@ -578,8 +578,8 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       const page = await catalogFor(input.authorizationContext).list(input);
       for (const descriptor of page.items) {
         await reconcileSafely(input.authorizationContext, descriptor.conversationId);
-        // Also covers completed imported conversations without a durable turn document.
-        void titles.afterCompletion(descriptor.conversationId, input.authorizationContext);
+        // Also covers imported conversations without a durable turn document.
+        void titles.afterActivity(descriptor.conversationId, input.authorizationContext);
       }
       return page;
     },

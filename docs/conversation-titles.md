@@ -1,8 +1,8 @@
 # SDK-owned conversation titles
 
-`createHandrailAssistant` owns automatic title generation after a durable turn
-completes. This does not depend on Send, Enter, an open browser, or the client
-implementation. Reading the catalog also checks completed imported
+`createHandrailAssistant` owns automatic title generation as soon as a durable turn
+has saved user text. This does not depend on Send, Enter, an open browser, or the client
+implementation. Reading the catalog also checks imported
 conversations that still have a placeholder title.
 
 The default `openaiResponses({ model })` provider supplies a separate Responses
@@ -54,7 +54,7 @@ useConversationTitles({
 });
 ```
 
-The hook watches every loaded completed conversation, independent of the
+The hook watches every loaded running or completed conversation, independent of the
 selected thread and submit method. It refreshes the saved title and retains a
 compatibility catalog write for older gateways that only return generated text.
 It re-reads the catalog before writing so a server-persisted or manually renamed
@@ -71,12 +71,13 @@ The SDK authorizes catalog access before reading user text or joining pending
 work. Concurrent requests within one server share a promise. A scoped durable
 provider-operation claim prevents a second server from dispatching the same
 operation. Its identity includes the assistant, tenant, scope, conversation,
-and completed turn. Completed generated results survive a failed catalog write
+and latest admitted turn. Running and completed observations of the same turn
+share an operation identity. Completed generated results survive a failed catalog write
 and can be persisted after restart without a second provider call.
 
 The SDK uses the existing provider-operation store's uncertainty policy: an
 operation that started but has no durable completed result is not blindly
-dispatched again for that turn. A later completed turn has a new identity and
+dispatched again for that turn. A later turn has a new identity and
 can try again; reconciling an uncertain operation remains an explicit operation.
 The existing title stays visible, and title failures are diagnostic-only. Usage
 admission and durable receipts are separate from the answer's invocation and
@@ -84,25 +85,21 @@ contain no prompt or transcript text.
 
 ## Mills and Spartan adoption
 
-This change is an SDK source candidate. Both app manifests currently pin
-`b70bb1c000ac7710ebbc12538635ac86a401cf30`; those installations do not include it.
-Do not point an application dependency at an uncommitted checkout, a branch,
-or a local package. After the SDK has an approved immutable commit, update the
-public HTTPS Git SHA and matching lockfile through the normal install/build
-pipeline, then make these adapter changes together:
+Both app manifests pin `135ac5ab541b124ddd78b65a4c69d6fcb0008b41`, which includes
+completion-triggered titles. The running-turn trigger in this checkout requires
+a new immutable SDK commit and matching consumer lockfiles before deployment.
+Do not point application dependencies at an uncommitted checkout or branch.
 
-- Spartan: supply the title provider through the high-level provider, configure
-  `New thread` as a placeholder, replace the local completion/title effect with
-  `useConversationTitles`, and remove the high-level `titleGeneration` override
-  and duplicated title usage orchestration. Its existing authorized catalog
-  `rename` adapter remains the domain persistence seam.
-- Mills: supply the title provider and implement the retained household catalog's
-  authorized optimistic `rename` operation (it currently reports unsupported).
-  Keep the standard launcher, which already owns the client observer. Configure
-  the retained catalog's placeholder label if it differs from `New conversation`.
+Spartan's adapter uses the SDK Responses title provider and shared React title
+observer. Its existing authorized catalog rename adapter remains the domain
+persistence seam. The legacy gateway keeps its separate compatibility path.
 
-Keep the existing consumer behavior until its SDK pin is advanced; removing
-host callbacks while it still runs the old SDK would reintroduce missing titles.
-Verify completed turns from Enter, Send, and mobile; reopened placeholders;
-manual rename/archive races; tenant isolation; provider failure; and separate
-usage receipts through each mounted high-level gateway before deployment.
+Mills still uses a custom provider without a title hook, and its retained
+household catalog reports rename unsupported. That integration needs a title
+provider hook and an authorized optimistic rename implementation before server
+automatic titles can apply there. Standard SDK catalogs and `openaiResponses`
+providers supply these capabilities by default.
+
+Verify running turns from Enter and Send, reopened placeholders, manual
+rename/archive races, provider failure, and separate usage receipts before
+consumer deployment.

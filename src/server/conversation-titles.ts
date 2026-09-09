@@ -67,7 +67,7 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
       if (titleContext.userTexts.length === 0) return found.descriptor.title ?? DEFAULT_CONVERSATION_TITLE;
       const completedTurn = [...state.turns].reverse().find((turn) => turn.status === "completed");
       if (requireCompleted && !completedTurn) return found.descriptor.title ?? DEFAULT_CONVERSATION_TITLE;
-      const operationId = `title-${hash(JSON.stringify([identity, completedTurn?.turn_id ?? "first-message"]))}`;
+      const operationId = `title-${hash(JSON.stringify([identity, state.turns.at(-1)?.turn_id ?? "first-message"]))}`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(new Error("Conversation title generation timed out.")), timeoutMilliseconds);
       timeout.unref?.();
@@ -130,6 +130,12 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
   };
 
   return Object.freeze({ automatic, generate,
+    async afterActivity(conversationId: string, context: TContext): Promise<void> {
+      if (!automatic) return;
+      try { await generate(conversationId, context); }
+      catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "automatic_title",
+        phase: "failed", conversationId, code: "title_generation_failed", retryable: true, cause }); }
+    },
     async afterCompletion(conversationId: string, context: TContext): Promise<void> {
       if (!automatic) return;
       try { await generate(conversationId, context, true); }
