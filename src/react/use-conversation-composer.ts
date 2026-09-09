@@ -21,9 +21,6 @@ import type {
 } from "../attachments/types.js";
 import type { AttachmentUploader } from "../attachments/uploader.js";
 import {
-  intakeClipboardImages,
-  intakeDroppedImages,
-  intakeDroppedPdfs,
   intakeFileInputImages,
   intakeFileInputPdfs,
   type BrowserAttachmentSource,
@@ -771,10 +768,12 @@ export function useConversationComposer<TRequest = undefined>(
   }, [conversationId, releaseOwned, scope, uploader]);
 
   const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    // Native clipboard reads can return a new File wrapper each time. Snapshot
+    // once so intake and combineIntake validate the same source objects.
     const sources = filesFromItems(event.clipboardData.items);
     const imageResult = acceptedImageMediaTypes.length === 0
       ? undefined
-      : intakeClipboardImages(event.clipboardData.items, imageOptions());
+      : intakeFileInputImages(sources, imageOptions());
     const pdfResult = generalizedIntake === undefined || acceptedDocumentMediaTypes.length === 0
       ? undefined
       : intakeFileInputPdfs(sources, pdfOptions());
@@ -796,10 +795,10 @@ export function useConversationComposer<TRequest = undefined>(
     const sources = filesFromList(files);
     const imageResult = acceptedImageMediaTypes.length === 0
       ? undefined
-      : intakeFileInputImages(files, imageOptions());
+      : intakeFileInputImages(sources, imageOptions());
     const pdfResult = generalizedIntake === undefined || acceptedDocumentMediaTypes.length === 0
       ? undefined
-      : intakeFileInputPdfs(files, pdfOptions());
+      : intakeFileInputPdfs(sources, pdfOptions());
     acceptIntake(combineIntake(sources, imageResult, pdfResult));
   }, [
     acceptIntake,
@@ -824,10 +823,10 @@ export function useConversationComposer<TRequest = undefined>(
     event.preventDefault();
     const imageResult = acceptedImageMediaTypes.length === 0
       ? undefined
-      : intakeDroppedImages(event.dataTransfer, imageOptions());
+      : intakeFileInputImages(sources, imageOptions());
     const pdfResult = generalizedIntake === undefined || acceptedDocumentMediaTypes.length === 0
       ? undefined
-      : intakeDroppedPdfs(event.dataTransfer, pdfOptions());
+      : intakeFileInputPdfs(sources, pdfOptions());
     const result = combineIntake(sources, imageResult, pdfResult);
     acceptIntake(result);
   }, [

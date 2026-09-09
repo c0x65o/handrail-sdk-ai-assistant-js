@@ -260,6 +260,48 @@ describe("useConversationComposer", () => {
     uploader.dispose();
   });
 
+  it.each(["paste", "drop"] as const)("accepts %s files when each clipboard read returns a new File", async (method) => {
+    const { runtime, sendMessage } = fakeRuntime();
+    const uploader = immediateUploader();
+    const urls = objectUrls();
+    const { result, unmount } = renderHook(() => useConversationComposer({
+      uploader,
+      attachmentIntake: { previews: { objectUrlApi: urls.api } },
+    }), { wrapper: wrapper(runtime) });
+    const sources = [
+      file("screenshot.png"),
+      file("report.pdf", "application/pdf", "pdf"),
+    ];
+    const readers = sources.map((source) => vi.fn(() => new File([source], source.name, {
+      type: source.type, lastModified: source.lastModified,
+    })));
+    const items = itemList(...sources.map((source, index) => ({
+      kind: "file", type: source.type, getAsFile: readers[index]!,
+    }) as unknown as DataTransferItem));
+    const transfer = { items, files: fileList(...sources) };
+    const preventDefault = vi.fn();
+    act(() => {
+      if (method === "paste") {
+        result.current.getTextareaProps().onPaste({ clipboardData: transfer, preventDefault } as never);
+      } else {
+        result.current.getDropProps().onDrop({ dataTransfer: transfer, preventDefault } as never);
+      }
+    });
+    expect(result.current.errors).toEqual([]);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    for (const read of readers) expect(read).toHaveBeenCalledOnce();
+    await waitFor(() => expect(result.current.attachments.map(({ status }) => status)).toEqual(["ready", "ready"]));
+    expect(result.current.attachments.map(({ filename }) => filename)).toEqual(["screenshot.png", "report.pdf"]);
+    expect(urls.created).toHaveLength(1);
+    await act(() => result.current.submit());
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ attachments: [
+      expect.objectContaining({ filename: "screenshot.png", media_type: "image/png" }),
+      expect.objectContaining({ filename: "report.pdf", kind: "document" }),
+    ] }));
+    expect(urls.revoked).toEqual(["blob:composer-1"]);
+    unmount(); uploader.dispose();
+  });
+
   it("accepts paste, picker, and drop images and sends a ready image-only message", async () => {
     const { runtime, sendMessage } = fakeRuntime<{ refs: readonly string[] }>();
     const uploader = immediateUploader();

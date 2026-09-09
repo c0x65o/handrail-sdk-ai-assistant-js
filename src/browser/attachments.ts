@@ -449,10 +449,10 @@ function intakeImages(
   });
 }
 
-function filesFromList(files: FileList): BrowserAttachmentSource[] {
+function filesFromList(files: FileList | readonly BrowserAttachmentSource[]): BrowserAttachmentSource[] {
   const sources: BrowserAttachmentSource[] = [];
   for (let index = 0; index < files.length; index += 1) {
-    const file = files[index] ?? files.item(index);
+    const file = files[index] ?? ("item" in files ? files.item(index) : undefined);
     if (file !== null && file !== undefined) sources.push(file);
   }
   return sources;
@@ -477,9 +477,9 @@ export function intakeClipboardImages(
   return intakeImages(filesFromItems(items), options);
 }
 
-/** Extracts a file input's files in source order. */
+/** Accepts a file input's FileList, or host-owned Blobs, in source order. */
 export function intakeFileInputImages(
-  files: FileList,
+  files: FileList | readonly BrowserAttachmentSource[],
   options: BrowserImageIntakeOptions,
 ): BrowserImageIntakeResult {
   return intakeImages(filesFromList(files), options);
