@@ -23,6 +23,7 @@ export function ToolActivity(props: ToolActivityProps): ReactNode {
   if (activity.total === 0) return null;
   if (props.children) return props.children(activity);
   const counts = [`${activity.completed} completed`,
+    ...(activity.recovered ? [`${activity.recovered} recovered after retry`] : []),
     ...(activity.running ? [`${activity.running} running`] : []),
     ...(activity.pending ? [`${activity.pending} pending`] : []),
     ...(activity.awaitingApproval ? [`${activity.awaitingApproval} waiting for approval`] : []),
@@ -33,7 +34,8 @@ export function ToolActivity(props: ToolActivityProps): ReactNode {
     {...(props.display === "expanded" ? { open: true } : {})}>
     <summary><span role="status">{activity.total} tool {activity.total === 1 ? "call" : "calls"}: {counts}</span></summary>
     <ol aria-label="Tool activity">{activity.items.map((item) => <li key={item.toolCallId} data-tool-status={item.status}>
-      <span>{item.name}</span>{" — "}<span>{labels[item.status]}</span>
+      <span>{item.name}</span>{" — "}<span>{item.recovery?.status === "recovered"
+        ? `Recovered after ${item.recovery.failedAttempts} failed ${item.recovery.failedAttempts === 1 ? "attempt" : "attempts"}` : labels[item.status]}</span>
     </li>)}</ol>
   </details>;
 }

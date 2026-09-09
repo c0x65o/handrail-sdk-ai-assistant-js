@@ -83,6 +83,7 @@ function identifier(value: string, field: string): string {
 export async function createRequestScopedMcpSession<TContext>(
   options: RequestScopedMcpConnectorOptions<TContext>, context: TContext, signal?: AbortSignal,
 ): Promise<RequestScopedMcpSession> {
+  signal?.throwIfAborted();
   const connectorId = identifier(options.connectorId, "connectorId");
   const timeoutMilliseconds = options.timeoutMilliseconds ?? 30_000;
   if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds < 100 || timeoutMilliseconds > 300_000) {
@@ -103,6 +104,10 @@ export async function createRequestScopedMcpSession<TContext>(
     const listed = await diagnoseAiOperation(options.diagnostics,
       { domain: "mcp", operation: "scoped_list_tools", requestId: connectorId },
       () => client!.listTools({ signal: controller.signal }));
+    controller.signal.throwIfAborted();
+    // Discovery's deadline does not expire the entire conversation session.
+    // Each call gets its own deadline; the session signal still cancels all work.
+    clearTimeout(timer);
     const namespace = options.namespace === undefined ? "" : `${identifier(options.namespace, "namespace")}.`;
     const remoteByPublic = new Map<string, string>();
     const tools = Object.freeze(listed.tools.map((tool) => {
@@ -124,13 +129,16 @@ export async function createRequestScopedMcpSession<TContext>(
         controller.signal.addEventListener("abort", abortFromSession, { once: true });
         input.signal?.addEventListener("abort", abortFromCall, { once: true });
         if (controller.signal.aborted) abortFromSession();
+        const callTimer = setTimeout(() => callController.abort(new Error("MCP operation timed out")), timeoutMilliseconds);
         try {
+          callController.signal.throwIfAborted();
           return await diagnoseAiOperation(options.diagnostics,
             { domain: "mcp", operation: "scoped_call_tool", toolName: remoteName,
               toolCallId: input.toolCallId, requestId: connectorId },
             () => client!.callTool({ name: remoteName, arguments: input.arguments,
               idempotencyKey: identifier(input.toolCallId, "toolCallId"), signal: callController.signal }));
         } finally {
+          clearTimeout(callTimer);
           controller.signal.removeEventListener("abort", abortFromSession);
           input.signal?.removeEventListener("abort", abortFromCall);
         }
@@ -172,7 +180,7 @@ export function createMcpConnectorAdapter<TContext, TAdapterContext = TContext>(
           return diagnoseAiOperation(options.diagnostics,
             { domain: "mcp", operation: "call_tool", toolName: remoteName, toolCallId: execution.toolCallId },
             () => options.client.callTool({ name: remoteName, arguments: arguments_,
-              idempotencyKey: execution.toolCallId, signal: execution.signal }));
+              idempotencyKey: execution.executionKey ?? execution.toolCallId, signal: execution.signal }));
         };
         return {
           definition: { name, description: tool.description?.trim() || `MCP tool ${remoteName}`, input_schema: tool.inputSchema },

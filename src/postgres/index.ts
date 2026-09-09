@@ -79,6 +79,7 @@ import {
 } from "../server/usage-control.js";
 
 export * from "./live-pubsub.js";
+export * from "./tool-incidents.js";
 
 export const POSTGRES_PERSISTENCE_SCHEMA_VERSION = 1 as const;
 

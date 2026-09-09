@@ -21,6 +21,19 @@ const result = (id: string, isError = false, turnId = "turn") => ({ type: "tool_
   tool_call_id: id, content: [{ type: "text", text: "private-result" }], is_error: isError });
 
 describe("canonical tool activity", () => {
+  it("renders a recovered operation separately from unresolved failures using its durable receipt", () => {
+    const receipt = { type: "handrail.tool_recovery.v1", status: "recovered", attempts: 3, failedAttempts: 2,
+      category: "transient", code: "service_busy", reason: "completed" };
+    const state = history([call("lookup"), { ...result("lookup"), content: [{ type: "json", value: receipt }] },
+      call("failed"), result("failed", true)]);
+    const view = render(<ToolActivity state={state} display="expanded"/>);
+    expect(view.container.textContent).toContain("1 completed, 1 recovered after retry, 1 failed");
+    expect(view.container.textContent).toContain("Recovered after 2 failed attempts");
+    const invalid = history([call("lookup"), { ...result("lookup", true), content: [{ type: "json", value: receipt }] }]);
+    expect(projectToolActivity(invalid)).toMatchObject({ failed: 1 });
+    expect(projectToolActivity(invalid).recovered).toBeUndefined();
+    view.unmount();
+  });
   it("shows accurate counts in a collapsed panel without disclosing arguments or results", () => {
     const state = history([call("lookup"), started("lookup"), result("lookup"), call("update"), started("update"),
       call("review"), { type: "tool_call.approval_required", turn_id: "turn", tool_call_id: "review" },

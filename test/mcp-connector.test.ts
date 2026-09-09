@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMcpConnectorAdapter, createRequestScopedMcpSession } from "../src/mcp/index.js";
+afterEach(() => vi.useRealTimers());
 
 describe("MCP connector adapter", () => {
   it("authorizes discovery and execution and forwards tool-call idempotency", async () => {
@@ -27,6 +28,9 @@ describe("MCP connector adapter", () => {
     expect(result).toEqual({ ok: true });
     expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ name: "get_asset", idempotencyKey: "call-123" }));
     expect(authorize).toHaveBeenCalledTimes(2);
+    await values[0]!.executor({}, { applicationContext: { actor: "owner" }, definition: values[0]!.definition,
+      signal: new AbortController().signal, toolCallId: "another-call", executionKey: "original-intent" });
+    expect(callTool).toHaveBeenLastCalledWith(expect.objectContaining({ idempotencyKey: "original-intent" }));
   });
 
   it("does not disclose a catalog when discovery is denied", async () => {
@@ -80,7 +84,8 @@ describe("MCP connector adapter", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
-  it("retains the session timeout when a caller also supplies a signal", async () => {
+  it("keeps the session usable after discovery's deadline and bounds each subsequent call", async () => {
+    vi.useFakeTimers();
     const callTool = vi.fn((_input: { readonly signal: AbortSignal }) =>
       new Promise<never>((_resolve, reject) => {
         _input.signal.addEventListener("abort", () => reject(_input.signal.reason), { once: true });
@@ -95,8 +100,11 @@ describe("MCP connector adapter", () => {
       }),
     }, {});
 
-    await expect(session.callTool({ name: "slow", arguments: {}, toolCallId: "call-timeout",
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = expect(session.callTool({ name: "slow", arguments: {}, toolCallId: "call-timeout",
       signal: new AbortController().signal })).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(100);
+    await result;
     expect(callTool.mock.calls[0]?.[0].signal.aborted).toBe(true);
     await session.close();
   });

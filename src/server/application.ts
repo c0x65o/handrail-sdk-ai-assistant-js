@@ -26,6 +26,10 @@ import {
 } from "../tools/executor.js";
 import type { ApprovalExecutionCoordinator } from "../tools/approval-execution.js";
 import type { AiDiagnosticSink } from "../diagnostics.js";
+import type { ToolRecoveryPolicy } from "../tools/recovery.js";
+import type { ApplicationToolOutput } from "../tools/executor.js";
+export * from "../tools/recovery.js";
+export * from "./tool-incidents.js";
 import {
   runToolLoop,
   type RunToolLoopOptions,
@@ -129,6 +133,7 @@ export interface CreateAiApplicationOptions<
   /** One host-only sink shared by bounded tool and approval execution. */
   readonly diagnostics?: AiDiagnosticSink;
   readonly executorLimits?: Partial<BoundedToolExecutorLimits>;
+  readonly toolRecovery?: ToolRecoveryPolicy<TApplicationContext, ApplicationToolOutput>;
   /** Durable exactly-once ledger. Production constructors attach the scoped persistence ledger. */
   readonly toolExecutionLedger?: ToolExecutionLedger;
   readonly toolLoopLimits?: Partial<ToolLoopLimits>;
@@ -265,6 +270,7 @@ export async function createAiApplication<
     ...(options.toolExecutionLedger ? { ledger: options.toolExecutionLedger } : {}),
     ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
     ...(options.executorLimits ? { limits: options.executorLimits } : {}),
+    ...(options.toolRecovery ? { recovery: options.toolRecovery } : {}),
   });
   const discover = (query: ToolDiscoveryQuery<TDiscoveryContext>) => registry.discover(query);
 

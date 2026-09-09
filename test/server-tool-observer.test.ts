@@ -6,6 +6,23 @@ import { parseConversationEvent } from "../src/conversation/events.js";
 import { projectToolActivity } from "../src/conversation/tool-activity.js";
 
 describe("host tool execution observation", () => {
+  it("replays explicit recovery receipts without clearing an unrelated failed lookup", async () => {
+    const events = new InMemoryConversationEventStore();
+    const observer = createToolActivityObserver({ events, report: async () => undefined });
+    const input = { conversationId: "conversation", turnId: "turn", signal: new AbortController().signal,
+      call: { tool_call_id: "recovered", name: "invoice.lookup", arguments: { private: "secret" } } };
+    await observer.observe(input, async () => ({ value: "private invoice data", recovery: {
+      type: "handrail.tool_recovery.v1", status: "recovered", attempts: 2, failedAttempts: 1,
+      category: "not_found", code: "invoice_not_found", reason: "completed",
+    } }));
+    await observer.observe({ ...input, call: { ...input.call, tool_call_id: "failed" } }, async () => ({ value: "private error", isError: true }));
+    await observer.observe({ ...input, call: { ...input.call, tool_call_id: "later" } }, async () => ({ value: "other invoice" }));
+    const saved = await replayConversation({ conversationId: "conversation" as never, eventStore: events, checkpointPolicy: false });
+    expect(projectToolActivity(saved.state)).toMatchObject({ total: 3, completed: 2, recovered: 1, failed: 1, failedAttempts: 1 });
+    expect(JSON.stringify(saved.state)).not.toContain("private invoice data");
+    expect(JSON.stringify(projectToolActivity(saved.state))).not.toContain("secret");
+    saved.store.destroy();
+  });
   it("records pending work before dispatch and stable results without storing private output", async () => {
     const events = new InMemoryConversationEventStore();
     const report = vi.fn(async () => undefined);

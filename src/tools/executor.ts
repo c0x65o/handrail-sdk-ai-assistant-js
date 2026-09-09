@@ -21,6 +21,7 @@ import { ToolRegistry, type ToolRegistration } from "./registry.js";
 import type { ToolDiscoveryQuery } from "./registry.js";
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 import type { ConversationActivityProgress } from "../conversation/activity.js";
+import { runToolWithRecovery, ToolFailureError, ToolRecoveryError, type ToolRecoveryPolicy } from "./recovery.js";
 
 export interface ApplicationToolCall {
   readonly tool_call_id: string;
@@ -204,6 +205,7 @@ export interface BoundedToolExecutorOptions<
   readonly approvalCoordinator?: ApprovalExecutionCoordinator<TApprovalPermissionContext>;
   readonly limits?: Partial<BoundedToolExecutorLimits>;
   readonly diagnostics?: AiDiagnosticSink;
+  readonly recovery?: ToolRecoveryPolicy<TContext, ApplicationToolOutput>;
 }
 
 class ExecutionCancelled extends Error {}
@@ -672,6 +674,7 @@ export class BoundedToolExecutor<
   readonly #limits: Readonly<BoundedToolExecutorLimits>;
   readonly #limiter: ConcurrencyLimiter;
   readonly #diagnostics: AiDiagnosticSink | undefined;
+  readonly #recovery: ToolRecoveryPolicy<TContext, ApplicationToolOutput> | undefined;
   readonly #operations = new Map<string, { fingerprint: string; operation: Promise<BoundedToolExecutionOutcome> }>();
 
   constructor(
@@ -687,6 +690,7 @@ export class BoundedToolExecutor<
     this.#approvalCoordinator = options.approvalCoordinator;
     this.#limits = resolvedLimits(options.limits);
     this.#diagnostics = options.diagnostics;
+    this.#recovery = options.recovery;
     this.#limiter = new ConcurrencyLimiter(this.#limits.maxConcurrency);
   }
 
@@ -953,11 +957,11 @@ export class BoundedToolExecutor<
           await request.onExecutionStarted?.();
           executionStartRecorded = true;
           const release = await this.#limiter.acquire(signal);
-          const invocation = Promise.resolve()
-            .then(() => registration.executor(arguments_, {
+          const invoke = (currentArguments: JsonObject, currentSignal: AbortSignal) => Promise.resolve()
+            .then(() => registration.executor(currentArguments, {
               applicationContext: request.applicationContext,
               definition: registration.definition,
-              signal,
+              signal: currentSignal,
               toolCallId,
               executionKey: request.executionKey ?? toolCallId,
               ...(request.reportActivity === undefined
@@ -972,8 +976,28 @@ export class BoundedToolExecutor<
                         code: "activity_update_failed", retryable: true, cause });
                     }
                   } }),
-            }))
-            .then((output) => normalizeOutput(output, this.#limits, toolCallId));
+            }));
+          const invocation = this.#recovery
+            ? runToolWithRecovery({
+                context: { applicationContext: request.applicationContext, definition: registration.definition,
+                  arguments: arguments_, signal, toolCallId, executionKey: request.executionKey ?? toolCallId },
+                policy: this.#recovery,
+                execute: (context) => invoke(context.arguments, context.signal),
+                validateAndAuthorize: async (context) => {
+                  validateArguments(registration.definition, cloneArguments(context.arguments));
+                  const decision = await this.#policy({ applicationContext: request.applicationContext,
+                    definition: registration.definition, arguments: context.arguments, signal: context.signal, toolCallId });
+                  if (decision.outcome !== "allow" && !(decision.outcome === "external_approval_required" && approvalClaim)) {
+                    throw new ToolFailureError({ category: "permission_denied", code: "recovery_authorization_required",
+                      message: "The retry requires current application authorization." });
+                  }
+                },
+              }).then(({ value, recovery }) => {
+                const normalized = normalizeOutput(value, this.#limits, toolCallId);
+                return { ...normalized, content: [...normalized.content,
+                  ...(recovery ? [{ type: "json" as const, value: { ...recovery } }] : [])] };
+              })
+            : invoke(arguments_, signal).then((output) => normalizeOutput(output, this.#limits, toolCallId));
           void invocation.then(release, release);
           const normalized = await raceWithSignal(invocation, signal);
           executionResult = resultForExecution(
@@ -995,6 +1019,12 @@ export class BoundedToolExecutor<
               name,
               timedOut() ? "Tool execution timed out." : "Tool execution was cancelled.",
             );
+          } else if (error instanceof ToolRecoveryError) {
+            failureReason = "tool_execution_failed";
+            executionResult = result(toolCallId, name, [
+              { type: "text", text: error.failure.message },
+              { type: "json", value: { ...error.summary } },
+            ], true);
           } else if (error instanceof InvalidOutput) {
             failureReason = "invalid_tool_output";
             executionResult = errorResult(

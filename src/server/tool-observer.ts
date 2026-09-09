@@ -3,6 +3,7 @@ import type { ConversationEventStore } from "../conversation/event-store.js";
 import type { ResponseToolCallEvent } from "../protocol.js";
 import type { ApplicationToolActivityUpdate } from "../tools/executor.js";
 import { recordToolLifecycle } from "./tool-lifecycle.js";
+import { parseToolRecoverySummary, type ToolRecoverySummary } from "../tools/recovery.js";
 
 export interface HandrailAssistantToolObserver {
   /** Observe a host-owned approval inside an active tool without executing it again. */
@@ -25,6 +26,7 @@ export interface HandrailAssistantToolObserver {
   }, execute: (report: (update: ApplicationToolActivityUpdate) => Promise<void>) => Promise<{
     readonly value: T;
     readonly isError?: boolean;
+    readonly recovery?: ToolRecoverySummary;
   }>): Promise<T>;
 }
 
@@ -53,7 +55,7 @@ export function createToolActivityObserver(input: {
     },
     async observe<T>(location: Parameters<HandrailAssistantToolObserver["observe"]>[0], execute: (
       report: (update: ApplicationToolActivityUpdate) => Promise<void>,
-    ) => Promise<{ readonly value: T; readonly isError?: boolean }>): Promise<T> {
+    ) => Promise<{ readonly value: T; readonly isError?: boolean; readonly recovery?: ToolRecoverySummary }>): Promise<T> {
       location.signal.throwIfAborted();
       const { conversationId, turnId, call } = location;
       const identity = { turn_id: turnId as never, tool_call_id: call.tool_call_id as never };
@@ -64,7 +66,7 @@ export function createToolActivityObserver(input: {
       await recordToolLifecycle(input.events, conversationId, { ...identity, type: "tool_call.started" });
       const report = (update: ApplicationToolActivityUpdate) => input.report(conversationId, turnId, update);
       await report(location.activity ?? { summary: `Running ${call.name.replace(/[._-]+/gu, " ")}` });
-      let result: { readonly value: T; readonly isError?: boolean };
+      let result: { readonly value: T; readonly isError?: boolean; readonly recovery?: ToolRecoverySummary };
       try {
         location.signal.throwIfAborted();
         result = await execute(report);
@@ -74,8 +76,10 @@ export function createToolActivityObserver(input: {
           content: [{ type: "text", text: "Tool execution failed." }], is_error: true });
         throw cause;
       }
+      const recovery = parseToolRecoverySummary(result.recovery);
       await recordToolLifecycle(input.events, conversationId, { ...identity, type: "tool_call.result_recorded",
-        content: [{ type: "text", text: result.isError ? "Tool execution failed." : "Tool execution completed." }],
+        content: [{ type: "text", text: result.isError ? "Tool execution failed." : "Tool execution completed." },
+          ...(recovery ? [{ type: "json" as const, value: { ...recovery } }] : [])],
         is_error: result.isError ?? false });
       await report({ summary: result.isError ? "Continuing after a tool error" : "Preparing the next step" });
       return result.value;
