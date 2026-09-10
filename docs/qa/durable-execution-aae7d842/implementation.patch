@@ -1,0 +1,460 @@
+diff --git a/src/presence/assistant-activity.ts b/src/presence/assistant-activity.ts
+index 07470ac055d92b7349b083d5c226f53df816baf5..baf88b0ac88685843cfd46f1a3e888c11679dee7 100644
+--- a/src/presence/assistant-activity.ts
++++ b/src/presence/assistant-activity.ts
+@@ -45,7 +45,8 @@ export function createAssistantActivityTransport<TEvent, TRequest>(
+     return Object.freeze({ ...handle, observation });
+   };
+   return Object.freeze({ capabilities: options.delegate.capabilities,
+-    async startTurn(input: StartTurnInput<TRequest>) { const result = await options.delegate.startTurn(input);
++    async startTurn(input: StartTurnInput<TRequest>, context?: Parameters<typeof options.delegate.startTurn>[1]) {
++      const result = await options.delegate.startTurn(input, context);
+       return result.ok ? { ok: true as const, value: wrap(result.value) } : result; },
+     async resumeTurn(input: ResumeTurnInput) { const result = await options.delegate.resumeTurn(input);
+       if (!result.ok) return result;
+diff --git a/src/server/application.ts b/src/server/application.ts
+index b0553e088e7018fd929e3cb58dae15e30f7a08bb..136e9dabb30c0726d202e4cec6d6bd6e63f2b431 100644
+--- a/src/server/application.ts
++++ b/src/server/application.ts
+@@ -53,6 +53,7 @@ export {
+   type ApplicationTurnExecutionContext,
+   type ApplicationTurnTransportOptions,
+ } from "../transports/application-turn.js";
++export type { DurableTurnExecutionIdentity, TurnExecutionContext } from "../transports/types.js";
+ export {
+   createDurableApplicationTransport,
+   InMemoryDurableApplicationTurnStore,
+diff --git a/src/sync/durable-application-adapter.ts b/src/sync/durable-application-adapter.ts
+index fc39129c54d0c2b4f2051acc9ab45f7cfc786259..3b663c87432ba8e1bba72e742d1e48e467778328 100644
+--- a/src/sync/durable-application-adapter.ts
++++ b/src/sync/durable-application-adapter.ts
+@@ -53,7 +53,7 @@ export function qualifyDurableApplicationTurnStarts(
+ ): ConversationTransport<StreamEvent, ChatRequest> {
+   const qualified: ConversationTransport<StreamEvent, ChatRequest> = {
+     capabilities: transport.capabilities,
+-    async startTurn(input) {
++    async startTurn(input, context) {
+       try {
+         const replay = await replayConversation({ conversationId: input.conversationId as ConversationId,
+           eventStore, checkpointPolicy: false });
+@@ -83,7 +83,7 @@ export function qualifyDurableApplicationTurnStarts(
+         if (json(retainedAttachments) !== json(requestedAttachments)) {
+           throw new TypeError("The turn attachments do not match its saved user message.");
+         }
+-        return guardCanonicalTurnExecution(transport, eventStore).startTurn(input);
++        return guardCanonicalTurnExecution(transport, eventStore).startTurn(input, context);
+       } catch (error) {
+         return { ok: false as const, error: { code: "invalid_request" as const, retryable: false,
+           message: error instanceof Error ? error.message : "Canonical turn admission is invalid." } };
+@@ -105,7 +105,7 @@ export function guardCanonicalTurnExecution<TEvent, TRequest>(
+ ): ConversationTransport<TEvent, TRequest> {
+   return Object.freeze({
+     capabilities: transport.capabilities,
+-    async startTurn(input: Parameters<typeof transport.startTurn>[0]) {
++    async startTurn(input: Parameters<typeof transport.startTurn>[0], context?: Parameters<typeof transport.startTurn>[1]) {
+       try {
+         const replay = await replayConversation({ conversationId: input.conversationId as ConversationId,
+           eventStore, checkpointPolicy: false });
+@@ -123,7 +123,7 @@ export function guardCanonicalTurnExecution<TEvent, TRequest>(
+         return { ok: false as const, error: { code: "unavailable" as const, retryable: true,
+           message: "The saved turn could not be verified before execution." } };
+       }
+-      return transport.startTurn(input);
++      return transport.startTurn(input, context);
+     },
+     resumeTurn: (input: Parameters<typeof transport.resumeTurn>[0]) => transport.resumeTurn(input),
+   });
+diff --git a/src/transports/application-turn.ts b/src/transports/application-turn.ts
+index e38fd5b27f47ddc2cc906260958f13402aa8cace..21fda81194abcaf2ede00e92c1cf2ca36da211c0 100644
+--- a/src/transports/application-turn.ts
++++ b/src/transports/application-turn.ts
+@@ -1,8 +1,10 @@
+-import type { CancelTurnInput, ConversationTransport, StartTurnInput, TransportResult, TurnHandle,
+-  TurnObservation, TurnObservationResult } from "./types.js";
++import type { CancelTurnInput, ConversationTransport, DurableTurnExecutionIdentity, StartTurnInput, TransportResult, TurnHandle,
++  TurnExecutionContext, TurnObservation, TurnObservationResult } from "./types.js";
+ 
+ export interface ApplicationTurnExecutionContext<TEvent> {
+   readonly conversationId: string; readonly turnId: string; readonly mutationId: string;
++  /** Immutable claim snapshot; absent for standalone non-durable execution. */
++  readonly durableExecution?: DurableTurnExecutionIdentity;
+   readonly signal: AbortSignal;
+   emit(event: TEvent): void | Promise<void>;
+ }
+@@ -40,7 +42,7 @@ export function createApplicationTurnTransport<TEvent, TRequest>(
+         return { ok: true, value: { status: "cancellation_requested" } }; },
+     } }, documentInput: { supported: false }, attachmentUpload: { supported: false }, presence: { supported: false },
+     synchronization: { supported: false } },
+-    async startTurn(input: StartTurnInput<TRequest>): Promise<TransportResult<TurnHandle<TEvent>>> {
++    async startTurn(input: StartTurnInput<TRequest>, context?: TurnExecutionContext): Promise<TransportResult<TurnHandle<TEvent>>> {
+       const operationKey = key(input.conversationId, input.conversationTurnId);
+       if (active.has(operationKey)) return { ok: false, error: { code: "conflict", message: "The application turn is already running.", retryable: true } };
+       const controller = new AbortController(), events = queue<TEvent>(maximum); active.set(operationKey, controller);
+@@ -48,6 +50,9 @@ export function createApplicationTurnTransport<TEvent, TRequest>(
+       const result = new Promise<TurnObservationResult>((resolve) => { resolveResult = resolve; });
+       void Promise.resolve(options.execute(input.request, { conversationId: input.conversationId,
+         turnId: input.conversationTurnId, mutationId: input.mutationId, signal: controller.signal,
++        ...(context?.durableExecution === undefined ? {} : {
++          durableExecution: Object.freeze({ ...context.durableExecution }),
++        }),
+         emit: (event) => events.push(event) })).then((terminal) => { events.close(); resolveResult(terminal); },
+         (error: unknown) => { events.fail(error); resolveResult({ status: controller.signal.aborted ? "cancelled" : "failed",
+           checkpoint: { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null },
+diff --git a/src/transports/durable.ts b/src/transports/durable.ts
+index a8227b3d87acb2f259463df3561384b48290b47a..ed3377dd0e6f22fb253df7627bb41600459efb7f 100644
+--- a/src/transports/durable.ts
++++ b/src/transports/durable.ts
+@@ -315,7 +315,9 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
+         conversationId, turnId, attempt: claimed.record.attempt });
+       const started = await options.delegate.startTurn({ conversationId,
+         conversationTurnId: turnId as StartTurnInput<TRequest>["conversationTurnId"], mutationId: claimed.record.mutationId,
+-        idempotencyKey: claimed.record.idempotencyKey, request });
++        idempotencyKey: claimed.record.idempotencyKey, request }, Object.freeze({
++        durableExecution: Object.freeze({ conversationId, turnId, attempt }),
++      }));
+       if (!started.ok) { await settle(conversationId, turnId, { status: "failed", checkpoint: EMPTY_CHECKPOINT,
+         error: started.error }); return; }
+       await update(conversationId, turnId, (record) => {
+diff --git a/src/transports/types.ts b/src/transports/types.ts
+index 910944c04c1ff8ca08caee2f7a4ab6dc485571be..53710b6782122c0bc0b1709e4e385a9a88a95e66 100644
+--- a/src/transports/types.ts
++++ b/src/transports/types.ts
+@@ -79,6 +79,19 @@ export interface StartTurnInput<TRequest = unknown> {
+   readonly request: TRequest;
+ }
+ 
++/** Identity of one successfully claimed durable execution, scoped to its turn store. */
++export interface DurableTurnExecutionIdentity {
++  readonly conversationId: string;
++  readonly turnId: string;
++  /** One-based persisted claim ordinal; recovery claims a new attempt. */
++  readonly attempt: number;
++}
++
++/** Trusted in-process context. Never serialized as part of StartTurnInput or HTTP. */
++export interface TurnExecutionContext {
++  readonly durableExecution?: DurableTurnExecutionIdentity;
++}
++
+ export interface ResumeTurnInput {
+   readonly conversationId: string;
+   readonly turnId: string;
+@@ -194,6 +207,7 @@ export interface ConversationTransport<
+ 
+   startTurn(
+     input: StartTurnInput<TStartRequest>,
++    context?: TurnExecutionContext,
+   ): Promise<TransportResult<TurnHandle<TEvent>>>;
+ 
+   resumeTurn(
+diff --git a/test/application-turn-transport.test.ts b/test/application-turn-transport.test.ts
+index bf646a4752825d0915a1bb2fdf7b01562d021240..fda760da0c5f5344dbdc0320c8e44da078803fc1 100644
+--- a/test/application-turn-transport.test.ts
++++ b/test/application-turn-transport.test.ts
+@@ -6,6 +6,7 @@ describe("createApplicationTurnTransport", () => {
+   it("adapts application execution and cancels without owning replay", async () => {
+     const transport = createApplicationTurnTransport<{ text: string }, { text: string }>({
+       async execute(request, context) {
++        expect(context.durableExecution).toBeUndefined();
+         await context.emit({ text: request.text });
+         return { status: "completed", checkpoint: { lastAppliedEventId: "event-1",
+           lastAppliedCursor: "event-1", lastAppliedRevision: null } };
+diff --git a/test/durable-canonical-start.test.ts b/test/durable-canonical-start.test.ts
+index 762f93cf6ca9a67fe24508c4a82a0137f79e7ae6..2740e791b04ab77669f343bff9aca0307a2d3a28 100644
+--- a/test/durable-canonical-start.test.ts
++++ b/test/durable-canonical-start.test.ts
+@@ -82,6 +82,7 @@ it.each([999, 1000, 1166, 2001])("starts a follow-up after %s history events and
+     expect(await handle.value.observation.result).toMatchObject({ status: "completed" });
+   }
+   expect(start).toHaveBeenCalledOnce();
++  expect(start).toHaveBeenCalledWith(input, { durableExecution: { conversationId, turnId, attempt: 1 } });
+ });
+ 
+ it("admits a saved follow-up at PostgreSQL revision 1167 after a failed action", async () => {
+@@ -117,7 +118,7 @@ it("admits a saved follow-up at PostgreSQL revision 1167 after a failed action",
+       for await (const event of handle.value.observation.events) { void event; }
+       expect(await handle.value.observation.result).toMatchObject({ status: "completed" });
+     }
+-    expect(start).toHaveBeenCalledExactlyOnceWith(input);
++    expect(start).toHaveBeenCalledExactlyOnceWith(input, { durableExecution: { conversationId, turnId, attempt: 1 } });
+   } finally { await database.close(); }
+ }, 15000);
+ 
+diff --git a/docs/durable-execution-identity.md b/docs/durable-execution-identity.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..d3cf1bd3011a28e9e13df59670aeb33020e234d0
+--- /dev/null
++++ b/docs/durable-execution-identity.md
+@@ -0,0 +1,103 @@
++# Durable execution identity and usage attribution
++
++`createApplicationTurnTransport` exposes an optional
++`ApplicationTurnExecutionContext.durableExecution` snapshot:
++
++```ts
++interface DurableTurnExecutionIdentity {
++  readonly conversationId: string;
++  readonly turnId: string;
++  readonly attempt: number; // one-based persisted durable claim ordinal
++}
++```
++
++The tuple identifies one execution within the configured durable turn store.
++Namespace it with the existing authoritative tenant/project/environment/store
++scope when deriving cross-tenant receipt IDs. It is not a provider request ID.
++The initial successful claim has attempt 1; a recovery claim has attempt 2, etc.
++Claims that are cancelled or fail preparation may consume an ordinal without
++invoking a provider. Do not interpret this ordinal as a billable invocation count.
++
++The durable wrapper captures the existing persisted attempt after successful
++claim and dispatch validation. It passes a frozen snapshot in the optional second
++argument to `ConversationTransport.startTurn(input, context)`. The application
++adapter copies and freezes that identity for its execution callback. It never
++loads the latest turn record to attribute a callback: an old worker's late usage
++belongs to its original attempt, even after a replacement completes the turn.
++No allocator, persistence schema, lease policy, or retry policy is added.
++
++## Compatibility and adapter placement
++
++- `StartTurnInput`, request data, turn/mutation/idempotency IDs, HTTP payloads and
++  protocol versions are unchanged. The new argument is trusted server context,
++  separate from request data. The durable wrapper ignores incoming execution
++  context and constructs its own from its claim. Body or request fields named
++  `durableExecution`, `attempt` or `context` cannot override it.
++- Existing one-argument callers and delegates remain valid. Standalone application
++  execution has no `durableExecution` unless a trusted in-process caller supplies
++  context. Do not manufacture a durable attempt for standalone execution.
++- In-process forwarding wrappers must forward both arguments:
++  `startTurn: (input, context) => delegate.startTurn(input, context)`.
++  The SDK's `qualifyDurableApplicationTurnStarts`,
++  `guardCanonicalTurnExecution`, and `createAssistantActivityTransport` preserve
++  it. The high-level assistant's cancellation wrapper spreads the durable
++  transport without replacing `startTurn`.
++- HTTP gateway/client adapters intentionally do not transmit this server context.
++  A remote gateway or a custom one-argument wrapper between the durable wrapper
++  and application executor cannot deliver it; keep that execution path in-process
++  and update custom forwarding wrappers when adopting the seam.
++- Provider-specific/direct/managed transports may ignore this optional argument.
++  This change only supplies the application execution context; it does not add
++  provider usage capture to those implementations.
++- Retained terminal start/resume/recovery observes the existing result without a
++  new claim or execution. Disconnect remains an observation action. Authoritative
++  cancellation still uses the existing signal/capability path.
++
++The types are available from `@handrail/ai-assistant/server/application` and the
++existing root transport exports. No runtime symbol or package export path is added.
++
++## Mapping physical invocations into normalized receipt v1
++
++Spartan's scoped follow-up should capture this snapshot at executor entry and
++carry it into every provider operation. `executeWithRetry` already calls its
++operation with a one-based `RetryAttemptContext.attempt`, starting at 1 for each
++call to `executeWithRetry`. That callback ordinal describes a provider retry only
++when each operation callback performs exactly one provider invocation. Hidden
++provider-SDK retries or multiple invocations inside a callback need their own
++capture at the actual invocation boundary; the durable ordinal cannot detect them.
++
++A collision-safe identity recipe using only existing receipt fields is:
++
++1. Keep `conversation_id`, `turn_id`, `logical_request_id`, and mutation/idempotency
++   identities stable according to their existing logical-operation semantics.
++2. Within that logical request, retain the existing zero-based continuation index
++   (0 for the initial request; increment for tool/provider continuations).
++3. Derive `attempt.id` from a versioned, unambiguously encoded tuple of trusted
++   scope, logical request ID, durable execution tuple, continuation index and
++   retry callback ordinal. Hash the tuple to fit the existing identifier limits.
++   Set `attempt.index` to callback ordinal minus one. This is a local retry index;
++   it may repeat across continuations and recovery executions. The full ID carries
++   the disambiguating scope; do not invent an arithmetic flattened global ordinal.
++4. Derive `continuation.id` from that attempt ID and the continuation index, with
++   `continuation.index` set to the existing continuation index. Derive a stable
++   `usage_receipt_id` for that physical invocation. Receipt-write retries reuse
++   the exact same identity, start timestamp and captured evidence.
++
++For example, `(durable=1, continuation=0, retry=1)`, `(1,0,2)`, `(1,1,1)` and
++`(2,0,1)` are four different physical invocation identities. Their logical request
++can remain the same. A late callback for the first tuple stays `(1,0,1)` after the
++fourth tuple starts. Replaying its receipt write must deduplicate, while none of
++the other three receipts should collide. The ID recipe is follow-up guidance,
++not an SDK schema addition or a new allocator.
++
++Capture and await one durable usage write for each actual invocation outcome,
++including failures and late completion after cancellation; do not record only
++an aggregate after `executeWithRetry` returns. Keep capture-write failures outside
++provider retry classification so retrying persistence cannot invoke the provider
++again. Use the existing retry failure categories and distinguish non-retryable
++failures, retry exhaustion, cancellation and disconnection from successful work.
++Use `{ status: "unavailable" }` for absent quantity/cost evidence, preserving an
++explicit reported zero. Do not infer missing usage or cost from a successful
++terminal result. These behaviors, the exact host identity recipe, and awaited
++capture remain Spartan implementation work. Mills integration verification also
++remains outstanding; this SDK change does not qualify either consumer.
+diff --git a/test/durable-execution-identity.test.ts b/test/durable-execution-identity.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b35b2b7a0013423c23fe5bb7cffa909e58d6291
+--- /dev/null
++++ b/test/durable-execution-identity.test.ts
+@@ -0,0 +1,163 @@
++import { PGlite } from "@electric-sql/pglite";
++import { describe, expect, it, vi } from "vitest";
++import { PostgresAiPersistence, PostgresDurableApplicationTurnStore, type PostgresSqlClient } from "../src/postgres/index.js";
++import { createAssistantActivityTransport } from "../src/presence/assistant-activity.js";
++import { createInMemoryLivePresenceDelivery } from "../src/presence/live-delivery.js";
++import { createApplicationTurnTransport, type ApplicationTurnExecutionContext,
++  type ApplicationTurnTransportOptions } from "../src/transports/application-turn.js";
++import { createApplicationGateway, createApplicationGatewayTransport } from "../src/transports/application-gateway.js";
++import { createDurableApplicationTransport, InMemoryDurableApplicationTurnStore,
++  type DurableApplicationTurnStore } from "../src/transports/durable.js";
++import type { ConversationTransport, StartTurnInput, TurnObservation } from "../src/transports/types.js";
++
++type RequestData = { ref: string };
++const checkpoint = { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null };
++const input: StartTurnInput<RequestData> = { conversationId: "conversation-1", conversationTurnId: "turn-1" as never,
++  mutationId: "mutation-1", idempotencyKey: "start-1", request: { ref: "request-1" } };
++const identity = (attempt: number) => ({ conversationId: input.conversationId, turnId: input.conversationTurnId, attempt });
++function deferred() {
++  let resolve!: () => void;
++  const promise = new Promise<void>((done) => { resolve = done; });
++  return { promise, resolve };
++}
++async function drain(observation: TurnObservation<string>) {
++  const events = []; for await (const event of observation.events) events.push(event);
++  return { events, result: await observation.result };
++}
++function durable(store: DurableApplicationTurnStore<RequestData, string>, delegate: ConversationTransport<string, RequestData>,
++  workerId: string, now = Date.now) {
++  return createDurableApplicationTransport({ store, delegate, workerId, now, leaseMilliseconds: 1_000, pollMilliseconds: 25,
++    requestCodec: { encode: (request: RequestData) => request, decode: (request) => request, fingerprint: (request) => request.ref },
++    checkpointForEvent: () => checkpoint });
++}
++async function fixture(kind: "memory" | "postgres") {
++  if (kind === "memory") return { store: new InMemoryDurableApplicationTurnStore<RequestData, string>(), close: async () => {} };
++  const database = new PGlite();
++  const adapt = (db: Pick<PGlite, "query">): PostgresSqlClient => {
++    const client: PostgresSqlClient = {
++      async query<T extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) {
++        const result = await db.query<T>(sql, values ? [...values] : []);
++        return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
++      }, transaction: (operation) => operation(client),
++    };
++    return client;
++  };
++  const persistence = new PostgresAiPersistence({ query: adapt(database).query,
++    transaction: (operation) => database.transaction((tx) => operation(adapt(tx as unknown as Pick<PGlite, "query">))) });
++  await persistence.migrate();
++  return { store: new PostgresDurableApplicationTurnStore<RequestData, string>(persistence, "tenant-1"), close: () => database.close() };
++}
++
++describe("durable execution identity", () => {
++  it.each(["memory", "postgres"] as const)("retains the old claim after takeover and never re-executes terminal replay (%s)", async (kind) => {
++    const { store, close } = await fixture(kind);
++    const releaseOld = deferred(), oldFinished = deferred();
++    const contexts: ApplicationTurnExecutionContext<string>[] = [];
++    const delegatedInputs: StartTurnInput<RequestData>[] = [];
++    const lateIdentities: unknown[] = [];
++    let clock = 1_000;
++    const worker = (workerId: string, old: boolean) => {
++      const application = createApplicationTurnTransport<string, RequestData>({ async execute(_request, context) {
++        contexts.push(context);
++        if (old) {
++          await releaseOld.promise;
++          // This callback runs after a replacement has claimed and completed the turn.
++          lateIdentities.push(context.durableExecution);
++          oldFinished.resolve();
++        }
++        return { status: "completed", checkpoint };
++      } });
++      const activity = createAssistantActivityTransport({ delegate: application, delivery: createInMemoryLivePresenceDelivery(),
++        sessionId: (_conversation, turn) => `${workerId}-${turn}`, activityForEvent: () => null });
++      const delegate: ConversationTransport<string, RequestData> = { ...activity,
++        startTurn(value, context) { delegatedInputs.push(value); return activity.startTurn(value, context); } };
++      // The old process's clock is suspended, so its monitor cannot renew the expired lease.
++      return durable(store, delegate, workerId, () => old ? 1_000 : clock);
++    };
++    const first = worker("worker-a", true), second = worker("worker-b", false);
++    try {
++      // A trusted outer caller cannot override the durable allocator either.
++      const started = await first.startTurn(input, { durableExecution: identity(999) });
++      if (!started.ok) throw new Error(started.error.message);
++      await vi.waitFor(() => expect(contexts).toHaveLength(1));
++      expect(contexts[0]?.durableExecution).toEqual(identity(1));
++      expect(Object.isFrozen(contexts[0]?.durableExecution)).toBe(true);
++      expect(Reflect.set(contexts[0]!.durableExecution!, "attempt", 999)).toBe(false);
++      expect(await second.recoverTurn(input.conversationId, input.conversationTurnId))
++        .toMatchObject({ ok: true, value: { status: "already_running" } });
++      clock = 3_000;
++      expect(await second.recoverTurn(input.conversationId, input.conversationTurnId))
++        .toMatchObject({ ok: true, value: { status: "started" } });
++      await vi.waitFor(async () => expect((await store.load(input.conversationId, input.conversationTurnId))?.record.status).toBe("completed"));
++      expect(contexts.map((context) => context.durableExecution)).toEqual([identity(1), identity(2)]);
++      expect(delegatedInputs).toEqual([input, input]);
++      expect(contexts.map(({ conversationId, turnId, mutationId }) => ({ conversationId, turnId, mutationId })))
++        .toEqual([1, 2].map(() => ({ conversationId: input.conversationId, turnId: input.conversationTurnId, mutationId: input.mutationId })));
++      releaseOld.resolve(); await oldFinished.promise;
++      expect(lateIdentities).toEqual([identity(1)]);
++      expect((await drain(started.value.observation)).result.status).toBe("completed");
++      const replay = await second.startTurn(input);
++      if (!replay.ok) throw new Error(replay.error.message);
++      expect((await drain(replay.value.observation)).result.status).toBe("completed");
++      const resumed = await second.resumeTurn({ conversationId: input.conversationId, turnId: input.conversationTurnId, resumeFrom: checkpoint });
++      if (!resumed.ok) throw new Error(resumed.error.message);
++      expect((await drain(resumed.value)).result.status).toBe("completed");
++      expect(await second.recoverTurn(input.conversationId, input.conversationTurnId))
++        .toMatchObject({ ok: true, value: { status: "terminal" } });
++      expect(contexts).toHaveLength(2);
++      expect((await store.load(input.conversationId, input.conversationTurnId))?.record.attempt).toBe(2);
++    } finally {
++      releaseOld.resolve();
++      // Allow the old monitor/settlement to finish before closing its SQL boundary.
++      await new Promise((resolve) => setTimeout(resolve, 75));
++      await close();
++    }
++  }, 15_000);
++
++  it.each([false, true])("ignores forged HTTP identity fields (durable=%s)", async (useDurable) => {
++    const execute = vi.fn<ApplicationTurnTransportOptions<string, RequestData>["execute"]>(async () =>
++      ({ status: "completed" as const, checkpoint }));
++    const application = createApplicationTurnTransport({ execute });
++    const transport = useDurable ? durable(new InMemoryDurableApplicationTurnStore<RequestData, string>(), application, "worker") : application;
++    const gateway = createApplicationGateway({ transport, authorize: async () => ({ principalId: "user" }), checkpointForEvent: () => checkpoint });
++    const client = createApplicationGatewayTransport<string, RequestData>({ baseUrl: "https://app.test/ai",
++      fetch: (url, init) => gateway.handle(new Request(url, init)) });
++    const forged = { ...input, attempt: 999, durableExecution: identity(999), context: { durableExecution: identity(999) },
++      request: { ...input.request, durableExecution: identity(999) } };
++    const started = await client.startTurn(forged, { durableExecution: identity(999) });
++    if (!started.ok) throw new Error(started.error.message);
++    expect((await drain(started.value.observation)).result.status).toBe("completed");
++    expect(execute).toHaveBeenCalledOnce();
++    expect(execute.mock.calls[0]?.[1].durableExecution).toEqual(useDurable ? identity(1) : undefined);
++  });
++
++  it.each([false, true])("preserves cancellation and observation disconnect behavior (durable=%s)", async (useDurable) => {
++    let captured: ApplicationTurnExecutionContext<string> | undefined;
++    const execute = vi.fn(async (_request: RequestData, context: ApplicationTurnExecutionContext<string>) => {
++      captured = context;
++      await new Promise<void>((resolve) => context.signal.addEventListener("abort", () => resolve(), { once: true }));
++      return { status: "cancelled" as const, checkpoint };
++    });
++    const application = createApplicationTurnTransport({ execute });
++    const transport = useDurable ? durable(new InMemoryDurableApplicationTurnStore<RequestData, string>(), application, "worker") : application;
++    const started = await transport.startTurn(input);
++    if (!started.ok) throw new Error(started.error.message);
++    await vi.waitFor(() => expect(captured).toBeDefined());
++    started.value.observation.disconnect();
++    expect(captured?.signal.aborted).toBe(false);
++    const cancellation = transport.capabilities.authoritativeCancellation;
++    if (!cancellation.supported) throw new Error("Cancellation missing");
++    await cancellation.capability.cancelTurn({ conversationId: input.conversationId, turnId: input.conversationTurnId,
++      mutationId: "cancel-1", idempotencyKey: "cancel-1", reason: "user" });
++    if (useDurable) {
++      const resumed = await transport.resumeTurn({ conversationId: input.conversationId, turnId: input.conversationTurnId, resumeFrom: checkpoint });
++      if (!resumed.ok) throw new Error(resumed.error.message);
++      expect((await drain(resumed.value)).result.status).toBe("cancelled");
++    } else {
++      expect((await drain(started.value.observation)).result.status).toBe("cancelled");
++    }
++    expect(captured?.signal.aborted).toBe(true);
++    expect(captured?.durableExecution).toEqual(useDurable ? identity(1) : undefined);
++    expect(execute).toHaveBeenCalledOnce();
++  });
++});

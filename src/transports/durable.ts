@@ -315,7 +315,9 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         conversationId, turnId, attempt: claimed.record.attempt });
       const started = await options.delegate.startTurn({ conversationId,
         conversationTurnId: turnId as StartTurnInput<TRequest>["conversationTurnId"], mutationId: claimed.record.mutationId,
-        idempotencyKey: claimed.record.idempotencyKey, request });
+        idempotencyKey: claimed.record.idempotencyKey, request }, Object.freeze({
+        durableExecution: Object.freeze({ conversationId, turnId, attempt }),
+      }));
       if (!started.ok) { await settle(conversationId, turnId, { status: "failed", checkpoint: EMPTY_CHECKPOINT,
         error: started.error }); return; }
       await update(conversationId, turnId, (record) => {

@@ -53,6 +53,7 @@ export {
   type ApplicationTurnExecutionContext,
   type ApplicationTurnTransportOptions,
 } from "../transports/application-turn.js";
+export type { DurableTurnExecutionIdentity, TurnExecutionContext } from "../transports/types.js";
 export {
   createDurableApplicationTransport,
   InMemoryDurableApplicationTurnStore,

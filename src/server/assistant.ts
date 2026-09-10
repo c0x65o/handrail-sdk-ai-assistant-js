@@ -569,11 +569,6 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     return transport;
   };
   const catalog = Object.freeze({
-    capabilities: Object.freeze({
-      rename: { supported: true as const }, clear: { supported: true as const },
-      archive: { supported: true as const }, restore: { supported: true as const },
-      permanentDelete: { supported: true as const },
-    }),
     list: async (input: Parameters<ConversationCatalog<TContext>["list"]>[0]) => {
       const page = await catalogFor(input.authorizationContext).list(input);
       for (const descriptor of page.items) {
@@ -717,24 +712,34 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     if (options.titleGeneration !== undefined) return options.titleGeneration(input, context, signal);
     return titles.generate(input.conversationId, context);
   };
-  const gateway: ApplicationGateway = createApplicationGateway({
-    authorize: async (request, action) => options.authorize(request, action),
-    transportFor,
-    checkpointForEvent,
-    conversations: catalog as unknown as ConversationCatalog<TContext>,
-    approvals,
-    titleGeneration: { generate: generateTitle },
-    handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence },
-    capabilities: { activity: true, presence: true, synchronization: true,
-      attachments: options.attachmentUpload === false ? false : {
-        maximumFiles: 16, maximumBytesPerFile: options.persistence.attachmentLimits.maximumBytes,
-        acceptedMediaTypes: options.persistence.attachmentLimits.acceptedMediaTypes, uploadUrl: "attachments" },
-      documentInput: options.provider.metadata.capabilities.document_input.supported
-      ? options.provider.metadata.capabilities.document_input.capability : false,
-      assistant: { id: assistantId, version: HANDRAIL_ASSISTANT_VERSION,
-        provider: options.provider.metadata, toolLoopLimits: limits } },
-    ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
-  });
+  const gateway: ApplicationGateway = {
+    handle(request) {
+      // The gateway authenticates before reading capabilities. Keep that context
+      // local to this request, including when transport resolution overlaps.
+      let context: TContext;
+      return createApplicationGateway({
+        authorize: async (request, action) => {
+          context = await options.authorize(request, action);
+          return context;
+        },
+        transportFor,
+        checkpointForEvent,
+        conversations: { ...catalog, get capabilities() { return catalogFor(context).capabilities; } },
+        approvals,
+        titleGeneration: { generate: generateTitle },
+        handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence },
+        capabilities: { activity: true, presence: true, synchronization: true,
+          attachments: options.attachmentUpload === false ? false : {
+            maximumFiles: 16, maximumBytesPerFile: options.persistence.attachmentLimits.maximumBytes,
+            acceptedMediaTypes: options.persistence.attachmentLimits.acceptedMediaTypes, uploadUrl: "attachments" },
+          documentInput: options.provider.metadata.capabilities.document_input.supported
+          ? options.provider.metadata.capabilities.document_input.capability : false,
+          assistant: { id: assistantId, version: HANDRAIL_ASSISTANT_VERSION,
+            provider: options.provider.metadata, toolLoopLimits: limits } },
+        ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+      }).handle(request);
+    },
+  };
   const primeRecoveryContexts = async () => {
     const source = await options.recoveryContexts?.();
     if (source === undefined) return;

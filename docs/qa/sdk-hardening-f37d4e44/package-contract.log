@@ -1,0 +1,221 @@
+TAP version 13
+# > @handrail/ai-assistant@0.2.23 prepare
+# > npm run build
+# > @handrail/ai-assistant@0.2.23 build
+# > node -e "require('node:fs').rmSync('dist', { recursive: true, force: true })" && tsc -p tsconfig.build.json
+# npm notice
+# npm notice New major version of npm available! 10.9.8 -> 12.0.2
+# npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+# npm notice To update run: npm install -g npm@12.0.2
+# npm notice
+# Subtest: uses the canonical AI Assistant package identity
+ok 1 - uses the canonical AI Assistant package identity
+  ---
+  duration_ms: 1.150149
+  type: 'test'
+  ...
+# Subtest: git installs build the declared dist exports
+ok 2 - git installs build the declared dist exports
+  ---
+  duration_ms: 1.102562
+  type: 'test'
+  ...
+# Subtest: declares the React subpath as an optional peer boundary
+ok 3 - declares the React subpath as an optional peer boundary
+  ---
+  duration_ms: 0.776997
+  type: 'test'
+  ...
+# Subtest: keeps styled-only Markdown dependencies out of headless installs
+ok 4 - keeps styled-only Markdown dependencies out of headless installs
+  ---
+  duration_ms: 0.21014
+  type: 'test'
+  ...
+# Subtest: declares managed runtime support as an explicit trusted-server boundary
+ok 5 - declares managed runtime support as an explicit trusted-server boundary
+  ---
+  duration_ms: 0.119555
+  type: 'test'
+  ...
+# Subtest: declares request protection as an explicit trusted-server boundary
+ok 6 - declares request protection as an explicit trusted-server boundary
+  ---
+  duration_ms: 0.124477
+  type: 'test'
+  ...
+# Subtest: isolates the new client, UI, gateway, MCP, and Postgres boundaries
+ok 7 - isolates the new client, UI, gateway, MCP, and Postgres boundaries
+  ---
+  duration_ms: 0.179271
+  type: 'test'
+  ...
+# Subtest: ships the supported Spartan Aegis adapter as an isolated server boundary
+not ok 8 - ships the supported Spartan Aegis adapter as an isolated server boundary
+  ---
+  duration_ms: 4.853576
+  type: 'test'
+  location: '/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/package-contract.test.mjs:77:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    150 !== 75
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 75
+  actual: 150
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/package-contract.test.mjs:83:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: ships the supported Mills Family adapter as an isolated server boundary
+ok 9 - ships the supported Mills Family adapter as an isolated server boundary
+  ---
+  duration_ms: 1.806077
+  type: 'test'
+  ...
+# Subtest: keeps the React Native headless entry free of DOM and react-dom dependencies
+ok 10 - keeps the React Native headless entry free of DOM and react-dom dependencies
+  ---
+  duration_ms: 0.657282
+  type: 'test'
+  ...
+# Subtest: declares OpenAI as an explicit opt-in provider boundary
+ok 11 - declares OpenAI as an explicit opt-in provider boundary
+  ---
+  duration_ms: 0.192935
+  type: 'test'
+  ...
+# Subtest: declares OpenAI voice features as dedicated opt-in provider boundaries
+ok 12 - declares OpenAI voice features as dedicated opt-in provider boundaries
+  ---
+  duration_ms: 0.158231
+  type: 'test'
+  ...
+# Subtest: declares Anthropic as an explicit opt-in provider boundary
+ok 13 - declares Anthropic as an explicit opt-in provider boundary
+  ---
+  duration_ms: 0.086904
+  type: 'test'
+  ...
+# Subtest: declares Gemini as an explicit opt-in provider boundary
+ok 14 - declares Gemini as an explicit opt-in provider boundary
+  ---
+  duration_ms: 0.08367
+  type: 'test'
+  ...
+# Subtest: declares xAI as an explicit opt-in provider boundary
+ok 15 - declares xAI as an explicit opt-in provider boundary
+  ---
+  duration_ms: 0.087895
+  type: 'test'
+  ...
+# Subtest: resolves every public ESM export from the built package
+ok 16 - resolves every public ESM export from the built package
+  ---
+  duration_ms: 248.660717
+  type: 'test'
+  ...
+# Subtest: exports citation records and normalization from the built core entry
+ok 17 - exports citation records and normalization from the built core entry
+  ---
+  duration_ms: 0.297877
+  type: 'test'
+  ...
+# Subtest: exports bounded web search without an HTTP or provider dependency
+ok 18 - exports bounded web search without an HTTP or provider dependency
+  ---
+  duration_ms: 0.152355
+  type: 'test'
+  ...
+# Subtest: exports provider-neutral realtime voice without browser or provider code
+ok 19 - exports provider-neutral realtime voice without browser or provider code
+  ---
+  duration_ms: 0.171445
+  type: 'test'
+  ...
+# Subtest: exports the provider-neutral transcription contract from the built core entry
+ok 20 - exports the provider-neutral transcription contract from the built core entry
+  ---
+  duration_ms: 0.142262
+  type: 'test'
+  ...
+# Subtest: isolates OpenAI transcription to the existing opt-in provider entry
+ok 21 - isolates OpenAI transcription to the existing opt-in provider entry
+  ---
+  duration_ms: 0.236063
+  type: 'test'
+  ...
+# Subtest: isolates OpenAI realtime to its dedicated opt-in provider entry
+ok 22 - isolates OpenAI realtime to its dedicated opt-in provider entry
+  ---
+  duration_ms: 0.214936
+  type: 'test'
+  ...
+# Subtest: exports trusted-server protection only from its dedicated server entry
+ok 23 - exports trusted-server protection only from its dedicated server entry
+  ---
+  duration_ms: 0.166997
+  type: 'test'
+  ...
+# Subtest: exports browser audio capture only from the browser entry
+ok 24 - exports browser audio capture only from the browser entry
+  ---
+  duration_ms: 0.141609
+  type: 'test'
+  ...
+# Subtest: exports WebRTC voice control only from the browser entry
+ok 25 - exports WebRTC voice control only from the browser entry
+  ---
+  duration_ms: 0.141893
+  type: 'test'
+  ...
+# Subtest: imports the browser entry without browser audio globals
+ok 26 - imports the browser entry without browser audio globals
+  ---
+  duration_ms: 43.854352
+  type: 'test'
+  ...
+# Subtest: exports the approval proposal store contract from the built core entry
+ok 27 - exports the approval proposal store contract from the built core entry
+  ---
+  duration_ms: 0.294482
+  type: 'test'
+  ...
+# Subtest: exports the conversation catalog contract from the built core entry
+ok 28 - exports the conversation catalog contract from the built core entry
+  ---
+  duration_ms: 0.165223
+  type: 'test'
+  ...
+# Subtest: imports core and browser entries when React resolution is unavailable
+ok 29 - imports core and browser entries when React resolution is unavailable
+  ---
+  duration_ms: 173.0358
+  type: 'test'
+  ...
+# Subtest: core, client, server, and headless imports do not require Markdown peers
+ok 30 - core, client, server, and headless imports do not require Markdown peers
+  ---
+  duration_ms: 224.095098
+  type: 'test'
+  ...
+# Subtest: dry pack contains only intended package assets
+ok 31 - dry pack contains only intended package assets
+  ---
+  duration_ms: 10258.170575
+  type: 'test'
+  ...
+1..31
+# tests 31
+# suites 0
+# pass 30
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 11040.729467

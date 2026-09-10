@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CONVERSATION_RUNTIME_REGISTRY_LIMITS,
   ConversationRuntimeRegistry,
+  ConversationCatalogError,
+  createConversationRuntime,
+  InMemoryConversationEventStore,
   InMemoryConversationCatalog,
+  parseConversationEvent,
   parseConversationCatalogIdempotencyKey,
   parseConversationCatalogVersion,
   type ConversationCatalogAuthorizer,
@@ -12,6 +16,7 @@ import {
   type ConversationId,
   type ConversationRuntime,
   type ConversationRuntimeRegistryPolicy,
+  type ConversationTransport,
 } from "../src/index.js";
 
 interface Deferred<T> {
@@ -85,6 +90,133 @@ function expectRegistryCode(promise: Promise<unknown>, code: string) {
 }
 
 describe("ConversationRuntimeRegistry", () => {
+  it.each(["unavailable", "version_conflict"] as const)(
+    "keeps a usable live runtime after archive %s and cleans it up on retry", async (code) => {
+    const target = catalog();
+    await createConversation(target, "retry");
+    const eventStore = new InMemoryConversationEventStore();
+    const transport: ConversationTransport<unknown, unknown> = {
+      capabilities: {
+        authoritativeCancellation: { supported: false }, documentInput: { supported: false },
+        attachmentUpload: { supported: false }, presence: { supported: false }, synchronization: { supported: false },
+      },
+      async startTurn() { throw new Error("not used"); },
+      async resumeTurn() { throw new Error("not used"); },
+    };
+    const actual = await createConversationRuntime({ conversationId: id("retry"), clientId: "client" as never,
+      transport, eventStore });
+    const destroy = vi.fn(() => actual.destroy());
+    const live = { ...actual, destroy };
+    const createRuntime = vi.fn(() => live);
+    const registry = new ConversationRuntimeRegistry({ catalog: target, authorize: allowPolicy, createRuntime });
+    const input = { authorizationContext: "host", conversationId: id("retry"),
+      expectedVersion: version(1), idempotencyKey: key("archive-retry") };
+    await registry.open({ authorizationContext: input.authorizationContext, conversationId: input.conversationId });
+    if (code === "unavailable") {
+      vi.spyOn(target, "archive").mockRejectedValueOnce(new ConversationCatalogError(code, "archive"));
+    } else {
+      await target.rename({ ...input, title: "Updated elsewhere", idempotencyKey: key("rename-retry") });
+    }
+    try {
+      await expect(registry.archive(input)).rejects.toMatchObject({ code });
+      expect(destroy).not.toHaveBeenCalled();
+      expect(registry.getSnapshot()).toMatchObject({ liveCount: 1, lifecycleOperationCount: 0 });
+      expect(await registry.open({ authorizationContext: input.authorizationContext, conversationId: input.conversationId })).toBe(live);
+      expect(createRuntime).toHaveBeenCalledOnce();
+      // Exercise the actual runtime's observation and synchronization after rejection.
+      const observed = vi.fn();
+      const unsubscribe = live.observe(observed);
+      await eventStore.append({ conversationId: id("retry"), expectedRevision: null, events: [parseConversationEvent({
+        version: 1, event_id: "after-rejection", conversation_id: "retry", revision: 1,
+        occurred_at: "2026-09-09T00:00:00.000Z", actor: { type: "user", id: "host" },
+        source: { type: "runtime" }, payload: { type: "message.created", message_id: "still-usable",
+          role: "user", content: [{ type: "text", text: "Continue after failed archive" }] },
+      })] });
+      await live.synchronize!();
+      expect(live.getSnapshot().messages[0]?.message_id).toBe("still-usable");
+      expect(observed).toHaveBeenCalled();
+      unsubscribe();
+      await expect(registry.archive({ ...input, expectedVersion: version(code === "version_conflict" ? 2 : 1) }))
+        .resolves.toMatchObject({ descriptor: { lifecycle: "archived" } });
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(registry.getSnapshot().entryCount).toBe(0);
+    } finally { await registry.dispose(); }
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it.each(["success", "failure"] as const)(
+    "gates concurrent lifecycle operations and disposes a retained archive runtime on host %s", async (outcome) => {
+    const target = catalog();
+    await createConversation(target, "in-flight");
+    const live = runtime("in-flight");
+    const registry = new ConversationRuntimeRegistry({ catalog: target, authorize: allowPolicy,
+      createRuntime: () => live.value });
+    const input = { authorizationContext: "host", conversationId: id("in-flight"),
+      expectedVersion: version(1), idempotencyKey: key("archive-in-flight") };
+    await registry.open({ authorizationContext: input.authorizationContext, conversationId: input.conversationId });
+    const gate = deferred<void>();
+    const archive = target.archive.bind(target);
+    const host = vi.spyOn(target, "archive").mockImplementation(async (value) => { await gate.promise; return archive(value); });
+    const archiving = registry.archive(input);
+    const settled = outcome === "failure"
+      ? expect(archiving).rejects.toMatchObject({ code: "unavailable" })
+      : expect(archiving).resolves.toMatchObject({ descriptor: { lifecycle: "archived" } });
+    try {
+      await vi.waitFor(() => expect(host).toHaveBeenCalledOnce());
+      expect(live.destroy).not.toHaveBeenCalled();
+      await expectRegistryCode(registry.open({ authorizationContext: input.authorizationContext,
+        conversationId: input.conversationId }), "lifecycle_in_progress");
+      await expectRegistryCode(registry.release(input.conversationId), "lifecycle_in_progress");
+      for (const operation of ["archive", "clear", "restore", "permanentlyDelete"] as const) {
+        await expectRegistryCode(registry[operation](input), "lifecycle_in_progress");
+      }
+      expect(host).toHaveBeenCalledOnce();
+      const disposing = registry.dispose();
+      expect(registry.dispose()).toBe(disposing);
+      await disposing;
+      expect(live.destroy).toHaveBeenCalledOnce();
+    } finally {
+      if (outcome === "failure") gate.reject(new ConversationCatalogError("unavailable", "archive"));
+      else gate.resolve();
+      await settled;
+      await registry.dispose();
+    }
+    expect(live.destroy).toHaveBeenCalledOnce();
+    expect(registry.getSnapshot()).toMatchObject({ disposed: true, entryCount: 0 });
+    await expectRegistryCode(registry.open({ authorizationContext: input.authorizationContext, conversationId: input.conversationId }), "disposed");
+  });
+
+  it.each(["success", "failure"] as const)(
+    "invalidates a pending construction during archive %s and permits a fresh runtime", async (outcome) => {
+    const target = catalog();
+    await createConversation(target, "pending-archive");
+    const pending = deferred<ConversationRuntime<unknown>>();
+    const stale = runtime("stale");
+    const fresh = runtime("fresh");
+    const createRuntime = vi.fn().mockReturnValueOnce(pending.promise).mockReturnValueOnce(fresh.value);
+    const registry = new ConversationRuntimeRegistry({ catalog: target, authorize: allowPolicy, createRuntime });
+    const input = { authorizationContext: "host", conversationId: id("pending-archive") };
+    const opening = registry.open(input);
+    const invalidated = expectRegistryCode(opening, "construction_invalidated");
+    await vi.waitFor(() => expect(createRuntime).toHaveBeenCalledOnce());
+    if (outcome === "failure") {
+      vi.spyOn(target, "archive").mockRejectedValueOnce(new ConversationCatalogError("unavailable", "archive"));
+    }
+    try {
+      const archiving = registry.archive({ ...input, expectedVersion: version(1), idempotencyKey: key("pending-archive") });
+      if (outcome === "failure") await expect(archiving).rejects.toMatchObject({ code: "unavailable" });
+      else await expect(archiving).resolves.toMatchObject({ descriptor: { lifecycle: "archived" } });
+      expect(createRuntime.mock.calls[0]?.[0].signal.aborted).toBe(true);
+      pending.resolve(stale.value);
+      await invalidated;
+      expect(stale.destroy).toHaveBeenCalledOnce();
+      expect(await registry.open(input)).toBe(fresh.value);
+      expect(createRuntime).toHaveBeenCalledTimes(2);
+    } finally { pending.resolve(stale.value); await invalidated; await registry.dispose(); }
+    expect(stale.destroy).toHaveBeenCalledOnce();
+    expect(fresh.destroy).toHaveBeenCalledOnce();
+  });
+
   it("coalesces concurrent same-ID opens and isolates different IDs", async () => {
     const target = catalog();
     await Promise.all([

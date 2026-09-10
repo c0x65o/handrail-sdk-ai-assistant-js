@@ -132,6 +132,8 @@ type RegistryEntry<TRequest> =
   | {
       readonly kind: "lifecycle";
       readonly action: Exclude<ConversationRuntimeRegistryPolicyAction, "open">;
+      /** A live archive runtime stays usable until the host commits. */
+      readonly retainedRuntime?: ConversationRuntime<TRequest>;
     }
   | {
       readonly kind: "deleted";
@@ -321,7 +323,9 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
     const pending: Promise<unknown>[] = [];
     for (const entry of this.#entries.values()) {
       if (entry.kind === "live") this.#destroyRuntime(entry.runtime);
-      else if (entry.kind === "pending") {
+      else if (entry.kind === "lifecycle" && entry.retainedRuntime !== undefined) {
+        this.#destroyRuntime(entry.retainedRuntime);
+      } else if (entry.kind === "pending") {
         this.#invalidatePending(entry, "disposed");
         pending.push(entry.promise);
       }
@@ -375,13 +379,15 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
     const descriptor = parseConversationCatalogDescriptor(loaded.descriptor);
     await this.#authorizeRequest(action, input.authorizationContext, descriptor);
     this.#assertUsable();
-    const operation: RegistryEntry<TRequest> = { kind: "lifecycle", action };
     const existing = this.#entries.get(input.conversationId);
     if (existing?.kind === "deleted") this.#fail("permanently_deleted");
     if (existing?.kind === "lifecycle") this.#fail("lifecycle_in_progress");
     if (existing === undefined) this.#reserveEntryCapacity();
+    const retainedRuntime = action === "archive" && existing?.kind === "live" ? existing.runtime : undefined;
+    const operation: RegistryEntry<TRequest> = { kind: "lifecycle", action,
+      ...(retainedRuntime === undefined ? {} : { retainedRuntime }) };
     this.#entries.set(input.conversationId, operation);
-    if (existing?.kind === "live") this.#destroyRuntime(existing.runtime);
+    if (existing?.kind === "live" && retainedRuntime === undefined) this.#destroyRuntime(existing.runtime);
     else if (existing?.kind === "pending") {
       this.#invalidatePending(
         existing,
@@ -393,6 +399,7 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
 
     try {
       const result = await execute(input);
+      if (retainedRuntime !== undefined) this.#destroyRuntime(retainedRuntime);
       if (this.#entries.get(input.conversationId) === operation) {
         if (!this.#disposed && action === "permanent_delete") {
           this.#entries.set(input.conversationId, {
@@ -406,7 +413,11 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
       return result;
     } catch (error) {
       if (this.#entries.get(input.conversationId) === operation) {
-        this.#entries.delete(input.conversationId);
+        if (retainedRuntime !== undefined && !this.#disposed) {
+          this.#entries.set(input.conversationId, { kind: "live", runtime: retainedRuntime });
+        } else {
+          this.#entries.delete(input.conversationId);
+        }
       }
       throw error;
     }

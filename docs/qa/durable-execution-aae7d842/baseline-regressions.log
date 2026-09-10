@@ -1,0 +1,98 @@
+
+ RUN  v3.2.4 /opt/handrail/.handrail/codex-runs/e3aa47aa-5749-47e9-a6e1-b2741be30ff2/tmp/sdk-identity-baseline
+
+ ❯ test/durable-execution-identity.test.ts (6 tests | 4 failed) 2513ms
+   × durable execution identity > retains the old claim after takeover and never re-executes terminal replay (memory) 137ms
+     → expected undefined to deeply equal { …(3) }
+   × durable execution identity > retains the old claim after takeover and never re-executes terminal replay (postgres) 2253ms
+     → expected undefined to deeply equal { …(3) }
+   ✓ durable execution identity > ignores forged HTTP identity fields (durable=false) 15ms
+   × durable execution identity > ignores forged HTTP identity fields (durable=true) 27ms
+     → expected undefined to deeply equal { …(3) }
+   ✓ durable execution identity > preserves cancellation and observation disconnect behavior (durable=false) 1ms
+   × durable execution identity > preserves cancellation and observation disconnect behavior (durable=true) 78ms
+     → expected undefined to deeply equal { …(3) }
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/durable-execution-identity.test.ts > durable execution identity > retains the old claim after takeover and never re-executes terminal replay (memory)
+ FAIL  test/durable-execution-identity.test.ts > durable execution identity > retains the old claim after takeover and never re-executes terminal replay (postgres)
+AssertionError: expected undefined to deeply equal { …(3) }
+
+- Expected: 
+{
+  "attempt": 1,
+  "conversationId": "conversation-1",
+  "turnId": "turn-1",
+}
+
++ Received: 
+undefined
+
+ ❯ test/durable-execution-identity.test.ts:82:45
+     80|       if (!started.ok) throw new Error(started.error.message);
+     81|       await vi.waitFor(() => expect(contexts).toHaveLength(1));
+     82|       expect(contexts[0]?.durableExecution).toEqual(identity(1));
+       |                                             ^
+     83|       expect(Object.isFrozen(contexts[0]?.durableExecution)).toBe(true…
+     84|       expect(Reflect.set(contexts[0]!.durableExecution!, "attempt", 99…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  test/durable-execution-identity.test.ts > durable execution identity > ignores forged HTTP identity fields (durable=true)
+AssertionError: expected undefined to deeply equal { …(3) }
+
+- Expected: 
+{
+  "attempt": 1,
+  "conversationId": "conversation-1",
+  "turnId": "turn-1",
+}
+
++ Received: 
+undefined
+
+ ❯ test/durable-execution-identity.test.ts:130:57
+    128|     expect((await drain(started.value.observation)).result.status).toB…
+    129|     expect(execute).toHaveBeenCalledOnce();
+    130|     expect(execute.mock.calls[0]?.[1].durableExecution).toEqual(useDur…
+       |                                                         ^
+    131|   });
+    132| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  test/durable-execution-identity.test.ts > durable execution identity > preserves cancellation and observation disconnect behavior (durable=true)
+AssertionError: expected undefined to deeply equal { …(3) }
+
+- Expected: 
+{
+  "attempt": 1,
+  "conversationId": "conversation-1",
+  "turnId": "turn-1",
+}
+
++ Received: 
+undefined
+
+ ❯ test/durable-execution-identity.test.ts:159:40
+    157|     }
+    158|     expect(captured?.signal.aborted).toBe(true);
+    159|     expect(captured?.durableExecution).toEqual(useDurable ? identity(1…
+       |                                        ^
+    160|     expect(execute).toHaveBeenCalledOnce();
+    161|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 2 passed (6)
+   Start at  23:38:33
+   Duration  3.26s (transform 398ms, setup 0ms, collect 541ms, tests 2.51s, environment 0ms, prepare 52ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice

@@ -1,0 +1,27 @@
+git apply --check /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/docs/qa/durable-execution-aae7d842/combined.patch
+exit 0
+
+
+git apply /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/docs/qa/durable-execution-aae7d842/combined.patch
+exit 0
+
+
+byte-identical after application: docs/durable-execution-identity.md
+byte-identical after application: src/conversation/runtime-registry.ts
+byte-identical after application: src/presence/assistant-activity.ts
+byte-identical after application: src/server/application.ts
+byte-identical after application: src/server/assistant.ts
+byte-identical after application: src/sync/durable-application-adapter.ts
+byte-identical after application: src/transports/application-turn.ts
+byte-identical after application: src/transports/durable.ts
+byte-identical after application: src/transports/types.ts
+byte-identical after application: test/application-turn-transport.test.ts
+byte-identical after application: test/conversation-runtime-registry.test.ts
+byte-identical after application: test/durable-canonical-start.test.ts
+byte-identical after application: test/durable-execution-identity.test.ts
+byte-identical after application: test/server-assistant-catalog.test.tsx
+8c0b924637015b350971f446c5cde4061431a661f54b4f5c41d5acec5ffcbed4  implementation.patch
+5280ce72399b8f96ba2a1e0fe9fb6caf14d23ec2d68790ed7c76313178bb3089  combined.patch
+9543af9528ce4402c818bb5f00431ffced59c721f2f7399ce766af719b56dc94  files.sha256
+f5e0a0d3024b12cd15e75d24a986629cb04c27f8d9db64123ec45b14b2988b8c  git-blobs.txt
+da7249788ae9c748fa22c6f8919afbfe2c067bfa630d343dac0f092071a23d63  unchanged.sha256

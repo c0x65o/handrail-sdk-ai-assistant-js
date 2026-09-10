@@ -82,6 +82,7 @@ it.each([999, 1000, 1166, 2001])("starts a follow-up after %s history events and
     expect(await handle.value.observation.result).toMatchObject({ status: "completed" });
   }
   expect(start).toHaveBeenCalledOnce();
+  expect(start).toHaveBeenCalledWith(input, { durableExecution: { conversationId, turnId, attempt: 1 } });
 });
 
 it("admits a saved follow-up at PostgreSQL revision 1167 after a failed action", async () => {
@@ -117,7 +118,7 @@ it("admits a saved follow-up at PostgreSQL revision 1167 after a failed action",
       for await (const event of handle.value.observation.events) { void event; }
       expect(await handle.value.observation.result).toMatchObject({ status: "completed" });
     }
-    expect(start).toHaveBeenCalledExactlyOnceWith(input);
+    expect(start).toHaveBeenCalledExactlyOnceWith(input, { durableExecution: { conversationId, turnId, attempt: 1 } });
   } finally { await database.close(); }
 }, 15000);
 

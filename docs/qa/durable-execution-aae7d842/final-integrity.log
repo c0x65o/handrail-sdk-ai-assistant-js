@@ -1,0 +1,56 @@
+docs/durable-execution-identity.md: OK
+src/conversation/runtime-registry.ts: OK
+src/presence/assistant-activity.ts: OK
+src/server/application.ts: OK
+src/server/assistant.ts: OK
+src/sync/durable-application-adapter.ts: OK
+src/transports/application-turn.ts: OK
+src/transports/durable.ts: OK
+src/transports/types.ts: OK
+test/application-turn-transport.test.ts: OK
+test/conversation-runtime-registry.test.ts: OK
+test/durable-canonical-start.test.ts: OK
+test/durable-execution-identity.test.ts: OK
+test/server-assistant-catalog.test.tsx: OK
+src/transports/application-gateway.ts: OK
+src/server/openai-responses.ts: OK
+src/tools/executor.ts: OK
+src/adapters/spartan-aegis.ts: OK
+src/retry.ts: OK
+src/usage.ts: OK
+src/postgres/index.ts: OK
+package.json: OK
+package-lock.json: OK
+8c0b924637015b350971f446c5cde4061431a661f54b4f5c41d5acec5ffcbed4  docs/qa/durable-execution-aae7d842/implementation.patch
+5280ce72399b8f96ba2a1e0fe9fb6caf14d23ec2d68790ed7c76313178bb3089  docs/qa/durable-execution-aae7d842/combined.patch
+397d0ea8f96ce51e9a03098db9b02a63979b3d6ee21c10c9ebba4cc6e920c3e0  docs/qa/sdk-hardening-f37d4e44/implementation.patch
+ src/conversation/runtime-registry.ts       |  19 ++++-
+ src/presence/assistant-activity.ts         |   3 +-
+ src/server/application.ts                  |   1 +
+ src/server/assistant.ts                    |  51 ++++++-----
+ src/sync/durable-application-adapter.ts    |   8 +-
+ src/transports/application-turn.ts         |  11 ++-
+ src/transports/durable.ts                  |   4 +-
+ src/transports/types.ts                    |  14 +++
+ test/application-turn-transport.test.ts    |   1 +
+ test/conversation-runtime-registry.test.ts | 132 +++++++++++++++++++++++++++++
+ test/durable-canonical-start.test.ts       |   3 +-
+ 11 files changed, 210 insertions(+), 37 deletions(-)
+ M src/conversation/runtime-registry.ts
+ M src/presence/assistant-activity.ts
+ M src/server/application.ts
+ M src/server/assistant.ts
+ M src/sync/durable-application-adapter.ts
+ M src/transports/application-turn.ts
+ M src/transports/durable.ts
+ M src/transports/types.ts
+ M test/application-turn-transport.test.ts
+ M test/conversation-runtime-registry.test.ts
+ M test/durable-canonical-start.test.ts
+?? docs/durable-execution-identity.md
+?? docs/qa/durable-execution-aae7d842/
+?? docs/qa/sdk-hardening-f37d4e44/
+?? test/durable-execution-identity.test.ts
+?? test/server-assistant-catalog.test.tsx
+4e2d91d9535be8529289214817464e6bdcc650df
+4e2d91d9535be8529289214817464e6bdcc650df	refs/heads/main

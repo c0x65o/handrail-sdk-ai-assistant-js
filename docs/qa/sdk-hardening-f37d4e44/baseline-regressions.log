@@ -1,0 +1,171 @@
+
+ RUN  v3.2.4 /opt/handrail/.handrail/codex-runs/5286739c-5900-4991-96f2-a35730a908fd/tmp/sdk-hardening-baseline
+
+ ❯ test/conversation-runtime-registry.test.ts (15 tests | 4 failed) 393ms
+   × ConversationRuntimeRegistry > keeps a usable live runtime after archive unavailable and cleans it up on retry 14ms
+     → expected "spy" to not be called at all, but actually been called 1 times
+
+Received: 
+
+  1st spy call:
+
+    Array []
+
+
+Number of calls: 1
+
+   × ConversationRuntimeRegistry > keeps a usable live runtime after archive version_conflict and cleans it up on retry 2ms
+     → expected "spy" to not be called at all, but actually been called 1 times
+
+Received: 
+
+  1st spy call:
+
+    Array []
+
+
+Number of calls: 1
+
+   × ConversationRuntimeRegistry > gates concurrent lifecycle operations and disposes a retained archive runtime on host success 53ms
+     → expected "spy" to not be called at all, but actually been called 1 times
+
+Received: 
+
+  1st spy call:
+
+    Array []
+
+
+Number of calls: 1
+
+   × ConversationRuntimeRegistry > gates concurrent lifecycle operations and disposes a retained archive runtime on host failure 52ms
+     → expected "spy" to not be called at all, but actually been called 1 times
+
+Received: 
+
+  1st spy call:
+
+    Array []
+
+
+Number of calls: 1
+
+   ✓ ConversationRuntimeRegistry > invalidates a pending construction during archive success and permits a fresh runtime 53ms
+   ✓ ConversationRuntimeRegistry > invalidates a pending construction during archive failure and permits a fresh runtime 52ms
+   ✓ ConversationRuntimeRegistry > coalesces concurrent same-ID opens and isolates different IDs 52ms
+   ✓ ConversationRuntimeRegistry > removes failed construction so a later open can retry 1ms
+   ✓ ConversationRuntimeRegistry > releases live and pending runtimes without deleting catalog identity 2ms
+   ✓ ConversationRuntimeRegistry > clears without tombstoning and constructs a fresh runtime afterward 1ms
+   ✓ ConversationRuntimeRegistry > uses supplied policy for archived opens and restore 4ms
+   ✓ ConversationRuntimeRegistry > tombstones permanent deletion and destroys a late stale construction 52ms
+   ✓ ConversationRuntimeRegistry > disposes live and late runtimes exactly once and rejects further use 1ms
+   ✓ ConversationRuntimeRegistry > enforces construction and retained-entry bounds without unbounded queues 51ms
+   ✓ ConversationRuntimeRegistry > validates every configurable limit 1ms
+ ❯ test/server-assistant-catalog.test.tsx (2 tests | 1 failed) 27ms
+   × assistant host catalog negotiation > isolates concurrent authenticated negotiations and refreshes actions and reasons for the same identity 24ms
+     → expected { rename: { supported: true }, …(4) } to deeply equal { …(5) }
+   ✓ assistant host catalog negotiation > preserves supported default Postgres catalog negotiation 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/conversation-runtime-registry.test.ts > ConversationRuntimeRegistry > keeps a usable live runtime after archive unavailable and cleans it up on retry
+ FAIL  test/conversation-runtime-registry.test.ts > ConversationRuntimeRegistry > keeps a usable live runtime after archive version_conflict and cleans it up on retry
+AssertionError: expected "spy" to not be called at all, but actually been called 1 times
+
+Received: 
+
+  1st spy call:
+
+    Array []
+
+
+Number of calls: 1
+
+ ❯ test/conversation-runtime-registry.test.ts:122:27
+    120|     try {
+    121|       await expect(registry.archive(input)).rejects.toMatchObject({ co…
+    122|       expect(destroy).not.toHaveBeenCalled();
+       |                           ^
+    123|       expect(registry.getSnapshot()).toMatchObject({ liveCount: 1, lif…
+    124|       expect(await registry.open({ authorizationContext: input.authori…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  test/conversation-runtime-registry.test.ts > ConversationRuntimeRegistry > gates concurrent lifecycle operations and disposes a retained archive runtime on host success
+ FAIL  test/conversation-runtime-registry.test.ts > ConversationRuntimeRegistry > gates concurrent lifecycle operations and disposes a retained archive runtime on host failure
+AssertionError: expected "spy" to not be called at all, but actually been called 1 times
+
+Received: 
+
+  1st spy call:
+
+    Array []
+
+
+Number of calls: 1
+
+ ❯ test/conversation-runtime-registry.test.ts:166:32
+    164|     try {
+    165|       await vi.waitFor(() => expect(host).toHaveBeenCalledOnce());
+    166|       expect(live.destroy).not.toHaveBeenCalled();
+       |                                ^
+    167|       await expectRegistryCode(registry.open({ authorizationContext: i…
+    168|         conversationId: input.conversationId }), "lifecycle_in_progres…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  test/server-assistant-catalog.test.tsx > assistant host catalog negotiation > isolates concurrent authenticated negotiations and refreshes actions and reasons for the same identity
+AssertionError: expected { rename: { supported: true }, …(4) } to deeply equal { …(5) }
+
+- Expected
++ Received
+
+  {
+    "archive": {
+-     "reason": "policy_disabled",
+-     "supported": false,
++     "supported": true,
+    },
+    "clear": {
+-     "reason": "storage_limitation",
+-     "supported": false,
++     "supported": true,
+    },
+    "permanentDelete": {
+-     "reason": "policy_disabled",
+-     "supported": false,
++     "supported": true,
+    },
+    "rename": {
+-     "reason": "not_implemented",
+-     "supported": false,
++     "supported": true,
+    },
+    "restore": {
+-     "reason": "not_implemented",
+-     "supported": false,
++     "supported": true,
+    },
+  }
+
+ ❯ test/server-assistant-catalog.test.tsx:103:60
+    101|     try {
+    102|       expect(editor.catalog.capabilities).toEqual(supported);
+    103|       expect(reader.capabilities.resources?.conversations).toEqual(uns…
+       |                                                            ^
+    104|       expect(reader.catalog.capabilities).toEqual(unsupported);
+    105|       // The existing client and UI consume the actual negotiated capa…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  5 failed | 12 passed (17)
+   Start at  23:06:44
+   Duration  2.72s (transform 1.26s, setup 0ms, collect 1.87s, tests 420ms, environment 0ms, prepare 113ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice

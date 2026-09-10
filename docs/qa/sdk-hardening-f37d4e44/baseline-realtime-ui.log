@@ -1,0 +1,249 @@
+
+ RUN  v3.2.4 /opt/handrail/.handrail/codex-runs/5286739c-5900-4991-96f2-a35730a908fd/tmp/sdk-hardening-baseline
+
+ ❯ test/react-realtime-workspace.test.tsx (2 tests | 1 failed) 143ms
+   × shows background voice activity in the collapsed picker without changing text status or reading voice 136ms
+     → Unable to find an accessible element with the role "button" and name `/two idle 1 voice call with unread results/`
+
+Here are the accessible roles:
+
+  group:
+
+  Name "":
+  [36m<details[39m
+    [33mopen[39m=[32m""[39m
+  [36m/>[39m
+
+  --------------------------------------------------
+  list:
+
+  Name "Open conversations":
+  [36m<ul[39m
+    [33maria-label[39m=[32m"Open conversations"[39m
+  [36m/>[39m
+
+  --------------------------------------------------
+  listitem:
+
+  Name "":
+  [36m<li />[39m
+
+  Name "":
+  [36m<li />[39m
+
+  --------------------------------------------------
+  button:
+
+  Name "one 1 voice call active":
+  [36m<button[39m
+    [33maria-current[39m=[32m"true"[39m
+    [33mdata-turn-status[39m=[32m"idle"[39m
+    [33mtype[39m=[32m"button"[39m
+  [36m/>[39m
+
+  Name "two 1 voice call with unread results":
+  [36m<button[39m
+    [33mdata-turn-status[39m=[32m"idle"[39m
+    [33mtype[39m=[32m"button"[39m
+  [36m/>[39m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"hr-chat__workspace-picker"[39m
+    [36m>[39m
+      [36m<details[39m
+        [33mopen[39m=[32m""[39m
+      [36m>[39m
+        [36m<summary>[39m
+          [0mThreads[0m
+          [36m<span[39m
+            [33maria-live[39m=[32m"polite"[39m
+            [33mclass[39m=[32m"hr-chat__voice-activity"[39m
+          [36m>[39m
+            [0m1 voice call active · 1 voice call with unread results[0m
+          [36m</span>[39m
+        [36m</summary>[39m
+        [36m<ul[39m
+          [33maria-label[39m=[32m"Open conversations"[39m
+        [36m>[39m
+          [36m<li>[39m
+            [36m<button[39m
+              [33maria-current[39m=[32m"true"[39m
+              [33mdata-turn-status[39m=[32m"idle"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<span>[39m
+                [0mone[0m
+              [36m</span>[39m
+              [36m<small />[39m
+              [36m<span[39m
+                [33maria-live[39m=[32m"polite"[39m
+                [33mclass[39m=[32m"hr-chat__voice-activity"[39m
+              [36m>[39m
+                [0m1 voice call active[0m
+              [36m</span>[39m
+            [36m</button>[39m
+          [36m</li>[39m
+          [36m<li>[39m
+            [36m<button[39m
+              [33mdata-turn-status[39m=[32m"idle"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<span>[39m
+                [0mtwo[0m
+              [36m</span>[39m
+              [36m<small />[39m
+              [36m<span[39m
+                [33maria-live[39m=[32m"polite"[39m
+                [33mclass[39m=[32m"hr-chat__voice-activity"[39m
+              [36m>[39m
+                [0m1 voice call with unread results[0m
+              [36m</span>[39m
+            [36m</button>[39m
+          [36m</li>[39m
+        [36m</ul>[39m
+      [36m</details>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+   ✓ offers headless state and allows hosts to hide or replace the default summary 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/react-realtime-workspace.test.tsx > shows background voice activity in the collapsed picker without changing text status or reading voice
+TestingLibraryElementError: Unable to find an accessible element with the role "button" and name `/two idle 1 voice call with unread results/`
+
+Here are the accessible roles:
+
+  group:
+
+  Name "":
+  [36m<details[39m
+    [33mopen[39m=[32m""[39m
+  [36m/>[39m
+
+  --------------------------------------------------
+  list:
+
+  Name "Open conversations":
+  [36m<ul[39m
+    [33maria-label[39m=[32m"Open conversations"[39m
+  [36m/>[39m
+
+  --------------------------------------------------
+  listitem:
+
+  Name "":
+  [36m<li />[39m
+
+  Name "":
+  [36m<li />[39m
+
+  --------------------------------------------------
+  button:
+
+  Name "one 1 voice call active":
+  [36m<button[39m
+    [33maria-current[39m=[32m"true"[39m
+    [33mdata-turn-status[39m=[32m"idle"[39m
+    [33mtype[39m=[32m"button"[39m
+  [36m/>[39m
+
+  Name "two 1 voice call with unread results":
+  [36m<button[39m
+    [33mdata-turn-status[39m=[32m"idle"[39m
+    [33mtype[39m=[32m"button"[39m
+  [36m/>[39m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"hr-chat__workspace-picker"[39m
+    [36m>[39m
+      [36m<details[39m
+        [33mopen[39m=[32m""[39m
+      [36m>[39m
+        [36m<summary>[39m
+          [0mThreads[0m
+          [36m<span[39m
+            [33maria-live[39m=[32m"polite"[39m
+            [33mclass[39m=[32m"hr-chat__voice-activity"[39m
+          [36m>[39m
+            [0m1 voice call active · 1 voice call with unread results[0m
+          [36m</span>[39m
+        [36m</summary>[39m
+        [36m<ul[39m
+          [33maria-label[39m=[32m"Open conversations"[39m
+        [36m>[39m
+          [36m<li>[39m
+            [36m<button[39m
+              [33maria-current[39m=[32m"true"[39m
+              [33mdata-turn-status[39m=[32m"idle"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<span>[39m
+                [0mone[0m
+              [36m</span>[39m
+              [36m<small />[39m
+              [36m<span[39m
+                [33maria-live[39m=[32m"polite"[39m
+                [33mclass[39m=[32m"hr-chat__voice-activity"[39m
+              [36m>[39m
+                [0m1 voice call active[0m
+              [36m</span>[39m
+            [36m</button>[39m
+          [36m</li>[39m
+          [36m<li>[39m
+            [36m<button[39m
+              [33mdata-turn-status[39m=[32m"idle"[39m
+              [33mtype[39m=[32m"button"[39m
+            [36m>[39m
+              [36m<span>[39m
+                [0mtwo[0m
+              [36m</span>[39m
+              [36m<small />[39m
+              [36m<span[39m
+                [33maria-live[39m=[32m"polite"[39m
+                [33mclass[39m=[32m"hr-chat__voice-activity"[39m
+              [36m>[39m
+                [0m1 voice call with unread results[0m
+              [36m</span>[39m
+            [36m</button>[39m
+          [36m</li>[39m
+        [36m</ul>[39m
+      [36m</details>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ Object.getElementError ../../../../../repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../../../../../repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../../../../../repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../../../../../repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ test/react-realtime-workspace.test.tsx:27:27
+     25|     expect(view.container.querySelector("details")!.open).toBe(false);
+     26|     fireEvent.click(view.container.querySelector("summary")!);
+     27|     const button = screen.getByRole("button", { name: /two idle 1 voic…
+       |                           ^
+     28|     expect(button.getAttribute("data-turn-status")).toBe("idle");
+     29|     fireEvent.click(button);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  23:07:51
+   Duration  1.60s (transform 613ms, setup 0ms, collect 950ms, tests 143ms, environment 309ms, prepare 56ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice

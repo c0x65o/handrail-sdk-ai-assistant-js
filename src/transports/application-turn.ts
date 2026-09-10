@@ -1,8 +1,10 @@
-import type { CancelTurnInput, ConversationTransport, StartTurnInput, TransportResult, TurnHandle,
-  TurnObservation, TurnObservationResult } from "./types.js";
+import type { CancelTurnInput, ConversationTransport, DurableTurnExecutionIdentity, StartTurnInput, TransportResult, TurnHandle,
+  TurnExecutionContext, TurnObservation, TurnObservationResult } from "./types.js";
 
 export interface ApplicationTurnExecutionContext<TEvent> {
   readonly conversationId: string; readonly turnId: string; readonly mutationId: string;
+  /** Immutable claim snapshot; absent for standalone non-durable execution. */
+  readonly durableExecution?: DurableTurnExecutionIdentity;
   readonly signal: AbortSignal;
   emit(event: TEvent): void | Promise<void>;
 }
@@ -40,7 +42,7 @@ export function createApplicationTurnTransport<TEvent, TRequest>(
         return { ok: true, value: { status: "cancellation_requested" } }; },
     } }, documentInput: { supported: false }, attachmentUpload: { supported: false }, presence: { supported: false },
     synchronization: { supported: false } },
-    async startTurn(input: StartTurnInput<TRequest>): Promise<TransportResult<TurnHandle<TEvent>>> {
+    async startTurn(input: StartTurnInput<TRequest>, context?: TurnExecutionContext): Promise<TransportResult<TurnHandle<TEvent>>> {
       const operationKey = key(input.conversationId, input.conversationTurnId);
       if (active.has(operationKey)) return { ok: false, error: { code: "conflict", message: "The application turn is already running.", retryable: true } };
       const controller = new AbortController(), events = queue<TEvent>(maximum); active.set(operationKey, controller);
@@ -48,6 +50,9 @@ export function createApplicationTurnTransport<TEvent, TRequest>(
       const result = new Promise<TurnObservationResult>((resolve) => { resolveResult = resolve; });
       void Promise.resolve(options.execute(input.request, { conversationId: input.conversationId,
         turnId: input.conversationTurnId, mutationId: input.mutationId, signal: controller.signal,
+        ...(context?.durableExecution === undefined ? {} : {
+          durableExecution: Object.freeze({ ...context.durableExecution }),
+        }),
         emit: (event) => events.push(event) })).then((terminal) => { events.close(); resolveResult(terminal); },
         (error: unknown) => { events.fail(error); resolveResult({ status: controller.signal.aborted ? "cancelled" : "failed",
           checkpoint: { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null },

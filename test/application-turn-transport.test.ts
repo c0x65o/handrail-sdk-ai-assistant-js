@@ -6,6 +6,7 @@ describe("createApplicationTurnTransport", () => {
   it("adapts application execution and cancels without owning replay", async () => {
     const transport = createApplicationTurnTransport<{ text: string }, { text: string }>({
       async execute(request, context) {
+        expect(context.durableExecution).toBeUndefined();
         await context.emit({ text: request.text });
         return { status: "completed", checkpoint: { lastAppliedEventId: "event-1",
           lastAppliedCursor: "event-1", lastAppliedRevision: null } };

@@ -79,6 +79,19 @@ export interface StartTurnInput<TRequest = unknown> {
   readonly request: TRequest;
 }
 
+/** Identity of one successfully claimed durable execution, scoped to its turn store. */
+export interface DurableTurnExecutionIdentity {
+  readonly conversationId: string;
+  readonly turnId: string;
+  /** One-based persisted claim ordinal; recovery claims a new attempt. */
+  readonly attempt: number;
+}
+
+/** Trusted in-process context. Never serialized as part of StartTurnInput or HTTP. */
+export interface TurnExecutionContext {
+  readonly durableExecution?: DurableTurnExecutionIdentity;
+}
+
 export interface ResumeTurnInput {
   readonly conversationId: string;
   readonly turnId: string;
@@ -194,6 +207,7 @@ export interface ConversationTransport<
 
   startTurn(
     input: StartTurnInput<TStartRequest>,
+    context?: TurnExecutionContext,
   ): Promise<TransportResult<TurnHandle<TEvent>>>;
 
   resumeTurn(

@@ -53,7 +53,7 @@ export function qualifyDurableApplicationTurnStarts(
 ): ConversationTransport<StreamEvent, ChatRequest> {
   const qualified: ConversationTransport<StreamEvent, ChatRequest> = {
     capabilities: transport.capabilities,
-    async startTurn(input) {
+    async startTurn(input, context) {
       try {
         const replay = await replayConversation({ conversationId: input.conversationId as ConversationId,
           eventStore, checkpointPolicy: false });
@@ -83,7 +83,7 @@ export function qualifyDurableApplicationTurnStarts(
         if (json(retainedAttachments) !== json(requestedAttachments)) {
           throw new TypeError("The turn attachments do not match its saved user message.");
         }
-        return guardCanonicalTurnExecution(transport, eventStore).startTurn(input);
+        return guardCanonicalTurnExecution(transport, eventStore).startTurn(input, context);
       } catch (error) {
         return { ok: false as const, error: { code: "invalid_request" as const, retryable: false,
           message: error instanceof Error ? error.message : "Canonical turn admission is invalid." } };
@@ -105,7 +105,7 @@ export function guardCanonicalTurnExecution<TEvent, TRequest>(
 ): ConversationTransport<TEvent, TRequest> {
   return Object.freeze({
     capabilities: transport.capabilities,
-    async startTurn(input: Parameters<typeof transport.startTurn>[0]) {
+    async startTurn(input: Parameters<typeof transport.startTurn>[0], context?: Parameters<typeof transport.startTurn>[1]) {
       try {
         const replay = await replayConversation({ conversationId: input.conversationId as ConversationId,
           eventStore, checkpointPolicy: false });
@@ -123,7 +123,7 @@ export function guardCanonicalTurnExecution<TEvent, TRequest>(
         return { ok: false as const, error: { code: "unavailable" as const, retryable: true,
           message: "The saved turn could not be verified before execution." } };
       }
-      return transport.startTurn(input);
+      return transport.startTurn(input, context);
     },
     resumeTurn: (input: Parameters<typeof transport.resumeTurn>[0]) => transport.resumeTurn(input),
   });

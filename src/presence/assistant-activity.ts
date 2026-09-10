@@ -45,7 +45,8 @@ export function createAssistantActivityTransport<TEvent, TRequest>(
     return Object.freeze({ ...handle, observation });
   };
   return Object.freeze({ capabilities: options.delegate.capabilities,
-    async startTurn(input: StartTurnInput<TRequest>) { const result = await options.delegate.startTurn(input);
+    async startTurn(input: StartTurnInput<TRequest>, context?: Parameters<typeof options.delegate.startTurn>[1]) {
+      const result = await options.delegate.startTurn(input, context);
       return result.ok ? { ok: true as const, value: wrap(result.value) } : result; },
     async resumeTurn(input: ResumeTurnInput) { const result = await options.delegate.resumeTurn(input);
       if (!result.ok) return result;

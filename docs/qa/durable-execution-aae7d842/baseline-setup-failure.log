@@ -1,0 +1,14 @@
+
+ RUN  v3.2.4 /opt/handrail/.handrail/codex-runs/e3aa47aa-5749-47e9-a6e1-b2741be30ff2/tmp/sdk-identity-baseline
+
+No test files found, exiting with code 1
+
+filter: test/durable-execution-identity.test.ts
+include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice

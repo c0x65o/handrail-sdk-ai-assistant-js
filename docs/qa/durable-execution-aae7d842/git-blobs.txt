@@ -1,0 +1,14 @@
+d3cf1bd3011a28e9e13df59670aeb33020e234d0  docs/durable-execution-identity.md
+7cc94a66ce7c223605693aa1a711c28a793e4740  src/conversation/runtime-registry.ts
+baf88b0ac88685843cfd46f1a3e888c11679dee7  src/presence/assistant-activity.ts
+136e9dabb30c0726d202e4cec6d6bd6e63f2b431  src/server/application.ts
+a6e40f2f02514e90b3b917b2b73f1dc55e1e387a  src/server/assistant.ts
+3b663c87432ba8e1bba72e742d1e48e467778328  src/sync/durable-application-adapter.ts
+21fda81194abcaf2ede00e92c1cf2ca36da211c0  src/transports/application-turn.ts
+ed3377dd0e6f22fb253df7627bb41600459efb7f  src/transports/durable.ts
+53710b6782122c0bc0b1709e4e385a9a88a95e66  src/transports/types.ts
+fda760da0c5f5344dbdc0320c8e44da078803fc1  test/application-turn-transport.test.ts
+6573279c5c1031020ee72e05a874a2fcb6b24d84  test/conversation-runtime-registry.test.ts
+2740e791b04ab77669f343bff9aca0307a2d3a28  test/durable-canonical-start.test.ts
+8b35b2b7a0013423c23fe5bb7cffa909e58d6291  test/durable-execution-identity.test.ts
+e86b658dec28c2126a3decf45ec9601189d3d16d  test/server-assistant-catalog.test.tsx
