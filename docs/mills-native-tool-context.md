@@ -1,4 +1,4 @@
-# Mills native tool execution context (unpublished)
+# Mills native tool execution context
 
 Mills' native tools need a trusted conversation and turn identity for authorized file lookups, current-user-message binding and household mutations. The high-level SDK already knows that location, but previously supplied only its hashed execution key and user context to the tool executor. Recovering the location from model arguments or mutable per-user state would be unsafe under concurrent turns.
 
@@ -6,4 +6,4 @@ The local SDK change adds optional `ApplicationToolExecutionLocation` to executo
 
 `test/tool-execution-location.test.ts` covers concurrent locations under one user, mutation of the caller's location after dispatch, preserved old ledger results, mismatched approval evidence and recovery reauthorization. The existing high-level approval tests now verify that an approved native tool sees its conversation and turn. Fifty-eight checks across these tests, the executor suite and recovery suite pass with one worker. Full SDK TypeScript and scoped lint pass. Logs: `/tmp/mills-chat-retirement/sdk-tool-location-*.log`.
 
-This is prepared against public SDK SHA `932411cecdee486d6e12284ccb31921597e1192f`, together with the recovery changes in `mills-recovery-authorization.md`. No commit, push, dependency change or deployment occurred. Mills can consume it only after authorized publication and a public full-SHA Git dependency/lockfile upgrade. The Mills tool/plugin/provider migration remains unfinished.
+The location and recovery changes are published at SDK SHA `1f2e381c2fe96c79108850ebcbab7b98954a5d3f`. Mills web now consumes that full public HTTPS Git revision with a matching lockfile and verified clean installation. The agent did not commit or publish that revision. The Mills tool/plugin/provider migration remains unfinished; the next local SDK additions are described in [trusted history and attachments](./trusted-history-and-attachments.md).

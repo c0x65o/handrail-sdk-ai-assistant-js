@@ -27,6 +27,7 @@ const runtimeNeutralFiles = files.filter(
     !/[\\/]react[\\/]/u.test(path) &&
     !/[\\/]react-headless[\\/]/u.test(path) &&
     !/[\\/]react-styled[\\/]/u.test(path) &&
+    !/[\\/]react-markdown[\\/]/u.test(path) &&
     !/[\\/]server[\\/]/u.test(path) &&
     !/[\\/](?:mcp|postgres)[\\/]/u.test(path) &&
     !/[\\/]presence[\\/]live-delivery\.d\.ts$/u.test(path) &&
@@ -35,7 +36,7 @@ const runtimeNeutralFiles = files.filter(
     !/[\\/]providers[\\/](?!index\.d\.ts$)[^\\/]+\.d\.ts$/u.test(path),
 );
 const browserDeclarationFiles = files.filter((path) => /[\\/]browser[\\/]/u.test(path));
-const reactDeclarationFiles = files.filter((path) => /[\\/](?:react|react-headless|react-styled)[\\/]/u.test(path));
+const reactDeclarationFiles = files.filter((path) => /[\\/](?:react|react-headless|react-styled|react-markdown)[\\/]/u.test(path));
 const runtimeNeutralDeclarations = runtimeNeutralFiles
   .map((path) => readFileSync(path, "utf8"))
   .join("\n");

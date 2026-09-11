@@ -1,3 +1,4 @@
+import { awaitWithSignal } from "../await-signal.js";
 import {
   normalizeCitationRecords,
   type CitationId,
@@ -308,15 +309,28 @@ export class OpenAIResponsesProviderAdapter implements ProviderAdapter {
 
   private async resolvedAttachments(invocation: ProviderAdapterInvocation): Promise<Map<string, JsonObject>> {
     const resolved = new Map<string, JsonObject>();
-    let documentCount = 0;
+    let documentCount = 0, imageCount = 0;
     for (const message of invocation.messages) for (const part of message.content) {
+      invocation.signal.throwIfAborted();
+      if (part.type === "image" && invocation.resolve_attachment_reference && !this.options.resolveAttachment) {
+        imageCount += 1;
+        if (message.role !== "user" || imageCount > AI_RUNTIME_PROTOCOL_LIMITS.imageAttachmentsPerRequest ||
+          !Number.isSafeInteger(part.attachment.byte_size) || part.attachment.byte_size < 1 ||
+          part.attachment.byte_size > AI_RUNTIME_PROTOCOL_LIMITS.imageAttachmentMaxBytes) throw new OpenAIResponsesPreflightError();
+        const image = await awaitWithSignal(invocation.signal, () => invocation.resolve_attachment_reference!(part.attachment, { signal: invocation.signal }));
+        invocation.signal.throwIfAborted();
+        if (image.media_type !== part.attachment.media_type || !(image.bytes instanceof Uint8Array) ||
+          image.bytes.byteLength !== part.attachment.byte_size) throw new OpenAIResponsesPreflightError();
+        resolved.set(part.attachment.content_ref, { type: "input_image", image_url: `data:${image.media_type};base64,${base64(image.bytes)}` });
+      }
       if (part.type !== "document") continue;
       documentCount += 1;
-      if (message.role !== "user" || !this.#documentInput.supported || !invocation.resolve_document_reference ||
+      if (message.role !== "user" || !this.#documentInput.supported || (!invocation.resolve_document_reference && !invocation.resolve_attachment_reference) ||
         documentCount > this.#documentInput.capability.max_document_count ||
         !this.#documentInput.capability.supported_mime_types.includes(part.attachment.media_type) ||
         part.attachment.byte_size > this.#documentInput.capability.max_document_bytes) throw new OpenAIResponsesPreflightError();
-      const document = await invocation.resolve_document_reference(part.attachment, { signal: invocation.signal });
+      const document = await awaitWithSignal(invocation.signal, () => (invocation.resolve_attachment_reference ?? invocation.resolve_document_reference!)(part.attachment, { signal: invocation.signal }));
+      invocation.signal.throwIfAborted();
       if (document.media_type !== part.attachment.media_type || !(document.bytes instanceof Uint8Array) ||
         document.bytes.byteLength !== part.attachment.byte_size) throw new OpenAIResponsesPreflightError();
       const filename = part.attachment.filename ?? documentFilename(

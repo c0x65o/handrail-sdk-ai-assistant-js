@@ -20,6 +20,7 @@ interface EventOptions {
   readonly actor?: "assistant" | "user" | "system" | "tool";
   readonly actorId?: string;
   readonly occurredAt?: string;
+  readonly imported?: boolean;
 }
 
 function event(options: EventOptions): ConversationEvent {
@@ -36,7 +37,7 @@ function event(options: EventOptions): ConversationEvent {
       ...(options.actorId === undefined ? {} : { id: options.actorId }),
     },
     source:
-      options.mutationId === undefined
+      options.imported ? { type: "import" } : options.mutationId === undefined
         ? { type: "runtime" }
         : { type: "client", client_id: "client_01" },
     ...(options.mutationId === undefined
@@ -101,6 +102,45 @@ const textTurn = [
 ] as const;
 
 describe("reduceConversationEvent", () => {
+  it("inserts imported history by original timestamp with stable ties and idempotent replay", () => {
+    const created = (revision: number, id: string, occurredAt: string, imported = false) => event({
+      revision, occurredAt, imported, payload: { type: "message.created", message_id: id,
+        role: "user", content: [{ type: "text", text: id }] },
+    });
+    const live = created(1, "live", "2026-08-27T12:00:00.000Z");
+    const older = created(2, "old_user", "2026-08-26T12:00:00.000Z", true);
+    const oldest = created(3, "oldest", "2026-08-25T12:00:00.000Z", true);
+    const tie = created(4, "old_reply", "2026-08-26T12:00:00.000Z", true);
+    const state = replay([live, older, oldest, tie]);
+    expect(state.messages.map(message => message.message_id)).toEqual(["oldest", "old_user", "old_reply", "live"]);
+    expect(reduceConversationEvent(state, older)).toBe(state);
+    expect(state.active_turn_id).toBeNull();
+    expect(state.turns).toHaveLength(0);
+    expect(Object.isFrozen(state.messages)).toBe(true);
+  });
+
+  it("retains live arrival order even when clocks differ", () => {
+    const state = replay([2, 1].map((minute, index) => event({ revision: index + 1,
+      occurredAt: `2026-08-27T12:0${minute}:00.000Z`, payload: { type: "message.created",
+        message_id: `live_${index}`, role: "user", content: [{ type: "text", text: "Hello" }] } })));
+    expect(state.messages.map(message => message.message_id)).toEqual(["live_0", "live_1"]);
+  });
+
+  it("moves an imported attachment placeholder to its original timestamp without losing its attachment", () => {
+    const state = replay([
+      event({ revision: 1, payload: { type: "message.created", message_id: "live", role: "user", content: [{ type: "text", text: "Live message" }] } }),
+      event({ revision: 2, payload: { type: "message.attachment_referenced", message_id: "imported",
+        attachment: { attachment_id: "att_old", media_type: "image/png" } } }),
+      event({ revision: 3, imported: true, occurredAt: "2026-08-20T12:00:00.000Z",
+        payload: { type: "message.created", message_id: "imported", role: "user", content: [{ type: "text", text: "Saved photo" }] } }),
+    ]);
+    expect(state.messages.map(message => message.message_id)).toEqual(["imported", "live"]);
+    expect(state.messages[0]?.attachments).toMatchObject([{ attachment_id: "att_old" }]);
+    const duplicate = reduceConversationEvent(state, event({ revision: 4, imported: true,
+      payload: { type: "message.created", message_id: "imported", role: "user", content: [{ type: "text", text: "Overwritten" }] } }));
+    expect(duplicate.messages).toBe(state.messages);
+  });
+
   it("replays a text turn into stable message and terminal turn records", () => {
     const state = replay(textTurn);
 

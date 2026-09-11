@@ -66,6 +66,29 @@ async function fixture(title?: string, deltas = false) {
 }
 
 describe("SDK-owned conversation titles", () => {
+  it("does not replace reported usage after a failed durable capture or repeat the provider across restarts", async () => {
+    const f = await fixture(); await f.complete();
+    let rejectCapture!: (error: Error) => void;
+    const capture = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectCapture = reject; }));
+    const options = { ...f.options,
+      bundleFor: () => ({ ...f.bundle, usageReceiptSink: { capture } } as unknown as typeof f.bundle) };
+    let settled = false;
+    const result = createAssistantConversationTitles(options).generate(f.conversationId, f.context)
+      .then(() => { settled = true; return "completed"; }, () => { settled = true; return "failed"; });
+    await vi.waitFor(() => expect(capture).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    expect(await f.currentTitle()).toBeNull();
+    rejectCapture(new Error("Usage store unavailable"));
+    expect(await result).toBe("failed");
+    expect(capture).toHaveBeenCalledOnce();
+    expect(capture).toHaveBeenCalledWith(expect.objectContaining({ terminal_status: "completed",
+      tokens: expect.objectContaining({ total_tokens: { status: "reported", value: 24 } }) }));
+    await createAssistantConversationTitles(options).afterCompletion(f.conversationId, f.context);
+    expect(f.request).toHaveBeenCalledOnce();
+    expect(capture).toHaveBeenCalledOnce();
+    expect(await f.currentTitle()).toBeNull();
+  });
+
   it.each([false, true])("persists bounded titles without duplication across instances (deltas=%s)", async (deltas) => {
     const f = await fixture("New thread", deltas);
     await f.complete();
@@ -79,7 +102,7 @@ describe("SDK-owned conversation titles", () => {
     expect(f.request).toHaveBeenCalledOnce();
     expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model", stream: true, store: false,
       tools: [], input: [{ role: "user", content: [{ type: "input_text", text: "Plan quarterly cash" }] }],
-      instructions: expect.stringMatching(/return only the title/i),
+      instructions: expect.stringMatching(/do not include secrets, account numbers, document numbers.*return only the title/i),
     }), expect.anything());
     expect(admit).toHaveBeenCalledOnce();
     expect(capture).toHaveBeenCalledWith(expect.objectContaining({ provider_id: "openai", model_id: "test-model",

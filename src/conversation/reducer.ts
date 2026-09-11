@@ -87,13 +87,17 @@ export function reduceConversationEvent(
       if (index >= 0) {
         const current = accepted.messages[index]!;
         if (current.role !== null) return accepted;
-        const updated = updateMessages(accepted, index, freeze({
+        const replacement = freeze({
           ...current,
           role: payload.role,
           content: cloneMessageContent(payload.content),
           created_at: event.occurred_at,
           attribution,
-        }));
+        });
+        const updated = event.source.type === "import"
+          ? freeze({ ...accepted, messages: insertImportedMessage(
+            accepted.messages.filter((_, position) => position !== index), replacement) })
+          : updateMessages(accepted, index, replacement);
         return payload.role === "assistant"
           ? updated
           : removeCitationsForAssistantMessage(updated, payload.message_id);
@@ -109,7 +113,9 @@ export function reduceConversationEvent(
       });
       return freeze({
         ...accepted,
-        messages: freeze([...accepted.messages, message]),
+        messages: event.source.type === "import"
+          ? insertImportedMessage(accepted.messages, message)
+          : freeze([...accepted.messages, message]),
       });
     }
 
@@ -661,6 +667,18 @@ export function reduceConversationEvent(
     case "conversation.title_updated":
       return freeze({ ...accepted, title: payload.title });
   }
+}
+
+/** Historical imports retain their original time without reordering live event arrivals. */
+function insertImportedMessage(
+  messages: readonly ConversationMessageRecord[],
+  message: ConversationMessageRecord,
+): readonly ConversationMessageRecord[] {
+  const timestamp = Date.parse(message.created_at!);
+  const index = messages.findIndex((existing) =>
+    existing.created_at !== null && Date.parse(existing.created_at) > timestamp);
+  return freeze(index < 0 ? [...messages, message]
+    : [...messages.slice(0, index), message, ...messages.slice(index)]);
 }
 
 function acceptEnvelope(

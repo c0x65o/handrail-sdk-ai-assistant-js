@@ -218,6 +218,14 @@ export type ProviderDocumentReferenceResolver = (
   context: ProviderDocumentResolutionContext,
 ) => ResolvedProviderDocument | Promise<ResolvedProviderDocument>;
 
+/** Trusted host resolution for either image or document references. The adapter
+ * validates returned type and byte count against the admitted reference. */
+export type ProviderAttachmentReferenceResolver = (
+  reference: Readonly<AttachmentReference>,
+  context: ProviderDocumentResolutionContext,
+) => { readonly media_type: string; readonly bytes: Uint8Array } |
+  Promise<{ readonly media_type: string; readonly bytes: Uint8Array }>;
+
 export interface ProviderModelCapabilities {
   readonly streaming: true;
   readonly text: true;
@@ -258,6 +266,7 @@ export interface ProviderAdapterInvocation {
   readonly context: ProviderRequestContext;
   /** A trusted host resolves opaque document content_ref values before native input is built. */
   readonly resolve_document_reference?: ProviderDocumentReferenceResolver;
+  readonly resolve_attachment_reference?: ProviderAttachmentReferenceResolver;
 }
 
 export interface KnownProviderCost {

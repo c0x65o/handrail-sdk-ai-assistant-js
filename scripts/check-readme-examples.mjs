@@ -240,9 +240,9 @@ assert.match(
 );
 
 const readmeInvariants = [
-  ["generalized browser attachment intake", /@handrail\/ai\/browser[^\n]*generalized image\/PDF attachment intake/iu],
+  ["generalized browser attachment intake", /@handrail\/ai-assistant\/browser[^\n]*generalized image\/document attachment intake/iu],
   ["negotiated document capability", /Document behavior is negotiated, never inferred/iu],
-  ["OpenAI PDF opt-in", /OpenAI[^\n]*Supported only when[^\n]*document_input[^\n]*application\/pdf/iu],
+  ["OpenAI document opt-in", /OpenAI[^\n]*explicitly configured protocol document MIME subset[^\n]*trusted host[^\n]*resolve_document_reference[^\n]*otherwise unsupported/iu],
   ["non-OpenAI document support is explicit", /(?:Anthropic|Gemini|xAI)[^\n]*Explicitly unsupported by the built-in adapter/iu],
   ["canonical history is preserved", /provider-context checkpoints never replace, truncate[\s\S]{0,180}canonical conversation history/iu],
   ["provider-context fingerprints and invalidation", /fingerprint covers[\s\S]{0,400}invalidates the checkpoint/iu],
@@ -277,7 +277,7 @@ assert.match(
   /When `attachmentIntake` is omitted[\s\S]{0,120}`imageIntake` behavior remains available/iu,
   "README documents source-compatible imageIntake fallback",
 );
-assert.match(composerSource, /const generalizedIntake = options\.attachmentIntake;/u);
+assert.match(composerSource, /const generalizedIntake = options\.attachmentIntake \?\? \(options\.imageIntake === undefined \? \{\} : undefined\);/u);
 assert.match(composerSource, /generalizedIntake === undefined/u);
 assert.match(composerSource, /options\.imageIntake/u);
 
@@ -347,7 +347,7 @@ for (const [relativePath, contents] of referencedExamples.filter(
 )) {
   assert.doesNotMatch(
     contents,
-    /from\s+["']@handrail\/ai\/(?:providers|server)\//u,
+    /from\s+["']@handrail\/ai-assistant\/(?:providers|server)\//u,
     `${relativePath} does not import trusted-server code into a client/runtime-neutral recipe`,
   );
   assert.doesNotMatch(
@@ -384,7 +384,7 @@ assert.match(trustedServer, /createDirectProviderTransport/u);
 assert.match(trustedServer, /createManagedRuntimeTransport/u);
 assert.match(protectedWebSearch, /createTrustedServerRequestProtectorV1/u);
 assert.match(protectedWebSearch, /WebSearchService/u);
-assert.match(protectedWebSearch, /@handrail\/ai\/server\/trusted-server/u);
+assert.match(protectedWebSearch, /@handrail\/ai-assistant\/server\/trusted-server/u);
 assert.doesNotMatch(protectedWebSearch, /\bfetch\s*\(/u);
 
 for (const recipe of [

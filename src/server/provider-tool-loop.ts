@@ -1,7 +1,8 @@
+import { awaitWithSignal } from "../await-signal.js";
 import { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { AI_RUNTIME_PROTOCOL_VERSION, parseChatRequest, type ApplicationToolResult,
   type ChatRequest, type ResponseToolCallEvent, type StreamEvent } from "../protocol.js";
-import type { ProviderAdapter, ProviderAdapterError, ProviderAdapterResult, ProviderDocumentReferenceResolver,
+import type { ProviderAdapter, ProviderAdapterError, ProviderAdapterResult, ProviderDocumentReferenceResolver, ProviderAttachmentReferenceResolver,
   ProviderRequestContext, ProviderUsage } from "../providers/index.js";
 import type { ToolLoopLimits } from "../tools/loop.js";
 import { createApplicationTurnTransport } from "../transports/application-turn.js";
@@ -51,6 +52,11 @@ export interface ProviderToolLoopTransportOptions {
     readonly call: Pick<ResponseToolCallEvent, "tool_call_id" | "name" | "arguments">;
     readonly signal: AbortSignal;
   }) => Promise<ProviderToolLoopExecutionResult>;
+  /** One trusted host preparation before provider work, using server-owned turn location. */
+  readonly prepareRequest?: (input: { readonly request: ChatRequest; readonly conversationId: string;
+    readonly turnId: string; readonly mutationId: string; readonly signal: AbortSignal }) => ChatRequest | Promise<ChatRequest>;
+  readonly resolveAttachmentReference?: (input: { readonly conversationId: string;
+    readonly reference: Parameters<ProviderAttachmentReferenceResolver>[0]; readonly signal: AbortSignal }) => ReturnType<ProviderAttachmentReferenceResolver>;
   /** Called after every provider invocation; production callers durably capture before resolving. */
   readonly captureUsage?: (receipt: NormalizedUsageReceipt) => void | Promise<void>;
   readonly resolveDocumentReference?: (input: {
@@ -104,6 +110,23 @@ export function createProviderToolLoopTransport(
       const budget = createActiveExecutionBudget(turn.signal, options.limits.maxElapsedMs);
       try {
         let request = parseChatRequest(value), sequence = 0, calls = 0;
+        if (options.prepareRequest) {
+          try {
+            budget.signal.throwIfAborted();
+            request = parseChatRequest(await awaitWithSignal(budget.signal, () => options.prepareRequest!({ request, conversationId: turn.conversationId,
+              turnId: turn.turnId, mutationId: turn.mutationId, signal: budget.signal })));
+            budget.signal.throwIfAborted();
+          } catch (cause) {
+            const checkpoint = { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null };
+            if (turn.signal.aborted) return { status: "cancelled", checkpoint };
+            if (budget.signal.aborted) return { status: "failed", checkpoint, error: { code: "timeout",
+              message: "Conversation preparation exceeded its time limit. Try again.", retryable: true } };
+            const status = cause && typeof cause === "object" && "status" in cause ? Number(cause.status) : 0;
+            const code = status === 401 ? "unauthenticated" : status === 403 ? "forbidden" : status === 404 ? "not_found" : "unavailable";
+            return { status: "failed", checkpoint, error: { code,
+              message: "Conversation context could not be prepared. Check access and try again.", retryable: code === "unavailable" } };
+          }
+        }
         const usages: ProviderUsage[] = [];
         let rootRequestId = "", traceId = "", finalResult: ProviderAdapterResult | null = null;
         for (let iteration = 0; iteration < options.limits.maxIterations; iteration += 1) {
@@ -125,6 +148,11 @@ export function createProviderToolLoopTransport(
             generation: request.generation,
             signal: budget.signal,
             context,
+            ...(options.resolveAttachmentReference === undefined ? {} : {
+              resolve_attachment_reference: (reference, resolution) => options.resolveAttachmentReference!({
+                conversationId: turn.conversationId, reference, signal: resolution.signal,
+              }),
+            }),
             ...(options.resolveDocumentReference === undefined ? {} : {
               resolve_document_reference: (reference: Parameters<ProviderDocumentReferenceResolver>[0],
                 resolution: Parameters<ProviderDocumentReferenceResolver>[1]) => options.resolveDocumentReference!({

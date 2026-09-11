@@ -73,8 +73,12 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
       timeout.unref?.();
       try {
         const invoke = async (): Promise<string> => {
-          let usageRecorded = false;
+          let usageAttempted = false;
           const recordUsage: AssistantTitleProviderRequest<TContext>["recordUsage"] = async (usage, status) => {
+            // Once the provider reports usage, a failed capture must not be
+            // replaced with an unavailable/failed receipt under the same ID.
+            if (usageAttempted) throw new Error("Conversation title usage was already reported.");
+            usageAttempted = true;
             const receiptContext = {
               usage_receipt_id: `${operationId}:usage`, conversation_id: conversationId,
               turn_id: operationId, logical_request_id: operationId, trace_id: operationId,
@@ -90,7 +94,6 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
                 reasoning_tokens: unavailable, total_tokens: unavailable,
               }, provider_cost: unavailable });
             await bundle.usageReceiptSink?.capture(receipt);
-            usageRecorded = true;
           };
           const service = new ConversationTitleGenerationService(async (request) => {
             if (!options.provider.generateTitle) return null;
@@ -99,10 +102,10 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
               client_request_id: operationId, trace_id: operationId });
             try {
               const title = await options.provider.generateTitle({ ...request, authorizationContext: context, recordUsage });
-              if (!usageRecorded) await recordUsage(null, "completed");
+              if (!usageAttempted) await recordUsage(null, "completed");
               return title;
             } catch (error) {
-              if (!usageRecorded) await recordUsage(null, controller.signal.aborted ? "cancelled" : "failed");
+              if (!usageAttempted) await recordUsage(null, controller.signal.aborted ? "cancelled" : "failed");
               throw error;
             }
           });

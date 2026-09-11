@@ -57,6 +57,13 @@ dispatch protection, and catalog persistence. Custom providers can supply
 hook rather than adding title logic to Send or Enter handlers. See
 [conversation titles](./docs/conversation-titles.md) for migration and retry behavior.
 
+Hosts retaining authorized application history or file storage can supply
+`openaiResponses.prepareRequest` and `attachmentResolver`. Both receive the
+server-owned conversation and authorization context; request preparation also
+receives the saved turn and mutation identity. The SDK still owns provider
+continuation, tool execution and usage capture. See
+[trusted history and attachments](./docs/trusted-history-and-attachments.md).
+
 `@handrail/ai-assistant` is a headless-first TypeScript SDK for provider-neutral chat
 state, durable event replay, streaming transports, bounded application tools,
 provider-neutral image and document attachment references, structured citations,
@@ -335,6 +342,11 @@ return the original fact for an identical retry. Checkpoints compact replay;
 they do not replace the canonical event log. The reference in-memory adapter is
 not durable.
 
+Imported `message.created` events place historical messages by their original
+`occurred_at`, with stable ordering for equal timestamps. Live events retain
+arrival order. Importing an existing message identity does not overwrite its
+content or create a turn; hosts must reconcile identities before importing.
+
 Multi-device persistence and delivery remain host responsibilities. Implement
 `ConversationEventStore` against application storage and, when devices need to
 converge, provide a `ConversationSyncAdapter` to exchange canonical event
@@ -420,7 +432,8 @@ count limits before upload and again at trusted resolution. `AttachmentUploader`
 adds bounded concurrency, progress reporting, retry of explicitly retryable
 failures, and cancellation. Browser helpers include `intakeFileInputImages`,
 `intakeDroppedImages`, `intakeClipboardImages`, `intakeFileInputDocuments`, and
-`intakeDroppedDocuments`; the earlier PDF-specific names remain compatibility
+`intakeDroppedDocuments`; the earlier PDF-specific `intakeFileInputPdfs` and
+`intakeDroppedPdfs` names remain compatibility
 aliases. These helpers validate and fingerprint selections without turning
 local files into durable conversation data.
 
