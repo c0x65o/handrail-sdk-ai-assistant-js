@@ -435,6 +435,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
               location?.conversationId ?? null, location?.turnId ?? null, call.tool_call_id]))}`,
             ...(approval === undefined ? {} : { approval }),
             ...(location === undefined ? {} : {
+              location,
               onExecutionStarted: () => recordToolLifecycle(bundle.events, location.conversationId,
                 { type: "tool_call.started", turn_id: location.turnId as never, tool_call_id: call.tool_call_id as never }),
               reportActivity: (update: ApplicationToolActivityUpdate) => reportActivity(location.conversationId, location.turnId, update),
@@ -511,6 +512,15 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         const durable = createDurableApplicationTransport<StreamEvent, ChatRequest, ChatRequest>({
           delegate: qualifyDurableApplicationTurnStarts(delegate, bundleFor(context).events),
           store: bundleFor(context).durableTurns as never,
+          async authorizeRecovery({ conversationId }) {
+            try {
+              await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
+              return true;
+            } catch (error) {
+              if (error instanceof ConversationCatalogError && (error.code === "not_found" || error.code === "forbidden")) return false;
+              throw error;
+            }
+          },
           requestCodec: {
             encode: (request: ChatRequest) => request,
             decode: (request: ChatRequest) => request,

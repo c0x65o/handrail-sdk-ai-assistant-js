@@ -19,6 +19,9 @@ import {
   type DurableApplicationTurnDocument,
   type DurableApplicationTurnRecord,
   type DurableApplicationTurnStore,
+  type DurableApplicationRecoveryCursor,
+  type DurableApplicationRecoveryPage,
+  type DurableApplicationRecoveryPosition,
 } from "../transports/durable.js";
 import {
   CONVERSATION_SYNC_STATE_SCHEMA_VERSION,
@@ -585,6 +588,34 @@ implements DurableApplicationTurnStore<TStoredRequest, TEvent> {
       [this.tenantId, limit],
     );
     return Object.freeze(result.rows.map((row) => Object.freeze({ version: Number(row.version), record: jsonClone(row.payload) })));
+  }
+
+  async scanRecoverable(limit: number, cursor?: DurableApplicationRecoveryCursor): Promise<DurableApplicationRecoveryPage<TStoredRequest, TEvent>> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("limit is invalid");
+    const position = (value: DurableApplicationRecoveryPosition) => ({
+      conversationId: id(value.conversationId, "conversationId"), turnId: id(value.turnId, "turnId"),
+    });
+    const after = cursor ? position(cursor.after) : null;
+    const upper = cursor ? null : await this.persistence.client.query<{ scope_id: string; record_id: string }>(
+      "SELECT scope_id,record_id FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='durable_turn' AND payload->>'status' IN ('pending','running') ORDER BY scope_id DESC,record_id DESC LIMIT 1",
+      [this.tenantId],
+    );
+    const highest = upper?.rows[0];
+    const through = cursor ? position(cursor.through) : highest
+      ? { conversationId: highest.scope_id, turnId: highest.record_id } : null;
+    if (!through) return { documents: [], cursor: null };
+    const result = await this.persistence.client.query<{
+      version: string; payload: DurableApplicationTurnRecord<TStoredRequest, TEvent>; scope_id: string; record_id: string;
+    }>(
+      "SELECT version::text AS version,payload,scope_id,record_id FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='durable_turn' AND payload->>'status' IN ('pending','running') AND ($3::text IS NULL OR (scope_id,record_id)>($3,$4)) AND (scope_id,record_id)<=($5,$6) ORDER BY scope_id,record_id LIMIT $2",
+      [this.tenantId, limit, after?.conversationId ?? null, after?.turnId ?? null, through.conversationId, through.turnId],
+    );
+    const last = result.rows.at(-1);
+    return Object.freeze({
+      documents: Object.freeze(result.rows.map(row => Object.freeze({ version: Number(row.version), record: jsonClone(row.payload) }))),
+      cursor: last && result.rows.length === limit && (last.scope_id !== through.conversationId || last.record_id !== through.turnId)
+        ? { after: { conversationId: last.scope_id, turnId: last.record_id }, through } : null,
+    });
   }
 }
 

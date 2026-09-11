@@ -120,6 +120,7 @@ describe("createHandrailAssistant", () => {
       registrations: [{ definition: { name: "dangerous", description: "Dangerous operation",
         input_schema: { type: "object" } }, discover: () => true,
         executor: async (_arguments, execution) => {
+          expect(execution.location).toEqual({ conversationId: "conversation-approved", turnId: "turn-approved" });
           await execution.reportActivity?.({ summary: "Applying reviewed updates",
             progress: { completed: 43, total: 43, unit: "products" } });
           executions += 1; return { done: true };
@@ -254,7 +255,7 @@ describe("createHandrailAssistant", () => {
         session: { id: "session", source: "server_derived", trust: "authoritative" },
         automation: { id: null, source: "server_derived", trust: "authoritative" } } };
     const durableTurns = new InMemoryDurableApplicationTurnStore();
-    const recoverable = vi.spyOn(durableTurns, "listRecoverable");
+    const recoverable = vi.spyOn(durableTurns, "scanRecoverable");
     const bundle = { events: new InMemoryConversationEventStore(),
       approvals: new InMemoryApprovalProposalStore<Context>({ authorize: () => "allow" }),
       catalog: new InMemoryConversationCatalog<Context>({ authorize: () => "allow" }),
@@ -271,7 +272,7 @@ describe("createHandrailAssistant", () => {
     expect(recoverable).not.toHaveBeenCalled();
     expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(200);
     expect(recoverable).toHaveBeenCalledOnce();
-    expect(recoverable).toHaveBeenCalledWith(25);
+    expect(recoverable).toHaveBeenCalledWith(25, undefined);
     expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(200);
     expect(recoverable).toHaveBeenCalledOnce();
   });

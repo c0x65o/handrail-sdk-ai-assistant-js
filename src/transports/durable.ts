@@ -49,6 +49,19 @@ export interface DurableApplicationTurnDocument<TStoredRequest = unknown, TEvent
   readonly version: number;
   readonly record: DurableApplicationTurnRecord<TStoredRequest, TEvent>;
 }
+export interface DurableApplicationRecoveryPosition {
+  readonly conversationId: string;
+  readonly turnId: string;
+}
+/** Immutable-key pagination, bounded above when the scan begins. */
+export interface DurableApplicationRecoveryCursor {
+  readonly after: DurableApplicationRecoveryPosition;
+  readonly through: DurableApplicationRecoveryPosition;
+}
+export interface DurableApplicationRecoveryPage<TStoredRequest = unknown, TEvent = unknown> {
+  readonly documents: readonly DurableApplicationTurnDocument<TStoredRequest, TEvent>[];
+  readonly cursor: DurableApplicationRecoveryCursor | null;
+}
 export type DurableApplicationTurnCreateResult<TStoredRequest, TEvent> =
   | { readonly status: "created" | "idempotent"; readonly document: DurableApplicationTurnDocument<TStoredRequest, TEvent> }
   | { readonly status: "conflict"; readonly document: DurableApplicationTurnDocument<TStoredRequest, TEvent> | null };
@@ -63,6 +76,9 @@ export interface DurableApplicationTurnStore<TStoredRequest = unknown, TEvent = 
     readonly record: DurableApplicationTurnRecord<TStoredRequest, TEvent> }): Promise<DurableApplicationTurnWriteResult<TStoredRequest, TEvent>>;
   /** Bounded recovery scan. Production stores must never return terminal rows. */
   listRecoverable?(limit: number): Promise<readonly DurableApplicationTurnDocument<TStoredRequest, TEvent>[]>;
+  /** Page past denied or already leased rows without changing them. Each page is bounded;
+   * the cursor must advance on immutable keys and retain the initial upper bound. */
+  scanRecoverable?(limit: number, cursor?: DurableApplicationRecoveryCursor): Promise<DurableApplicationRecoveryPage<TStoredRequest, TEvent>>;
 }
 export interface DurableApplicationTurnRequestCodec<TRequest, TStoredRequest> {
   readonly encode: (request: TRequest) => TStoredRequest | Promise<TStoredRequest>;
@@ -78,6 +94,9 @@ export interface DurableApplicationTransportOptions<TEvent, TRequest, TStoredReq
   readonly workerId: string;
   readonly leaseMilliseconds?: number;
   readonly pollMilliseconds?: number;
+  /** Check the current trusted scope before claiming or dispatching retained work.
+   * A false result leaves the turn untouched for its authorized worker. */
+  readonly authorizeRecovery?: (input: { readonly conversationId: string; readonly turnId: string }) => boolean | Promise<boolean>;
   readonly maximumAttempts?: number;
   readonly maximumCasAttempts?: number;
   readonly now?: () => number;
@@ -96,6 +115,7 @@ export interface DurableApplicationTransport<TEvent, TRequest> extends Conversat
   /** Trusted caller must first verify this turn was canonically admitted and authorized. */
   cancelTurnBeforeStart(input: CancelTurnInput): Promise<TransportResult<AuthoritativeCancelTurnResult>>;
   recoverTurn(conversationId: string, turnId: string): Promise<TransportResult<{ readonly status: "started" | "already_running" | "terminal" }>>;
+  /** Starts at most limit turns. Paged stores scan past denied/leased rows to reach eligible work. */
   recoverPending(limit?: number): Promise<readonly { readonly conversationId: string; readonly turnId: string }[]>;
 }
 
@@ -168,6 +188,22 @@ implements DurableApplicationTurnStore<TStoredRequest, TEvent> {
   }
   async listRecoverable(limit: number) {
     return [...this.#documents.values()].filter((item) => !terminalStatus(item.record.status)).slice(0, limit).map(clone);
+  }
+  async scanRecoverable(limit: number, cursor?: DurableApplicationRecoveryCursor): Promise<DurableApplicationRecoveryPage<TStoredRequest, TEvent>> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("limit is invalid");
+    const compare = (a: DurableApplicationRecoveryPosition, b: DurableApplicationRecoveryPosition) =>
+      a.conversationId === b.conversationId ? (a.turnId < b.turnId ? -1 : a.turnId > b.turnId ? 1 : 0)
+        : a.conversationId < b.conversationId ? -1 : 1;
+    const pending = [...this.#documents.values()].filter(item => !terminalStatus(item.record.status))
+      .sort((a, b) => compare(a.record, b.record));
+    const last = pending.at(-1)?.record;
+    const through = cursor?.through ?? (last ? { conversationId: last.conversationId, turnId: last.turnId } : null);
+    if (!through) return { documents: [], cursor: null };
+    const documents = pending.filter(item => (!cursor || compare(item.record, cursor.after) > 0) &&
+      compare(item.record, through) <= 0).slice(0, limit).map(clone);
+    const tail = documents.at(-1)?.record;
+    return { documents, cursor: tail && documents.length === limit && compare(tail, through) < 0
+      ? { after: { conversationId: tail.conversationId, turnId: tail.turnId }, through: clone(through) } : null };
   }
 }
 
@@ -408,6 +444,9 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
   const recoverTurn: DurableApplicationTransport<TEvent, TRequest>["recoverTurn"] = async (conversationId, turnId) => {
     try {
       identifier(conversationId, "conversationId"); identifier(turnId, "turnId");
+      if (options.authorizeRecovery && !await options.authorizeRecovery({ conversationId, turnId })) {
+        return safeFailure("not_found", "The durable turn was not found.", false);
+      }
       const current = await options.store.load(conversationId, turnId);
       if (!current) return safeFailure("not_found", "The durable turn was not found.", false);
       if (terminalStatus(current.record.status)) return { ok: true, value: { status: "terminal" } };
@@ -501,11 +540,23 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
     recoverTurn,
     async recoverPending(limit = 100) {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("Recovery limit is invalid");
-      if (!options.store.listRecoverable) return [];
-      const documents = await options.store.listRecoverable(limit), started: { conversationId: string; turnId: string }[] = [];
-      for (const document of documents) { const result = await recoverTurn(document.record.conversationId, document.record.turnId);
-        if (result.ok && result.value.status === "started") started.push({ conversationId: document.record.conversationId,
-          turnId: document.record.turnId }); }
+      const started: { conversationId: string; turnId: string }[] = [];
+      let cursor: DurableApplicationRecoveryCursor | undefined;
+      do {
+        const page: DurableApplicationRecoveryPage<TStoredRequest, TEvent> = options.store.scanRecoverable
+          ? await options.store.scanRecoverable(limit, cursor)
+          : { documents: await options.store.listRecoverable?.(limit) ?? [], cursor: null };
+        for (const document of page.documents) {
+          const result = await recoverTurn(document.record.conversationId, document.record.turnId);
+          if (result.ok && result.value.status === "started") started.push({ conversationId: document.record.conversationId,
+            turnId: document.record.turnId });
+          if (started.length === limit) break;
+        }
+        if (page.cursor && (page.documents.length === 0 || JSON.stringify(page.cursor) === JSON.stringify(cursor))) {
+          throw new TypeError("Recovery scan cursor did not advance");
+        }
+        cursor = page.cursor ?? undefined;
+      } while (cursor !== undefined && started.length < limit);
       return Object.freeze(started);
     },
   };

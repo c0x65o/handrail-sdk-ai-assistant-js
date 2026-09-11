@@ -29,8 +29,15 @@ export interface ApplicationToolCall {
   readonly arguments: unknown;
 }
 
+/** Server-derived location, never taken from model arguments. Scope executionKey to this location. */
+export interface ApplicationToolExecutionLocation {
+  readonly conversationId: string;
+  readonly turnId: string;
+}
+
 export interface ApplicationToolExecutorContext<TContext = unknown> {
   readonly applicationContext: TContext;
+  readonly location?: ApplicationToolExecutionLocation;
   readonly definition: ToolDefinition;
   readonly signal: AbortSignal;
   readonly toolCallId: string;
@@ -77,6 +84,7 @@ export type ApplicationToolPolicyDecision =
 
 export interface ApplicationToolPolicyInput<TContext = unknown> {
   readonly applicationContext: TContext;
+  readonly location?: ApplicationToolExecutionLocation;
   readonly arguments: JsonObject;
   readonly definition: ToolDefinition;
   readonly signal: AbortSignal;
@@ -172,6 +180,8 @@ export interface BoundedToolExecutionRequest<
   readonly discoveredTools: readonly ToolDefinition[];
   readonly applicationContext: TContext;
   readonly signal?: AbortSignal;
+  /** Trusted host location. The host must bind executionKey to this scope; existing ledger identities are preserved. */
+  readonly location?: ApplicationToolExecutionLocation;
   /** Trusted host evidence for resuming one exact persisted approval proposal. */
   readonly approval?: ApprovalExecutionResume<TApprovalPermissionContext> & {
     readonly conversationId: import("../conversation/events.js").ConversationId;
@@ -731,6 +741,19 @@ export class BoundedToolExecutor<
       executionKey !== safeIdentifier(executionKey, "invalid_execution_key")) {
       return { status: "completed", result: errorResult(toolCallId, name, "Tool call identifiers are invalid.") };
     }
+    if (request.location !== undefined) {
+      try {
+        const { conversationId, turnId } = request.location;
+        if (typeof conversationId !== "string" || !conversationId || conversationId.length > 256 ||
+          typeof turnId !== "string" || !turnId || turnId.length > 256 ||
+          request.approval && (request.approval.conversationId !== conversationId || request.approval.turnId !== turnId)) {
+          throw new TypeError("Invalid execution location");
+        }
+        request = { ...request, location: Object.freeze({ conversationId, turnId }) };
+      } catch {
+        return { status: "completed", result: errorResult(toolCallId, name, "Tool execution location is invalid.") };
+      }
+    }
     let arguments_: JsonObject;
     try { arguments_ = cloneArguments(request.call.arguments); }
     catch {
@@ -812,6 +835,7 @@ export class BoundedToolExecutor<
       const decision = await raceWithSignal(
         Promise.resolve().then(() => this.#policy({
           applicationContext: request.applicationContext,
+          ...(request.location === undefined ? {} : { location: request.location }),
           arguments: arguments_,
           definition: registration.definition,
           signal: controller.signal,
@@ -960,6 +984,7 @@ export class BoundedToolExecutor<
           const invoke = (currentArguments: JsonObject, currentSignal: AbortSignal) => Promise.resolve()
             .then(() => registration.executor(currentArguments, {
               applicationContext: request.applicationContext,
+              ...(request.location === undefined ? {} : { location: request.location }),
               definition: registration.definition,
               signal: currentSignal,
               toolCallId,
@@ -980,12 +1005,14 @@ export class BoundedToolExecutor<
           const invocation = this.#recovery
             ? runToolWithRecovery({
                 context: { applicationContext: request.applicationContext, definition: registration.definition,
+                  ...(request.location === undefined ? {} : { location: request.location }),
                   arguments: arguments_, signal, toolCallId, executionKey: request.executionKey ?? toolCallId },
                 policy: this.#recovery,
                 execute: (context) => invoke(context.arguments, context.signal),
                 validateAndAuthorize: async (context) => {
                   validateArguments(registration.definition, cloneArguments(context.arguments));
                   const decision = await this.#policy({ applicationContext: request.applicationContext,
+                    ...(request.location === undefined ? {} : { location: request.location }),
                     definition: registration.definition, arguments: context.arguments, signal: context.signal, toolCallId });
                   if (decision.outcome !== "allow" && !(decision.outcome === "external_approval_required" && approvalClaim)) {
                     throw new ToolFailureError({ category: "permission_denied", code: "recovery_authorization_required",

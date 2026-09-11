@@ -30,6 +30,7 @@ export interface ToolRecoverySummary {
 
 export interface ToolRecoveryContext<TContext> {
   readonly applicationContext: TContext;
+  readonly location?: import("./executor.js").ApplicationToolExecutionLocation;
   readonly definition: ToolDefinition;
   readonly arguments: JsonObject;
   readonly toolCallId: string;

@@ -40,6 +40,8 @@ it.each(["role", "session"] as const)("cancels the original worker after a trust
     catalog: new InMemoryConversationCatalog<Context>({ authorize: () => "allow" }),
     toolLedger: new InMemoryToolExecutionLedger(), activity: {}, usageReceiptSink: null, usageAdmissions: null,
   } as unknown as PostgresAssistantPersistenceBundle<Context>;
+  await bundle.catalog.create({ authorizationContext: context, conversationId,
+    title: "Owned conversation", idempotencyKey: "owned-create" as never });
   let release!: () => void;
   const cleanup = new Promise<void>(resolve => { release = resolve; });
   const executions: Array<{ context: Context; signal: AbortSignal; finished: boolean }> = [];

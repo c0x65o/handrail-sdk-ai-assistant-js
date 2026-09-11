@@ -1,0 +1,9 @@
+# Mills native tool execution context (unpublished)
+
+Mills' native tools need a trusted conversation and turn identity for authorized file lookups, current-user-message binding and household mutations. The high-level SDK already knows that location, but previously supplied only its hashed execution key and user context to the tool executor. Recovering the location from model arguments or mutable per-user state would be unsafe under concurrent turns.
+
+The local SDK change adds optional `ApplicationToolExecutionLocation` to executor, policy and recovery contexts. `createHandrailAssistant` passes its server-derived location on normal execution and approval continuation. The bounded executor snapshots and freezes the location before awaiting; provided approval evidence must agree with it before policy or dispatch. Lower-level hosts must scope their execution keys to that location. Existing execution keys and argument fingerprints remain unchanged, so previously completed records replay without another side effect.
+
+`test/tool-execution-location.test.ts` covers concurrent locations under one user, mutation of the caller's location after dispatch, preserved old ledger results, mismatched approval evidence and recovery reauthorization. The existing high-level approval tests now verify that an approved native tool sees its conversation and turn. Fifty-eight checks across these tests, the executor suite and recovery suite pass with one worker. Full SDK TypeScript and scoped lint pass. Logs: `/tmp/mills-chat-retirement/sdk-tool-location-*.log`.
+
+This is prepared against public SDK SHA `932411cecdee486d6e12284ccb31921597e1192f`, together with the recovery changes in `mills-recovery-authorization.md`. No commit, push, dependency change or deployment occurred. Mills can consume it only after authorized publication and a public full-SHA Git dependency/lockfile upgrade. The Mills tool/plugin/provider migration remains unfinished.
