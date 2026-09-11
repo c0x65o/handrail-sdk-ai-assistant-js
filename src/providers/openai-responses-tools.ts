@@ -62,6 +62,8 @@ export interface BuildOpenAIResponsesRequestOptions {
   readonly invocation: ProviderAdapterInvocation;
   readonly plan: DeferredToolDiscoveryPlan;
   readonly supportsToolSearch: boolean;
+  /** Keep schemas unchanged; disable provider strict mode for optional/open fields. Defaults true. */
+  readonly functionStrict?: boolean;
   readonly hosted?: OpenAIResponsesHostedToolsOptions;
   readonly instructions?: string;
   readonly toolChoice?: "auto" | "required";
@@ -73,10 +75,10 @@ export interface BuildOpenAIResponsesRequestOptions {
   readonly resolveAttachment?: (reference: AttachmentReference) => JsonObject;
 }
 
-function projectFunction(tool: ToolDefinition, deferred = false): OpenAIResponsesFunctionTool {
+function projectFunction(tool: ToolDefinition, deferred = false, strict = true): OpenAIResponsesFunctionTool {
   return Object.freeze({
     type: "function", name: tool.name, description: tool.description,
-    parameters: tool.input_schema, strict: true,
+    parameters: tool.input_schema, strict,
     ...(deferred ? { defer_loading: true as const } : {}),
   });
 }
@@ -90,20 +92,21 @@ export function projectOpenAIResponsesTools(input: {
   readonly plan: DeferredToolDiscoveryPlan;
   readonly hosted?: OpenAIResponsesHostedToolsOptions;
   readonly supportsToolSearch: boolean;
+  readonly functionStrict?: boolean;
 }): readonly OpenAIResponsesProjectedTool[] {
-  const tools: OpenAIResponsesProjectedTool[] = input.plan.eagerTools.map((tool) => projectFunction(tool));
+  const tools: OpenAIResponsesProjectedTool[] = input.plan.eagerTools.map((tool) => projectFunction(tool, false, input.functionStrict));
   if (input.supportsToolSearch && input.hosted?.toolSearch !== false) {
     for (const namespace of input.plan.namespaces) {
       tools.push(Object.freeze({
         type: "namespace", name: namespace.name, description: namespace.description,
-        tools: Object.freeze(namespace.tools.map((tool) => projectFunction(tool, namespace.deferred))),
+        tools: Object.freeze(namespace.tools.map((tool) => projectFunction(tool, namespace.deferred, input.functionStrict))),
       }));
     }
     tools.push(Object.freeze({ type: "tool_search", execution: input.hosted?.toolSearch?.execution ?? "server", ...input.hosted?.toolSearch }));
   } else {
     // The plan's eager bound is the fallback safety bound; deferred schemas are intentionally omitted.
     for (const namespace of input.plan.namespaces.filter((item) => !item.deferred)) {
-      for (const tool of namespace.tools) if (!tools.some((item) => item.type === "function" && item.name === tool.name)) tools.push(projectFunction(tool));
+      for (const tool of namespace.tools) if (!tools.some((item) => item.type === "function" && item.name === tool.name)) tools.push(projectFunction(tool, false, input.functionStrict));
     }
   }
   if (input.hosted?.webSearch) tools.push(Object.freeze({ type: "web_search", ...input.hosted.webSearch }));
@@ -115,7 +118,11 @@ export function buildOpenAIResponsesRequest(options: BuildOpenAIResponsesRequest
   if (!options.model.trim()) throw new TypeError("model must not be empty");
   const input: JsonObject[] = options.invocation.messages.map((message) => ({
     role: message.role,
-    content: message.content.map((part): JsonObject => {
+    // Assistant text is prior output, not an input_text content block. The
+    // Responses easy-message string form preserves authored history verbatim.
+    content: message.role === "assistant" && message.content.every(part => part.type === "text")
+      ? message.content.map(part => part.type === "text" ? part.text : "").join("")
+      : message.content.map((part): JsonObject => {
       if (part.type === "text") return { type: "input_text", text: part.text };
       if (!options.resolveAttachment) throw new TypeError("Responses attachments require trusted host resolution");
       return options.resolveAttachment(part.attachment);
@@ -135,6 +142,7 @@ export function buildOpenAIResponsesRequest(options: BuildOpenAIResponsesRequest
     model: options.model,
     input: Object.freeze(input),
     tools: projectOpenAIResponsesTools({ plan: options.plan, supportsToolSearch: options.supportsToolSearch,
+      ...(options.functionStrict === undefined ? {} : { functionStrict: options.functionStrict }),
       ...(options.hosted ? { hosted: options.hosted } : {}) }),
     stream: true, store: false, parallel_tool_calls: false,
     max_output_tokens: options.invocation.generation.max_output_tokens,

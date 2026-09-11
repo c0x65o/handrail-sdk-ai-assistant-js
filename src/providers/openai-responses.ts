@@ -35,6 +35,8 @@ export interface OpenAIResponsesProviderOptions {
   readonly namespaces?: readonly ToolNamespaceDefinition[];
   readonly hosted?: OpenAIResponsesHostedToolsOptions;
   readonly supportsToolSearch?: boolean;
+  /** Provider schema strictness. False preserves optional/open input schemas; host validation still applies. Defaults true. */
+  readonly functionStrict?: boolean;
   readonly instructions?: string;
   /** Provider-native tool selection. A resolver can force grounding only on the initial invocation. */
   readonly toolChoice?: "auto" | "required" | ((invocation: ProviderAdapterInvocation) => "auto" | "required");
@@ -250,7 +252,12 @@ function safeFailure(error: unknown): ProviderAdapterError {
   }
   const status = typeof error === "object" && error !== null && "status" in error ? Number((error as { status?: unknown }).status) : 0;
   if (status === 429) return { kind: "provider", retryable: true, code: "rate_limited", message: "The provider rate limit was reached." };
+  if (status === 408) return { kind: "provider", retryable: true, code: "deadline_exceeded", message: "The provider request timed out." };
   if (status >= 500) return { kind: "provider", retryable: true, code: "upstream_unavailable", message: "The provider is temporarily unavailable." };
+  if (status === 401) return { kind: "client", retryable: false, code: "unauthenticated", message: "Provider authentication failed." };
+  if (status === 403) return { kind: "client", retryable: false, code: "forbidden", message: "The provider denied the request." };
+  if (status === 409) return { kind: "client", retryable: false, code: "idempotency_conflict", message: "The provider rejected a conflicting request." };
+  if (status >= 400 && status < 500) return { kind: "client", retryable: false, code: "invalid_request", message: "The provider rejected the request as invalid." };
   return { kind: "provider", retryable: true, code: "upstream_unavailable", message: "The provider request failed." };
 }
 
@@ -351,6 +358,7 @@ export class OpenAIResponsesProviderAdapter implements ProviderAdapter {
       };
       const request = buildOpenAIResponsesRequest({ model: this.options.model, invocation: effectiveInvocation, plan,
         supportsToolSearch: this.options.supportsToolSearch ?? true,
+        ...(this.options.functionStrict === undefined ? {} : { functionStrict: this.options.functionStrict }),
         continuationItems: parent?.inputItems ?? [],
         ...(this.options.hosted ? { hosted: this.options.hosted } : {}),
         ...(this.options.instructions ? { instructions: this.options.instructions } : {}),

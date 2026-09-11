@@ -31,6 +31,37 @@ describe("OpenAI Responses deferred tool projection", () => {
     expect(projected).toEqual([expect.objectContaining({ type: "function", name: "aegis_tool_0" })]);
   });
 
+  it.each([undefined, true, false])("preserves schemas with explicit functionStrict %s", functionStrict => {
+    const tools = definitions.slice(0, 3);
+    const plan = createDeferredToolDiscoveryPlan({ tools, namespaces: [
+      { name: "aegis", description: "ERP", toolNames: tools.slice(1).map(tool => tool.name) },
+    ] });
+    const projected = projectOpenAIResponsesTools({ plan, supportsToolSearch: true,
+      ...(functionStrict === undefined ? {} : { functionStrict }) });
+    const functions = projected.flatMap(tool => tool.type === "function" ? [tool] : tool.type === "namespace" ? tool.tools : []);
+    expect(functions).toHaveLength(3);
+    expect(functions.every(tool => tool.strict === (functionStrict ?? true))).toBe(true);
+    expect(functions.map(tool => tool.parameters)).toEqual(tools.map(tool => tool.input_schema));
+    expect(functions.every(tool => tool.parameters.required === undefined)).toBe(true);
+  });
+
+  it("replays assistant text as supported plain history without changing message order or text", () => {
+    const request = buildOpenAIResponsesRequest({ model: "gpt-example", supportsToolSearch: false,
+      plan: createDeferredToolDiscoveryPlan({ tools: [], namespaces: [] }),
+      invocation: { messages: [
+        { role: "user", content: [{ type: "text", text: "Earlier request" }] },
+        { role: "assistant", content: [{ type: "text", text: "Saved " }, { type: "text", text: "answer.\n" }] },
+        { role: "user", content: [{ type: "text", text: "Continue" }] },
+      ], tools: [], tool_results: [], generation: { max_output_tokens: 1000, temperature: 0 },
+      signal: new AbortController().signal, context: { request_id: "r", trace_id: "t", attribution: {} as never, correlation_hints: {} } },
+    });
+    expect(request.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Earlier request" }] },
+      { role: "assistant", content: "Saved answer.\n" },
+      { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+    ]);
+  });
+
   it("builds a stateless Responses request from a provider invocation", () => {
     const plan = createDeferredToolDiscoveryPlan({ tools: definitions.slice(0, 2), namespaces: [{ name: "aegis", description: "ERP", toolNames: definitions.slice(0, 2).map((tool) => tool.name) }] });
     const request = buildOpenAIResponsesRequest({
@@ -51,7 +82,7 @@ describe("OpenAI Responses deferred tool projection", () => {
   it("runs the Responses streaming provider path", async () => {
     let nativeRequest: unknown;
     const adapter = createOpenAIResponsesProviderAdapter({
-      model: "gpt-example", maximumInputMessages: 30,
+      model: "gpt-example", maximumInputMessages: 30, functionStrict: false,
       namespaces: [{ name: "aegis", description: "ERP", toolNames: ["aegis_tool_0"] }],
       request: async function* (request) {
         nativeRequest = request;
@@ -75,6 +106,9 @@ describe("OpenAI Responses deferred tool projection", () => {
     expect(events.map((event) => event.type)).toEqual(["response.started", "response.text.delta", "response.tool_call", "response.usage", "response.completed"]);
     expect(terminal).toMatchObject({ status: "completed", outcome: "tool_calls", usage: { cached_input_tokens: 2 } });
     expect(nativeRequest).toMatchObject({ store: false, tools: expect.arrayContaining([expect.objectContaining({ type: "tool_search" })]) });
+    expect(nativeRequest).toMatchObject({ tools: expect.arrayContaining([
+      expect.objectContaining({ type: "namespace", tools: [expect.objectContaining({ strict: false })] }),
+    ]) });
     expect((nativeRequest as { input: unknown[] }).input).toHaveLength(30);
     expect((nativeRequest as { input: { content: { text: string }[] }[] }).input[0]?.content[0]?.text).toBe("Check 1");
   });
@@ -239,10 +273,29 @@ describe("OpenAI Responses deferred tool projection", () => {
     expect(cancelled.events.at(-1)).toMatchObject({ type: "response.cancelled", reason: "deadline_exceeded" });
     expect(cancelled.result).toMatchObject({ status: "cancelled" });
 
-    const limited = await collect(createOpenAIResponsesProviderAdapter({ model: "gpt-example", request: async function* () {
+    const limited = await collect(createOpenAIResponsesProviderAdapter({ model: "gpt-example", request: async () => {
       throw Object.assign(new Error("private provider detail"), { status: 429 });
     } }), new AbortController().signal);
     expect(limited.events.at(-1)).toMatchObject({ type: "response.error", error: { code: "rate_limited", retryable: true } });
     expect(JSON.stringify(limited)).not.toContain("private provider detail");
   });
+  it.each([
+    [400, "invalid_request", false], [401, "unauthenticated", false], [403, "forbidden", false],
+    [404, "invalid_request", false], [409, "idempotency_conflict", false], [422, "invalid_request", false],
+    [408, "deadline_exceeded", true], [429, "rate_limited", true], [503, "upstream_unavailable", true],
+  ] as const)("classifies Responses HTTP %s without exposing the provider payload", async (status, code, retryable) => {
+    const adapter = createOpenAIResponsesProviderAdapter({ model: "gpt-example", request: async () => {
+      throw Object.assign(new Error("private provider message"), { status, body: { token: "private token" }, cause: new Error("private cause") });
+    } });
+    const stream = adapter.invoke({ messages: [{ role: "user", content: [{ type: "text", text: "Check" }] }],
+      tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, signal: new AbortController().signal,
+      context: { request_id: "r", trace_id: "t", attribution: {} as never, correlation_hints: {} } });
+    const events = [];
+    let next = await stream.next();
+    while (!next.done) { events.push(next.value); next = await stream.next(); }
+    expect(next.value).toMatchObject({ status: "failed", error: { code, retryable } });
+    expect(events.at(-1)).toMatchObject({ type: "response.error", error: { code, retryable } });
+    expect(JSON.stringify({ result: next.value, events })).not.toContain("private");
+  });
+
 });

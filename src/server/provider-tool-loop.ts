@@ -1,7 +1,7 @@
 import { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { AI_RUNTIME_PROTOCOL_VERSION, parseChatRequest, type ApplicationToolResult,
   type ChatRequest, type ResponseToolCallEvent, type StreamEvent } from "../protocol.js";
-import type { ProviderAdapter, ProviderAdapterResult, ProviderDocumentReferenceResolver,
+import type { ProviderAdapter, ProviderAdapterError, ProviderAdapterResult, ProviderDocumentReferenceResolver,
   ProviderRequestContext, ProviderUsage } from "../providers/index.js";
 import type { ToolLoopLimits } from "../tools/loop.js";
 import { createApplicationTurnTransport } from "../transports/application-turn.js";
@@ -20,6 +20,13 @@ export interface ProviderToolLoopApprovalResult {
   readonly name: string;
 }
 
+/** A host-validated failure before dispatch; no execution or approval is implied. */
+export interface ProviderToolLoopFailureResult {
+  readonly status: "failed";
+  /** Only sanitized, display-safe host messages may cross this boundary. */
+  readonly error: ProviderAdapterError;
+}
+
 export interface ProviderToolLoopTransportOptions {
   readonly adapter: ProviderAdapter;
   readonly tools: ChatRequest["tools"];
@@ -35,8 +42,8 @@ export interface ProviderToolLoopTransportOptions {
     readonly turnId: string;
     readonly call: Pick<ResponseToolCallEvent, "tool_call_id" | "name" | "arguments">;
     readonly signal: AbortSignal;
-  }) => ProviderToolLoopExecutionResult | ProviderToolLoopApprovalResult |
-    Promise<ProviderToolLoopExecutionResult | ProviderToolLoopApprovalResult>;
+  }) => ProviderToolLoopExecutionResult | ProviderToolLoopApprovalResult | ProviderToolLoopFailureResult |
+    Promise<ProviderToolLoopExecutionResult | ProviderToolLoopApprovalResult | ProviderToolLoopFailureResult>;
   /** SDK-owned durable approval wait/resume boundary. The callback must not execute before confirmation. */
   readonly awaitApproval?: (input: {
     readonly conversationId: string;
@@ -164,8 +171,16 @@ export function createProviderToolLoopTransport(
             const outcomes = await Promise.all(batch.map((call) => options.executeTool({
               conversationId: turn.conversationId, turnId: turn.turnId, call, signal: budget.signal,
             })));
+            const failed = outcomes.find((outcome) => outcome.status === "failed");
+            if (failed) {
+              finalResult = turn.signal.aborted
+                ? { status: "cancelled", reason: "runtime_shutdown", usage: null }
+                : { status: "failed", error: failed.error, usage: null };
+              break;
+            }
             for (let index = 0; index < outcomes.length; index += 1) {
               const outcome = outcomes[index]!;
+              if (outcome.status === "failed") continue;
               if (outcome.status === "completed") {
                 results.push(outcome.result);
                 continue;

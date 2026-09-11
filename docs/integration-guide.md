@@ -51,6 +51,12 @@ with an instructions option, `serverAssistantInstructions(context)` renders
 only the explicitly model-visible section. Applications still own redaction
 and must not place credentials, secrets, or unnecessary personal data there.
 
+Durable worker leases belong to a particular trusted context within the assistant
+host. Refreshing a session or changing a role creates a distinct transport owner;
+it cannot reclaim the previous transport's live lease. Cancellation from the new
+authorized context reaches the original worker through the shared durable turn
+record. Applications should continue resolving current identity on every request.
+
 ## Single and multiple conversations
 
 `createHandrailAiClient({ conversations: { mode: "single", ... } })` creates
@@ -132,3 +138,44 @@ before an application-specific history mirror is written. Reconcile using
 attachment identity; polling or loading history must never resubmit a failed
 request. Ready uploads remain subject to the host's conversation ownership,
 retention, and content validation rules.
+
+
+### Tool preparation failures
+
+Hosts using `createProviderToolLoopTransport` may return
+`{ status: "failed", error: { kind: "client", code: "invalid_request",
+message: "A sanitized explanation", retryable: false } }` from `executeTool`
+when validation or grounding prevents dispatch. The SDK emits a normalized
+terminal error, retains provider usage, and stops further batches and approval
+waiting. It does not invent a tool result or an approval decision. Messages must
+be safe for both display and persistence; never pass raw exceptions or model
+inputs. Work already dispatched in a parallel batch retains its own execution
+record. A cancellation takes precedence over a returned preparation failure.
+
+OpenAI Responses HTTP errors use fixed messages and preserve terminal rejection
+semantics: invalid requests, rejected credentials/permissions and idempotency
+conflicts are not retryable. Rate limits, timeouts and server outages remain
+retryable. Raw provider payloads, credentials and exception causes are never
+included in the normalized error.
+
+### OpenAI Responses history and function schemas
+
+Plain assistant text in manually reconstructed history uses the Responses
+message string form; it is not labeled as user `input_text`. Adjacent text parts
+are joined without introducing or removing whitespace. User input blocks,
+authorized file resolution and retained native continuation items keep their
+existing representations. See [OpenAI conversation state](https://developers.openai.com/api/docs/guides/conversation-state).
+
+`functionStrict` is an optional Responses provider/request/projection setting.
+Its default remains `true` for existing consumers. Hosts with provider-neutral
+schemas containing optional properties or open objects can set `functionStrict:
+false` explicitly. The SDK sends the original schema, without forcing nullable
+arguments, inventing defaults or removing validation constraints. Host-side tool
+validation and authorization still run before execution. This applies to eager
+functions and namespace functions, including deferred loading. OpenAI's strict
+mode requires every property to be required and each object to forbid additional
+properties; see [the strict-mode contract](https://developers.openai.com/api/docs/guides/function-calling#strict-mode).
+
+These source changes require the normal committed Git dependency update before
+a consumer can use them. Do not copy the adapter into an application or install
+an uncommitted local dependency.

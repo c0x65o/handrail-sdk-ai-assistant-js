@@ -132,4 +132,68 @@ describe("createProviderToolLoopTransport", () => {
     expect(parseStreamEvents(events).at(-1)?.type).toBe("response.completed");
     expect({ invocations, approvals, executions }).toEqual({ invocations: 2, approvals: 1, executions: 1 });
   });
+  it.each([[1, false], [2, false], [1, true]] as const)("settles preparation without approval or continuation (parallelism=%s, cancelled=%s)", async (parallelism, cancelled) => {
+    let invocations = 0, preparations = 0;
+    const adapter: ProviderAdapter = {
+      metadata: { provider_id: "fake", model_id: "fake-model", capabilities: {
+        streaming: true, text: true, tool_calls: true, parallel_tool_calls: true, reasoning: false,
+        document_input: { supported: false }, provider_context: { supported: false, reason: "provider_not_supported" },
+        context_window_tokens: null, max_output_tokens: null,
+      } },
+      provider_context: { supported: false, reason: "provider_not_supported" },
+      async *invoke(input) {
+        invocations += 1;
+        yield event(input, 0, { type: "response.started", attribution });
+        // In a parallel batch the approval candidate comes first. A sibling's
+        // failure must settle the turn instead of opening that approval wait.
+        const names = parallelism === 1 ? ["invalid", "later"] : ["approval", "invalid", "later"];
+        for (const [index, name] of names.entries()) yield event(input, index + 1,
+          { type: "response.tool_call", tool_call_id: `call-${name}`, name, arguments: {} });
+        return { status: "completed", outcome: "tool_calls", usage } satisfies ProviderAdapterResult;
+      },
+    };
+    const receipts: NormalizedUsageReceipt[] = [];
+    const transport = createProviderToolLoopTransport({ adapter,
+      tools: ["invalid", "approval", "later"].map(name => ({ name, description: name, input_schema: { type: "object" } })),
+      limits: { maxIterations: 4, maxTotalToolCalls: 4, maxElapsedMs: 10_000, parallelism },
+      createContext: () => ({ request_id: "preparation", trace_id: "trace", attribution, correlation_hints: {} }),
+      executeTool: async ({ call }) => {
+        preparations += 1;
+        if (call.name === "approval") return { status: "external_approval_required", toolCallId: call.tool_call_id, name: call.name };
+        if (call.name !== "invalid") throw new Error("A dependent batch must not start");
+        if (cancelled && transport.capabilities.authoritativeCancellation.supported) {
+          await transport.capabilities.authoritativeCancellation.capability.cancelTurn({ conversationId: "preparation", turnId: "turn",
+            mutationId: "cancel", idempotencyKey: "cancel", reason: "user" });
+        }
+        return { status: "failed", error: { kind: "client", code: "invalid_request", retryable: false,
+          message: "Journal debits and credits must balance. Correct the line amounts." } };
+      },
+      awaitApproval: async () => { throw new Error("No approval may be requested after preparation failed"); },
+      captureUsage: receipt => { receipts.push(receipt); },
+    });
+    const request: ChatRequest = { protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: null,
+      messages: [{ role: "user", content: [{ type: "text", text: "Prepare entries" }] }], tools: [], tool_results: [],
+      generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} };
+    const started = await transport.startTurn({ conversationId: "preparation", conversationTurnId: "turn" as never,
+      mutationId: "mutation" as never, idempotencyKey: "start", request });
+    if (!started.ok) throw new Error(started.error.message);
+    const events: StreamEvent[] = [];
+    for await (const item of started.value.observation.events) events.push(item);
+    if (cancelled) {
+      expect(parseStreamEvents(events).at(-1)).toMatchObject({ type: "response.cancelled" });
+      expect(await started.value.observation.result).toMatchObject({ status: "cancelled" });
+    } else {
+    expect(parseStreamEvents(events).at(-1)).toMatchObject({ type: "response.error", error: {
+      code: "invalid_request", retryable: false, message: "Journal debits and credits must balance. Correct the line amounts.",
+    } });
+    expect(await started.value.observation.result).toMatchObject({ status: "failed", error: {
+      code: "invalid_request", retryable: false, message: "Journal debits and credits must balance. Correct the line amounts.",
+    } });
+    }
+    expect(events.filter(value => value.type === "response.usage")).toHaveLength(1);
+    expect(events.some(value => value.type === "response.completed")).toBe(false);
+    expect(receipts).toHaveLength(1);
+    expect({ invocations, preparations }).toEqual({ invocations: 1, preparations: parallelism });
+  });
+
 });

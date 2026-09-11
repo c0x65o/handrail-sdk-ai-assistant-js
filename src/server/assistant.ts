@@ -517,7 +517,11 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             fingerprint: (request: ChatRequest) => createHash("sha256").update(JSON.stringify(request)).digest("hex"),
           },
           checkpointForEvent,
-          workerId,
+          // Each trusted context owns a distinct transport. A refreshed session
+          // or role must not claim another transport's live lease merely because
+          // both belong to this assistant host. Its cancellation still reaches
+          // the original worker through the shared durable turn record.
+          workerId: `context-${digest(JSON.stringify([workerId, key]))}`,
           onTurnStatusChanged: ({ conversationId, turnId }) => reconcileSafely(context, conversationId, turnId),
           ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
         });
