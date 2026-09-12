@@ -1165,9 +1165,27 @@ export class PostgresToolExecutionLedger implements ToolExecutionLedger {
   }
 
   getOrCreate(toolCallId: string, execute: () => Promise<ApplicationToolResult>, requestFingerprint?: string): Promise<ApplicationToolResult> {
-    const key = this.scopeId === undefined ? toolCallId
+    return this.persistence.getOrExecuteTool(this.tenantId, this.key(toolCallId), execute, requestFingerprint);
+  }
+
+  async lookup(toolCallId: string, requestFingerprint?: string): Promise<ApplicationToolResult | undefined> {
+    const key = this.key(toolCallId);
+    const result = await this.persistence.getToolResult<ApplicationToolResult>(this.tenantId, key);
+    const claim = await this.persistence.getDocument<{ fingerprint?: string | null }>(this.tenantId, "tool_execution", "tool", key);
+    const fingerprint = requestFingerprint === undefined ? null : createHash("sha256").update(requestFingerprint).digest("hex");
+    if ((result !== null || claim !== null) && (claim?.value.fingerprint ?? null) !== fingerprint) {
+      throw new ToolExecutionIdentityConflictError();
+    }
+    if (result !== null) return result;
+    // A completion racing this read may be visible on a later lookup. This
+    // read never admits another dispatch or alters an uncertain claim.
+    if (claim !== null) throw new PostgresToolExecutionUncertainError();
+    return undefined;
+  }
+
+  private key(toolCallId: string): string {
+    return this.scopeId === undefined ? toolCallId
       : `tool-scope-${createHash("sha256").update(JSON.stringify([this.scopeId, toolCallId])).digest("hex")}`;
-    return this.persistence.getOrExecuteTool(this.tenantId, key, execute, requestFingerprint);
   }
 }
 

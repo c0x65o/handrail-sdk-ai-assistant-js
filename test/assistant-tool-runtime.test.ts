@@ -1,8 +1,10 @@
+import { PGlite } from "@electric-sql/pglite";
+import { PostgresAiPersistence, PostgresToolExecutionLedger, type PostgresSqlClient } from "../src/postgres/index.js";
 import { expect, it, vi } from "vitest";
 import { createAiApplication } from "../src/server/application.js";
 import { createAssistantToolRuntime, assistantToolArgumentReference } from "../src/server/assistant.js";
 import { createToolPlugin } from "../src/tools/plugin.js";
-import { InMemoryToolExecutionLedger, type ApplicationToolExecutor, type BoundedToolExecutorLimits } from "../src/tools/executor.js";
+import { InMemoryToolExecutionLedger, type ApplicationToolExecutor, type BoundedToolExecutorLimits, type ToolExecutionLedger } from "../src/tools/executor.js";
 import { InMemoryConversationEventStore } from "../src/conversation/event-store.js";
 import { InMemoryApprovalProposalStore } from "../src/conversation/approval-proposal-store.js";
 import { createApprovalExecutionCoordinator } from "../src/tools/approval-execution.js";
@@ -12,7 +14,7 @@ type Context = { scopeId: string; userId: string };
 const context: Context = { scopeId: "household:user", userId: "user" };
 const location = { conversationId: "conversation", turnId: "live-call-or-text-turn" };
 const call = { name: "save", tool_call_id: "call", arguments: { value: "reviewed" } };
-async function setup(required = false, limits?: Partial<BoundedToolExecutorLimits>) {
+async function setup(required = false, limits?: Partial<BoundedToolExecutorLimits>, ledgerFactory?: () => ToolExecutionLedger) {
   const events = new InMemoryConversationEventStore();
   const proposals = new InMemoryApprovalProposalStore<Context>({ authorize: () => "allow" });
   const ledger = new InMemoryToolExecutionLedger();
@@ -28,7 +30,7 @@ async function setup(required = false, limits?: Partial<BoundedToolExecutorLimit
           required: ["value"], additionalProperties: false } }, executor: effect,
       }], approvals: [{ toolName: "save", mode: "policy", summarize: () => "Save reviewed change" }] })], installContext: context,
       policy: () => ({ outcome: "allow" }), approvalPolicy: () => required ? "require_approval" : "allow_without_approval",
-      toolExecutionLedger: ledger, ...(limits ? { executorLimits: limits } : {}),
+      toolExecutionLedger: ledgerFactory?.() ?? ledger, ...(limits ? { executorLimits: limits } : {}),
       approvalCoordinator: createApprovalExecutionCoordinator<Context>({ proposalStore: proposals, eventStore: events,
         authorize: () => "allow", verifyArguments: ({ binding, reviewedArguments, arguments: args }) =>
           binding.type === "opaque_reference" && reviewedArguments.type === "opaque_reference" &&
@@ -212,3 +214,37 @@ it("concurrent approval observers share the original proposal, event and backend
   expect(entries.filter(entry => entry.event.payload.type === "approval.proposal_created")).toHaveLength(1);
   expect(entries.filter(entry => entry.event.payload.type === "tool_call.result_recorded")).toHaveLength(1);
 });
+
+
+it("reuses an approved PostgreSQL receipt after recreating the application, ledger and runtime", async () => {
+  const database = new PGlite();
+  const adapt = (queryable: Pick<PGlite, "query">): PostgresSqlClient => {
+    const client: PostgresSqlClient = {
+      async query<T extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) {
+        const result = await queryable.query<T>(sql, values ? [...values] : []);
+        return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
+      }, transaction: operation => operation(client),
+    };
+    return client;
+  };
+  const client: PostgresSqlClient = { query: adapt(database).query,
+    transaction: operation => database.transaction(tx => operation(adapt(tx as unknown as Pick<PGlite, "query">))) };
+  try {
+    await new PostgresAiPersistence(client).migrate();
+    const h = await setup(true, undefined, () => new PostgresToolExecutionLedger(new PostgresAiPersistence(client), "tenant", context.scopeId));
+    const signal = new AbortController().signal;
+    expect(await h.runtime.execute(call, signal, location)).toMatchObject({ status: "external_approval_required" });
+    const waiting = h.runtime.awaitApproval({ ...location, call, signal });
+    await h.pendingProposal();
+    expect(await h.decide("confirm")).toMatchObject({ outcome: "accepted" });
+    const result = await waiting;
+    expect(result).toMatchObject({ status: "completed", result: { is_error: false } });
+    const restarted = await h.create();
+    expect(await restarted.execute(call, signal, location)).toMatchObject({ status: "external_approval_required" });
+    expect(await restarted.awaitApproval({ ...location, call, signal })).toEqual(result);
+    expect(h.effect).toHaveBeenCalledOnce();
+    const events = (await h.events.read({ conversationId: location.conversationId as never })).entries;
+    expect(events.filter(entry => entry.event.payload.type === "tool_call.result_recorded")).toHaveLength(1);
+    expect(await h.pendingProposal()).toMatchObject({ status: "executed", proposal_version: 4 });
+  } finally { await database.close(); }
+}, 30_000);

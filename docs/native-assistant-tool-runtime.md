@@ -27,3 +27,9 @@ The runtime records tool and approval facts only. It does not fabricate user tex
 ## Verification
 
 `test/assistant-tool-runtime.test.ts` covers retained ledger results, changed arguments, confirmation/rejection replay, foreign/stale locations, revoked authorization, cancellation before and after dispatch, queued cancellation, expired terminal results, bounded deadlines, interrupted approval waits and concurrent observers. The existing assistant, executor, approval, worker recovery, catalog and Responses suites continue to exercise the shared path. Publication and adoption of a public full-SHA dependency are required before this API applies to an application consuming a prior SDK revision.
+
+### PostgreSQL approval receipts
+
+A recreated application must be able to read an already executed approval's result without admitting another execution. `ToolExecutionLedger.lookup` is an optional asynchronous, read-only receipt API used after the approval coordinator authorizes reuse; the existing synchronous `get` fast path remains supported. PostgreSQL implements lookup with the same tenant, application scope and hashed argument binding as dispatch. A missing result does not create a claim. A retained claim without a receipt remains uncertain, and changed or missing argument bindings fail closed.
+
+The native runtime's PostgreSQL regression recreates the application, persistence adapter and ledger after confirmation and verifies the same successful result, one domain effect, one recorded result event and the original executed proposal. The SQL ledger integration also covers foreign scopes, missing receipts, uncertain claims and legacy unbound receipts. This addition must be published and adopted through a public full-SHA dependency before it applies to a consumer pinned to 0.2.28 / `3831380d73eab6c617533df6b43c84a980bc84bf`.

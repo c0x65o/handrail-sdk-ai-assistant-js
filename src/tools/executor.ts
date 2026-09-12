@@ -99,6 +99,9 @@ export type ApplicationToolPolicy<TContext = unknown> = (
 export interface ToolExecutionLedger {
   /** Optional fast path used to avoid repeating validation/policy for completed calls. */
   get?(toolCallId: string, requestFingerprint?: string): Promise<ApplicationToolResult> | undefined;
+  /** Read-only durable receipt lookup after an approved execution is already
+   * claimed. Missing or uncertain results never authorize another dispatch. */
+  lookup?(toolCallId: string, requestFingerprint?: string): Promise<ApplicationToolResult | undefined>;
   /** Atomically retain the first promise and immutable request fingerprint for a call ID.
    * Custom ledgers must reject reuse with a different or missing fingerprint.
    * Fingerprints supplied by the executor can contain private argument data;
@@ -880,11 +883,14 @@ export class BoundedToolExecutor<
           return Object.freeze({ status: "external_approval_required", toolCallId, name });
         }
         if (claim.outcome === "reuse") {
-          const retained = this.#ledger.get?.(request.executionKey ?? toolCallId, toolRequestFingerprint(toolCallId, name, arguments_));
-          if (retained !== undefined) {
+          const key = request.executionKey ?? toolCallId;
+          const fingerprint = toolRequestFingerprint(toolCallId, name, arguments_);
+          const retained = this.#ledger.get?.(key, fingerprint) ?? this.#ledger.lookup?.(key, fingerprint);
+          const result = retained === undefined ? undefined : await raceWithSignal(retained, controller.signal);
+          if (result !== undefined) {
             return Object.freeze({
               status: "completed",
-              result: await raceWithSignal(retained, controller.signal),
+              result,
             });
           }
           return Object.freeze({

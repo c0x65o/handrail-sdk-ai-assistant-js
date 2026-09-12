@@ -71,6 +71,18 @@ it("retains dispatch claims across real SQL rollback while keeping external writ
     await new PostgresToolExecutionLedger(persistence, "tenant", "scope-b").getOrCreate("local", scopedExecute, "bound");
     await new PostgresToolExecutionLedger(persistence, "tenant", "scope-a").getOrCreate("local", scopedExecute, "bound");
     expect(scopedExecute).toHaveBeenCalledTimes(2);
+    const recovered = new PostgresToolExecutionLedger(new PostgresAiPersistence(client), "tenant", "scope-a");
+    expect(await recovered.lookup("local", "bound")).toEqual(await scopedExecute.mock.results[0]!.value);
+    await expect(recovered.lookup("local", "changed")).rejects.toBeInstanceOf(ToolExecutionIdentityConflictError);
+    await expect(recovered.lookup("local")).rejects.toBeInstanceOf(ToolExecutionIdentityConflictError);
+    expect(await recovered.lookup("missing", "bound")).toBeUndefined();
+    expect(await new PostgresToolExecutionLedger(persistence, "other-tenant", "scope-a").lookup("local", "bound")).toBeUndefined();
+    expect(await new PostgresToolExecutionLedger(persistence, "tenant", "scope-c").lookup("local", "bound")).toBeUndefined();
+    const unscoped = new PostgresToolExecutionLedger(persistence, "tenant");
+    await expect(unscoped.lookup("uncertain")).rejects.toBeInstanceOf(PostgresToolExecutionUncertainError);
+    expect(await unscoped.lookup("legacy")).toEqual({ old: true });
+    await expect(unscoped.lookup("legacy", "new bound request")).rejects.toBeInstanceOf(ToolExecutionIdentityConflictError);
+    expect((await database.query("SELECT record_id FROM handrail_ai_documents WHERE kind='tool_execution' AND record_id='missing'")).rows).toEqual([]);
     await database.query("INSERT INTO handrail_ai_tool_ledger (tenant_id,tool_call_id,status,result) VALUES ($1,$2,'completed',$3::jsonb)",
       ["other-tenant", "successful", JSON.stringify({ private: true })]);
     expect(await persistence.getToolResults("tenant", ["successful", "uncertain", "missing", "legacy", "successful"]))
