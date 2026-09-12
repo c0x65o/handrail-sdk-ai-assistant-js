@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   ConversationEventStoreConflictError,
@@ -139,6 +139,29 @@ describe("ApprovalCoordinator", () => {
       conflict: "idempotency",
     });
     expect((await fixture.events.read({ conversationId })).entries).toHaveLength(1);
+  });
+
+  it("reconciles the same decision after storage reorders JSON object keys", async () => {
+    const fixture = createFixture();
+    await fixture.create("jsonb-replay");
+    const request = decisionInput("jsonb-replay", "confirm", "jsonb-replay-key");
+    expect(await fixture.coordinator.decide(request)).toMatchObject({ outcome: "accepted" });
+    const read = fixture.events.read.bind(fixture.events);
+    vi.spyOn(fixture.events, "read").mockImplementation(async input =>
+      JSON.parse(JSON.stringify(await read(input), (_key, value) =>
+        value && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? 1 : -1)) : value)));
+    expect(await fixture.coordinator.decide(request)).toMatchObject({
+      outcome: "accepted", eventRevision: 1, eventStatus: "reconciled",
+    });
+    expect((await read({ conversationId })).entries).toHaveLength(1);
+    vi.mocked(fixture.events.read).mockImplementation(async input => {
+      const result = await read(input);
+      return { ...result, entries: result.entries.map(entry => ({ ...entry,
+        event: parseConversationEvent({ ...entry.event, actor: { type: "user", id: "another-reviewer" } }),
+      })) };
+    });
+    expect(await fixture.coordinator.decide(request)).toMatchObject({ outcome: "conflict", conflict: "event_identity" });
   });
 
   it("normalizes optimistic races, already-decided proposals, and missing proposals", async () => {

@@ -37,6 +37,8 @@ import {
   AssistantActivityIndicator, Message, StreamStatus, Transcript, TypingIndicator,
 } from "../react/primitives.js";
 import { CopyMessageButton } from "../react/message-actions.js";
+import { BadResponseButton } from "../react/bad-response-button.js";
+import type { BadResponseReportingOptions } from "../response-feedback.js";
 import { ToolActivity } from "../react/tool-activity.js";
 import type { ToolActivitySnapshot } from "../conversation/tool-activity.js";
 import { CitationList } from "../react/citations.js";
@@ -155,6 +157,8 @@ export interface StyledChatPresetProps extends ComposerApprovalControlProps {
   readonly messageCitations?: boolean;
   /** Enabled by default; disable when the host renders its own message actions. */
   readonly messageActions?: boolean;
+  /** Off by default; requires a host reporter with confirmed manual-review intake support. */
+  readonly badResponseReporting?: BadResponseReportingOptions;
   readonly renderMessageContent?: MessageContentRenderer;
   readonly renderMessageAttachment?: MessageAttachmentRenderer;
   /** Resolves authorized, short-lived display URLs. Opaque references are never treated as URLs. */
@@ -203,6 +207,7 @@ export const handrailChatPresetCss = `
 .hr-chat__voice-activity{display:block;font-size:.75rem;font-weight:400;line-height:1.35;max-inline-size:18rem;overflow-wrap:anywhere}.hr-chat__workspace-picker li .hr-chat__voice-activity{flex-basis:100%;margin-block-start:.25rem}.hr-chat__workspace-picker li button:first-child{flex-wrap:wrap}
 .hr-chat__workspace-picker{align-items:flex-start;display:flex;gap:.4rem;position:relative}.hr-chat__workspace-picker summary{background:var(--hr-panel,#f6f7fb);border:1px solid var(--hr-border,#dfe3eb);border-radius:9px;cursor:pointer;list-style:none;padding:.55rem .7rem}.hr-chat__workspace-picker summary::-webkit-details-marker{display:none}.hr-chat__workspace-picker ul{background:var(--hr-bg,#fff);border:1px solid var(--hr-border,#dfe3eb);border-radius:10px;box-shadow:0 12px 35px #17192724;display:grid;gap:.2rem;inset-block-start:calc(100% + .35rem);inset-inline-end:0;list-style:none;margin:0;max-block-size:20rem;min-inline-size:18rem;overflow:auto;padding:.4rem;position:absolute;z-index:10}.hr-chat__workspace-picker li{align-items:center;display:flex;margin:0;padding:0}.hr-chat__workspace-picker li button:first-child{align-items:center;display:flex;flex:1;inline-size:100%;justify-content:space-between;max-inline-size:none;text-align:start}.hr-chat__workspace-picker small{color:var(--hr-muted,#687083);margin-inline-start:.5rem}.hr-chat__workspace-picker [data-turn-status=running] small{color:var(--hr-activity)}.hr-chat__empty{display:grid;min-block-size:12rem;place-items:center;padding:1rem}
 .hr-chat__approvals{display:grid;gap:.5rem}.hr-chat__approval{background:var(--hr-panel);border:1px solid var(--hr-border);border-radius:var(--hr-radius-control);display:grid;gap:.4rem;padding:.65rem}.hr-chat__approval-actions{display:flex;gap:.5rem}.hr-chat__approval-error{color:var(--hr-danger)}
+.hr-chat__message-actions{align-items:center;flex-wrap:wrap;gap:.25rem}
 `;
 
 export function StyledChatPresetStyles(): ReactNode {
@@ -284,7 +289,12 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
             {...(renderToolResult ? { renderToolResult } : {})}/>
           {props.messageCitations === false ? null : <CitationList
             className="hr-chat__message-citations" messageId={message.message_id}/>}
-          <div className="hr-chat__message-actions"><CopyMessageButton className="hr-chat__copy" message={message}/></div>
+          <div className="hr-chat__message-actions"><CopyMessageButton className="hr-chat__copy" message={message}/>
+            {props.badResponseReporting?.enabled && resolvedState?.conversation_id && <BadResponseButton className="hr-chat__copy" message={message}
+              conversationId={resolvedState.conversation_id}
+              disabled={!responseIsComplete(resolvedState, message)}
+              reporting={props.badResponseReporting}/>}
+          </div>
         </div> })}>{props.emptyState}</FollowedTranscript>
       <div className="hr-chat__status">{currentActivity?.turnStatus === "running" && currentActivity.summary
         ? <span role="status" className="hr-chat__assistant-activity">{currentActivity.summary}{activityProgress
@@ -307,6 +317,13 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
       {...(props.voiceControls === undefined ? {} : { voiceControls: props.voiceControls })}/>
     {props.footer}
   </ChatRoot>;
+}
+
+function responseIsComplete(state: ConversationState, message: ConversationMessageRecord): boolean {
+  const turn = state.turns.find((candidate) => candidate.turn_id === message.turn_id
+    || candidate.output_message_ids.includes(message.message_id));
+  return turn ? ["completed", "cancelled", "failed"].includes(turn.status) && !turn.remote_may_still_be_running
+    : !state.active_turn_id;
 }
 
 function FollowedTranscript(props: ComponentProps<typeof Transcript>): ReactNode {

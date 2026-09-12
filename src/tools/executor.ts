@@ -180,6 +180,10 @@ export interface BoundedToolExecutionRequest<
   readonly discoveredTools: readonly ToolDefinition[];
   readonly applicationContext: TContext;
   readonly signal?: AbortSignal;
+  /** Propagate caller cancellation to the executor, but retain its returned
+   * outcome after dispatch until the existing tool deadline. This never grants
+   * permission to start queued work after cancellation. Defaults to false. */
+  readonly preserveDispatchedResultOnCancel?: boolean;
   /** Trusted host location. The host must bind executionKey to this scope; existing ledger identities are preserved. */
   readonly location?: ApplicationToolExecutionLocation;
   /** Trusted host evidence for resuming one exact persisted approval proposal. */
@@ -795,6 +799,8 @@ export class BoundedToolExecutor<
     name: string,
   ): Promise<BoundedToolExecutionOutcome> {
     const controller = new AbortController();
+    const deadline = new AbortController();
+    const completionSignal = request.preserveDispatchedResultOnCancel ? deadline.signal : controller.signal;
     let timedOut = false;
     let phase: "arguments" | "policy" | "approval" | "execution" = "arguments";
     const onCallerAbort = () => controller.abort();
@@ -803,6 +809,7 @@ export class BoundedToolExecutor<
     const timeout = setTimeout(() => {
       timedOut = true;
       controller.abort();
+      deadline.abort();
     }, this.#limits.timeoutMs);
 
     try {
@@ -911,6 +918,7 @@ export class BoundedToolExecutor<
             toolCallId,
             name,
             () => timedOut,
+            completionSignal,
             claim,
           ),
         });
@@ -926,6 +934,7 @@ export class BoundedToolExecutor<
         toolCallId,
         name,
         () => timedOut,
+        completionSignal,
       );
       return Object.freeze({ status: "completed", result });
     } catch (error: unknown) {
@@ -966,6 +975,7 @@ export class BoundedToolExecutor<
     toolCallId: string,
     name: string,
     timedOut: () => boolean,
+    completionSignal: AbortSignal,
     approvalClaim?: ClaimedApprovalExecution,
   ): Promise<ApplicationToolResult> {
     return raceWithSignal(
@@ -982,26 +992,29 @@ export class BoundedToolExecutor<
           executionStartRecorded = true;
           const release = await this.#limiter.acquire(signal);
           const invoke = (currentArguments: JsonObject, currentSignal: AbortSignal) => Promise.resolve()
-            .then(() => registration.executor(currentArguments, {
-              applicationContext: request.applicationContext,
-              ...(request.location === undefined ? {} : { location: request.location }),
-              definition: registration.definition,
-              signal: currentSignal,
-              toolCallId,
-              executionKey: request.executionKey ?? toolCallId,
-              ...(request.reportActivity === undefined
-                ? {}
-                : { reportActivity: async (update: ApplicationToolActivityUpdate) => {
-                    if (!activityActive || signal.aborted) return;
-                    try {
-                      await request.reportActivity!(update);
-                    } catch (cause) {
-                      emitAiDiagnostic(this.#diagnostics, { domain: "activity", operation: "tool_progress",
-                        phase: "failed", toolName: name, toolCallId,
-                        code: "activity_update_failed", retryable: true, cause });
-                    }
-                  } }),
-            }));
+            .then(() => {
+              if (currentSignal.aborted) throw new ExecutionCancelled();
+              return registration.executor(currentArguments, {
+                applicationContext: request.applicationContext,
+                ...(request.location === undefined ? {} : { location: request.location }),
+                definition: registration.definition,
+                signal: currentSignal,
+                toolCallId,
+                executionKey: request.executionKey ?? toolCallId,
+                ...(request.reportActivity === undefined
+                  ? {}
+                  : { reportActivity: async (update: ApplicationToolActivityUpdate) => {
+                      if (!activityActive || signal.aborted) return;
+                      try {
+                        await request.reportActivity!(update);
+                      } catch (cause) {
+                        emitAiDiagnostic(this.#diagnostics, { domain: "activity", operation: "tool_progress",
+                          phase: "failed", toolName: name, toolCallId,
+                          code: "activity_update_failed", retryable: true, cause });
+                      }
+                    } }),
+              });
+            });
           const invocation = this.#recovery
             ? runToolWithRecovery({
                 context: { applicationContext: request.applicationContext, definition: registration.definition,
@@ -1026,7 +1039,7 @@ export class BoundedToolExecutor<
               })
             : invoke(arguments_, signal).then((output) => normalizeOutput(output, this.#limits, toolCallId));
           void invocation.then(release, release);
-          const normalized = await raceWithSignal(invocation, signal);
+          const normalized = await raceWithSignal(invocation, completionSignal);
           executionResult = resultForExecution(
             toolCallId,
             name,
@@ -1079,7 +1092,7 @@ export class BoundedToolExecutor<
             attribution: request.approval!.attribution,
             status: failureReason === undefined ? "executed" : "failed",
             ...(failureReason === undefined ? {} : { failureReason }),
-            signal,
+            signal: completionSignal,
           });
           emitAiDiagnostic(this.#diagnostics, { domain: "approval", operation: "settle",
             phase: settled.outcome === "recorded" ? "succeeded" : "failed", toolName: name,
@@ -1094,7 +1107,7 @@ export class BoundedToolExecutor<
         }
         return executionResult;
       }, toolRequestFingerprint(toolCallId, name, arguments_)),
-      signal,
+      completionSignal,
     );
   }
 }

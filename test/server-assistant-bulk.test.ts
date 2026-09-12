@@ -47,6 +47,8 @@ describe("assistant bulk work", () => {
           }, async markRead() { return null; } },
         usageReceiptSink: null, usageAdmissions: null,
       } as unknown as PostgresAssistantPersistenceBundle<Context>;
+      for (const id of ["bulk", "independent"]) await bundle.catalog.create({ authorizationContext: context,
+        conversationId: id as never, idempotencyKey: `create-${id}` as never });
       const persistence = { attachmentLimits: { maximumBytes: 1_000,
         acceptedMediaTypes: ["text/plain"], ttlMilliseconds: 60_000 }, persistence: {},
         forScope: () => bundle } as unknown as PostgresAssistantPersistence;

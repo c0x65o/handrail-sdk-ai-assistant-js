@@ -1,7 +1,8 @@
+import { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
+export { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime, type AssistantToolRuntimeOptions } from "./assistant-tool-runtime.js";
 export { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { createToolActivityObserver, type HandrailAssistantToolObserver } from "./tool-observer.js";
 import { createHash } from "node:crypto";
-import { recordToolLifecycle } from "./tool-lifecycle.js";
 import { reconcileDurableConversationTurn } from "./reconcile-conversation.js";
 import { replayConversation } from "../conversation/replay.js";
 import { findConversationEvent } from "../conversation/find-event.js";
@@ -9,7 +10,7 @@ import { createAssistantConversationTitles, type AssistantAutomaticTitleOptions,
   type AssistantTitleProviderRequest } from "./conversation-titles.js";
 
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
-import type { ApplicationToolResult, AuthoritativeAttribution, ChatRequest, JsonObject, JsonValue, StreamEvent } from "../protocol.js";
+import type { AuthoritativeAttribution, ChatRequest, JsonObject, StreamEvent } from "../protocol.js";
 import type { ProviderAdapterMetadata } from "../providers/index.js";
 import type { ToolLoopLimits } from "../tools/loop.js";
 import type { ConversationTransport, TurnResumePoint } from "../transports/types.js";
@@ -27,15 +28,11 @@ import { ApprovalProposalStoreError, type ApprovalProposalStore } from "../conve
 import type { PostgresAssistantPersistence, PostgresAssistantPersistenceBundle } from "../postgres/index.js";
 import { createAiApplication, type AiApplication, type ApplicationApprovalPolicy } from "./application.js";
 import type { ApplicationToolActivityUpdate, ApplicationToolExecutor, ApplicationToolPolicy,
-  BoundedToolExecutionOutcome, BoundedToolExecutorLimits } from "../tools/executor.js";
+  BoundedToolExecutorLimits } from "../tools/executor.js";
 import type { ToolPlugin } from "../tools/plugin.js";
-import type { ResponseToolCallEvent, ToolDefinition } from "../protocol.js";
 import type { AIRuntimeUsageConfiguration } from "./usage-control.js";
-import { createApprovalExecutionCoordinator, type ApprovalExecutionResume } from "../tools/approval-execution.js";
+import { createApprovalExecutionCoordinator } from "../tools/approval-execution.js";
 import { createApprovalCoordinator } from "../conversation/approval-coordinator.js";
-import { CONVERSATION_EVENT_VERSION, parseConversationEvent } from "../conversation/events.js";
-import type { ConversationEventAttribution } from "../conversation/state.js";
-import { ConversationEventStoreConflictError } from "../conversation/event-store.js";
 import { createConversationSynchronizationHttpHandler } from "../sync/http.js";
 import { createDurableApplicationConversationSync, qualifyDurableApplicationTurnStarts } from "../sync/durable-application-adapter.js";
 import { createInMemoryLivePresenceDelivery, createLivePresenceHttpHandler } from "../presence/live-delivery.js";
@@ -67,15 +64,7 @@ export interface HandrailAssistantProvider<TContext extends HandrailAssistantAut
     readonly persistence: PostgresAssistantPersistenceBundle<TContext>;
     readonly instructions: readonly string[];
     readonly toolActivity: HandrailAssistantToolObserver;
-    readonly tools: {
-      readonly definitions: readonly ToolDefinition[];
-      execute(call: Pick<ResponseToolCallEvent, "tool_call_id" | "name" | "arguments">,
-        signal: AbortSignal, location?: { readonly conversationId: string; readonly turnId: string }):
-        Promise<BoundedToolExecutionOutcome>;
-      awaitApproval(input: { readonly conversationId: string; readonly turnId: string;
-        readonly call: Pick<ResponseToolCallEvent, "tool_call_id" | "name" | "arguments">;
-        readonly signal: AbortSignal }): Promise<BoundedToolExecutionOutcome>;
-    };
+    readonly tools: AssistantToolRuntime;
     readonly limits: Readonly<ToolLoopLimits>;
     readonly diagnostics?: AiDiagnosticSink;
   }): ConversationTransport<StreamEvent, ChatRequest> | Promise<ConversationTransport<StreamEvent, ChatRequest>>;
@@ -177,66 +166,8 @@ function checkpointForEvent(event: StreamEvent): TurnResumePoint {
     lastAppliedRevision: event.sequence });
 }
 
-const SYSTEM_ATTRIBUTION: ConversationEventAttribution = Object.freeze({
-  actor: Object.freeze({ type: "system" }), source: Object.freeze({ type: "runtime" }),
-});
-
-function canonicalJson(value: JsonValue): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  return `{${Object.keys(value).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`).join(",")}}`;
-}
-
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function argumentReference(arguments_: JsonObject): string {
-  return `args-sha256-${digest(canonicalJson(arguments_))}`;
-}
-
-function approvalError(call: Pick<ResponseToolCallEvent, "tool_call_id" | "name">, message: string): BoundedToolExecutionOutcome {
-  const content = [{ type: "text" as const, text: message }];
-  const result: ApplicationToolResult = Object.freeze({ tool_call_id: call.tool_call_id, name: call.name,
-    content, is_error: true });
-  return Object.freeze({ status: "completed", result });
-}
-
-async function wait(milliseconds: number, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return false;
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(true); }, milliseconds);
-    const onAbort = () => { clearTimeout(timeout); resolve(false); };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-async function recordProposalCreated(
-  eventStore: PostgresAssistantPersistenceBundle<unknown>["events"], conversationId: string,
-  proposal: Awaited<ReturnType<ApprovalProposalStore<unknown>["create"]>>,
-): Promise<void> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const latest = await eventStore.getLatestRevision(conversationId as never);
-    try {
-      await eventStore.append({ conversationId: conversationId as never, expectedRevision: latest, events: [parseConversationEvent({
-        version: CONVERSATION_EVENT_VERSION, event_id: `approval-created:${proposal.proposal_id}`,
-        conversation_id: conversationId, revision: (latest ?? 0) + 1, occurred_at: proposal.created_at,
-        actor: SYSTEM_ATTRIBUTION.actor, source: SYSTEM_ATTRIBUTION.source,
-        payload: { type: "approval.proposal_created", proposal_id: proposal.proposal_id,
-          ...(proposal.group_id === null ? {} : { group_id: proposal.group_id }), turn_id: proposal.turn_id,
-          tool_call_id: proposal.tool_call_id, tool_name: proposal.tool_name, status: "pending", proposal_version: 1,
-          expires_at: proposal.expires_at, reviewed_arguments: proposal.reviewed_arguments },
-      })] });
-      return;
-    } catch (error) {
-      if (!(error instanceof ConversationEventStoreConflictError) || error.code !== "revision_conflict") throw error;
-      const retained = await findConversationEvent(eventStore, conversationId as never,
-        (event) => event.payload.type === "approval.proposal_created" && event.payload.proposal_id === proposal.proposal_id);
-      if (retained) return;
-    }
-  }
-  throw new ApprovalProposalStoreError("unavailable", "create");
 }
 
 /**
@@ -321,7 +252,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           verifyArguments: ({ binding, reviewedArguments, arguments: arguments_ }) => {
             if (binding.type !== "opaque_reference" || reviewedArguments.type !== "opaque_reference") return "mismatch";
             return binding.argumentReference === reviewedArguments.argument_ref &&
-              binding.argumentReference === argumentReference(arguments_) ? "match" : "mismatch";
+              binding.argumentReference === assistantToolArgumentReference(arguments_) ? "match" : "mismatch";
           },
         }),
         ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
@@ -385,7 +316,6 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     if (!transport) {
       transport = applicationFor(context).then((application) => {
         const bundle = bundleFor(context);
-        const definitions = application.discover({ context });
         const activityReporter = createConversationActivityReporter({
           store: bundle.activity,
           delivery: activityDeliveryFor(context),
@@ -403,108 +333,18 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
               phase: "failed", conversationId, code: "activity_update_failed", retryable: true, cause });
           }
         };
-        const recordOutcome = async (
-          location: { readonly conversationId: string; readonly turnId: string },
-          call: Pick<ResponseToolCallEvent, "tool_call_id" | "name" | "arguments">,
-          outcome: BoundedToolExecutionOutcome,
-        ): Promise<BoundedToolExecutionOutcome> => {
-          const identity = { turn_id: location.turnId as never, tool_call_id: call.tool_call_id as never };
-          await recordToolLifecycle(bundle.events, location.conversationId,
-            outcome.status === "external_approval_required"
-              ? { ...identity, type: "tool_call.approval_required" }
-              : { ...identity, type: "tool_call.result_recorded", content: outcome.result.content,
-                  is_error: outcome.result.is_error,
-                  ...(outcome.result.citation_records === undefined ? {} : { citation_records: outcome.result.citation_records }) });
-          return outcome;
-        };
-        const executeTool = async (
-          call: Pick<ResponseToolCallEvent, "tool_call_id" | "name" | "arguments">,
-          signal: AbortSignal,
-          location?: { readonly conversationId: string; readonly turnId: string },
-          approval?: Parameters<typeof application.executeTool>[0]["approval"],
-        ): Promise<BoundedToolExecutionOutcome> => {
-          if (location) {
-            const identity = { turn_id: location.turnId as never, tool_call_id: call.tool_call_id as never };
-            await recordToolLifecycle(bundle.events, location.conversationId,
-              { ...identity, type: "tool_call.requested", name: call.name, arguments: call.arguments });
-            await recordToolLifecycle(bundle.events, location.conversationId,
-              { ...identity, type: "tool_call.discovered" });
-          }
-          const outcome = await application.executeTool({ discovery: { context }, applicationContext: context, call, signal,
-            executionKey: `tool-${digest(JSON.stringify([context.scopeId,
-              location?.conversationId ?? null, location?.turnId ?? null, call.tool_call_id]))}`,
-            ...(approval === undefined ? {} : { approval }),
-            ...(location === undefined ? {} : {
-              location,
-              onExecutionStarted: () => recordToolLifecycle(bundle.events, location.conversationId,
-                { type: "tool_call.started", turn_id: location.turnId as never, tool_call_id: call.tool_call_id as never }),
-              reportActivity: (update: ApplicationToolActivityUpdate) => reportActivity(location.conversationId, location.turnId, update),
-            }) });
-          return location ? recordOutcome(location, call, outcome) : outcome;
-        };
         return options.provider.createTransport({
           context, persistence: bundle, limits, instructions,
           toolActivity: createToolActivityObserver({ events: bundle.events, report: reportActivity }),
-          tools: Object.freeze({
-            definitions,
-            async execute(call, signal, location) {
-              if (location && options.activityForToolCall) {
-                try {
-                  const initial = await options.activityForToolCall({ context,
-                    conversationId: location.conversationId, turnId: location.turnId,
-                    toolCallId: call.tool_call_id, toolName: call.name, arguments: call.arguments });
-                  if (initial) await reportActivity(location.conversationId, location.turnId, initial);
-                } catch (cause) {
-                  emitAiDiagnostic(options.diagnostics, { domain: "activity", operation: "tool_summary",
-                    phase: "failed", conversationId: location.conversationId, turnId: location.turnId,
-                    toolName: call.name, toolCallId: call.tool_call_id,
-                    code: "activity_summary_failed", retryable: false, cause });
-                }
-              }
-              return executeTool(call, signal, location);
+          tools: createAssistantToolRuntime({ context, application, events: bundle.events,
+            proposalStore: approvalStoreFor(context), reportActivity, approvalTimeoutMilliseconds,
+            authorizeLocation: async (location, signal) => {
+              signal.throwIfAborted();
+              await catalogFor(context).get({ authorizationContext: context, conversationId: location.conversationId as never });
+              signal.throwIfAborted();
             },
-            async awaitApproval({ conversationId, turnId, call, signal }) {
-              const finishError = (message: string) => recordOutcome({ conversationId, turnId }, call, approvalError(call, message));
-              await reportActivity(conversationId, turnId, { summary: "Waiting for approval to continue" });
-              const rawArguments = call.arguments as JsonObject;
-              const reference = argumentReference(rawArguments);
-              const identity = digest(`${conversationId}\u001f${turnId}\u001f${call.tool_call_id}\u001f${call.name}\u001f${reference}`);
-              const proposalId = `proposal-${identity.slice(0, 48)}` as never;
-              const createdAt = Date.now();
-              const proposalStore = approvalStoreFor(context);
-              const proposal = await proposalStore.create({ permissionContext: context, proposalId,
-                groupId: conversationId as never,
-                turnId: turnId as never, toolCallId: call.tool_call_id as never, toolName: call.name,
-                reviewedArguments: { type: "opaque_reference", argument_ref: reference as never },
-                expiresAt: new Date(createdAt + approvalTimeoutMilliseconds).toISOString() as never,
-                attribution: SYSTEM_ATTRIBUTION, idempotencyKey: `approval:${identity}`,
-                idempotencyFingerprint: `approval:${identity}` });
-              await recordProposalCreated(bundle.events, conversationId, proposal);
-              while (!signal.aborted && Date.now() - createdAt < approvalTimeoutMilliseconds) {
-                const retained = await proposalStore.get({ permissionContext: context, proposalId });
-                if (retained === null) return finishError("Tool approval is unavailable.");
-                if (retained.status === "confirmed") {
-                  await reportActivity(conversationId, turnId, { summary: "Running approved work" });
-                  const approval: ApprovalExecutionResume<TContext> = { permissionContext: context, proposalId,
-                    expectedProposalVersion: retained.proposal_version, executionId: `execute-${identity.slice(0, 48)}`,
-                    argumentBinding: { type: "opaque_reference", argumentReference: reference as never },
-                    attribution: SYSTEM_ATTRIBUTION };
-                  return executeTool(call, signal, { conversationId, turnId },
-                    { ...approval, conversationId: conversationId as never, turnId: turnId as never });
-                }
-                if (retained.status === "rejected") return finishError("Tool execution was rejected.");
-                if (retained.status === "expired") return finishError("Tool approval expired.");
-                if (retained.status === "executed" || retained.status === "executing") {
-                  return executeTool(call, signal, { conversationId, turnId }, { permissionContext: context, proposalId,
-                    expectedProposalVersion: 2, executionId: `execute-${identity.slice(0, 48)}`,
-                    argumentBinding: { type: "opaque_reference", argumentReference: reference as never },
-                    attribution: SYSTEM_ATTRIBUTION, conversationId: conversationId as never, turnId: turnId as never });
-                }
-                if (retained.status === "failed") return finishError("Approved tool execution failed.");
-                if (!await wait(250, signal)) break;
-              }
-              return finishError(signal.aborted ? "Tool execution was cancelled." : "Tool approval expired.");
-            },
+            ...(options.activityForToolCall ? { activityForToolCall: options.activityForToolCall } : {}),
+            ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
           }),
           ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
         });

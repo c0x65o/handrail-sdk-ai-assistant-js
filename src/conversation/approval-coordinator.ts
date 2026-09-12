@@ -555,7 +555,13 @@ function eventMatchesDecision<TPermissionContext>(
   proposal: ConversationApprovalProposalRecord,
 ): boolean {
   const expected = decisionEvent(input, proposal, event.event_id, event.revision);
-  return JSON.stringify(event) === JSON.stringify(expected);
+  // JSONB and other durable stores may reorder object keys. Identity depends
+  // on the complete event values, including array order, not key insertion order.
+  const canonical = (value: unknown) => JSON.stringify(value, (_key, current) =>
+    current !== null && typeof current === "object" && !Array.isArray(current)
+      ? Object.fromEntries(Object.entries(current).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+      : current);
+  return canonical(event) === canonical(expected);
 }
 
 function decisionEvent<TPermissionContext>(

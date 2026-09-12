@@ -11,6 +11,10 @@ For styled React chat or Markdown components, install the optional UI peers
 Core, client, server, and headless entry points do not load these peers. See
 [shared Markdown rendering](./docs/markdown-rendering.md).
 
+Chat can optionally expose a **Bad response** action through the Bug Reporter
+SDK. It is disabled by default and requires platform support for manual review
+before enablement. See [bad-response reporting](./docs/bad-response-reporting.md).
+
 ## Production assistant in one boundary
 
 ```ts

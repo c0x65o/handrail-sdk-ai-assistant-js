@@ -1,4 +1,5 @@
 /** Optional React entry point for @handrail/ai-assistant. */
+export { BadResponseButton, type BadResponseButtonProps } from "./bad-response-button.js";
 export {
   ConversationProvider,
   type ConversationFactoryProviderProps,
