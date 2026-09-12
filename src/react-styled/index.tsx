@@ -134,6 +134,10 @@ export function installToolRendererPlugins(
 }
 
 export interface StyledChatPresetProps extends ComposerApprovalControlProps {
+  /** Disable composer style injection when styles are supplied by the host build. */
+  readonly includeStyles?: boolean;
+  /** Hide attachment selection when the gateway has no attachment capability. */
+  readonly attachmentsEnabled?: boolean;
   readonly title?: ReactNode;
   readonly layout?: StyledChatLayout;
   readonly composer?: ConversationComposerResult;
@@ -295,7 +299,7 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
               disabled={!responseIsComplete(resolvedState, message)}
               reporting={props.badResponseReporting}/>}
           </div>
-        </div> })}>{props.emptyState}</FollowedTranscript>
+        </div> })}>{resolvedState?.messages.length ? undefined : props.emptyState}</FollowedTranscript>
       <div className="hr-chat__status">{currentActivity?.turnStatus === "running" && currentActivity.summary
         ? <span role="status" className="hr-chat__assistant-activity">{currentActivity.summary}{activityProgress
           ? ` (${activityProgress.completed}/${activityProgress.total}${activityProgress.unit ? ` ${activityProgress.unit}` : ""})`
@@ -306,11 +310,13 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
           : <><StreamStatus/><AssistantActivityIndicator className="hr-chat__assistant-activity"/></>}<TypingIndicator/></div>
       <ToolActivity className="hr-chat__tool-activity" {...(props.toolActivity ? { display: props.toolActivity } : {})}
         {...(props.renderToolActivity ? { children: props.renderToolActivity } : {})}/>
-      <LiveRegion/>
+      <LiveRegion className="hr-chat__sr"/>
     </main>
     {(props.approvals || props.citations) && <aside className="hr-chat__aux">{props.approvals}{props.citations}</aside>}
     <StandardChatComposer key={resolvedState?.conversation_id ?? "unselected"} {...(props.composer ? { composer: props.composer } : {})} canStop={canStop}
       placeholder={labels.placeholder} labels={labels}
+      {...(props.includeStyles === undefined ? {} : { includeStyles: props.includeStyles })}
+      {...(props.attachmentsEnabled === undefined ? {} : { attachmentsEnabled: props.attachmentsEnabled })}
       {...(props.approvalMode === undefined ? {} : { approvalMode: props.approvalMode })}
       {...(props.onApprovalModeChange === undefined ? {} : { onApprovalModeChange: props.onApprovalModeChange })}
       {...(props.showApprovalControl === undefined ? {} : { showApprovalControl: props.showApprovalControl })}
@@ -1002,6 +1008,8 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
   );
   const workspaceProps = {
     ...launcher,
+    includeStyles: props.includeStyles !== false,
+    attachmentsEnabled: props.attachmentsEnabled ?? (state.client.attachmentUpload !== null || props.uploaderForConversation !== undefined),
     workspace: state.client.workspace,
     ...(voiceMonitor ? { voiceActivity: voiceMonitor } : {}),
     ...(state.client.activity === null ? {} : { activity: state.client.activity }),

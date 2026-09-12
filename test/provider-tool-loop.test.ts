@@ -196,4 +196,39 @@ describe("createProviderToolLoopTransport", () => {
     expect({ invocations, preparations }).toEqual({ invocations: 1, preparations: parallelism });
   });
 
+  it("records an active provider deadline as timeout instead of runtime shutdown", async () => {
+    const adapter: ProviderAdapter = {
+      metadata: { provider_id: "fake", model_id: "fake-model", capabilities: {
+        streaming: true, text: true, tool_calls: true, parallel_tool_calls: false, reasoning: false,
+        document_input: { supported: false }, provider_context: { supported: false, reason: "provider_not_supported" },
+        context_window_tokens: null, max_output_tokens: null,
+      } },
+      provider_context: { supported: false, reason: "provider_not_supported" },
+      async *invoke(input) {
+        yield event(input, 0, { type: "response.started", attribution });
+        await new Promise<void>((resolve) => {
+          if (input.signal.aborted) resolve();
+          else input.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        // Provider adapters see an aborted signal but do not own the host budget.
+        return { status: "cancelled", reason: "runtime_shutdown", usage } satisfies ProviderAdapterResult;
+      },
+    };
+    const transport = createProviderToolLoopTransport({ adapter, tools: [],
+      limits: { maxIterations: 2, maxTotalToolCalls: 4, maxElapsedMs: 25, parallelism: 1 },
+      createContext: () => ({ request_id: "deadline", trace_id: "deadline", attribution, correlation_hints: {} }),
+      executeTool: async () => { throw new Error("No tools were requested"); },
+    });
+    const request: ChatRequest = { protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: null,
+      messages: [{ role: "user", content: [{ type: "text", text: "Summarize" }] }], tools: [], tool_results: [],
+      generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} };
+    const started = await transport.startTurn({ conversationId: "deadline", conversationTurnId: "turn" as never,
+      mutationId: "mutation" as never, idempotencyKey: "start", request });
+    if (!started.ok) throw new Error(started.error.message);
+    const events: StreamEvent[] = [];
+    for await (const item of started.value.observation.events) events.push(item);
+    expect(parseStreamEvents(events).at(-1)).toMatchObject({ type: "response.cancelled", reason: "deadline_exceeded" });
+    expect(await started.value.observation.result).toMatchObject({ status: "cancelled" });
+  });
+
 });

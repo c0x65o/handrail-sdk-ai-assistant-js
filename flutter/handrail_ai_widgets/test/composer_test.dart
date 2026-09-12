@@ -46,6 +46,44 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+  testWidgets(
+      'host theme styles the shared composer and hides unavailable attachments',
+      (tester) async {
+    final controller = TextEditingController(text: 'Draft');
+    addTearDown(controller.dispose);
+    const decoration = BoxDecoration(color: Color(0xff291918));
+    const textStyle = TextStyle(color: Colors.white, fontSize: 13);
+    var sent = 0;
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: HandrailComposer(
+      controller: controller,
+      decoration: decoration,
+      inputTextStyle: textStyle,
+      sendButtonStyle: IconButton.styleFrom(
+          backgroundColor: Colors.deepOrange,
+          foregroundColor: Colors.white,
+          minimumSize: const Size.square(48)),
+      showAttachmentControl: false,
+      showApprovalControl: false,
+      voiceControls: const [],
+      canSend: true,
+      onSend: () => sent++,
+    ))));
+    expect(find.byTooltip('Add files and images'), findsNothing);
+    expect(tester.widget<TextField>(find.byType(TextField)).style, textStyle);
+    expect(
+        find.byWidgetPredicate(
+            (widget) => widget is Container && widget.decoration == decoration),
+        findsOneWidget);
+    final send = tester.widget<IconButton>(find.byType(IconButton));
+    expect(send.style!.backgroundColor!.resolve({}), Colors.deepOrange);
+    expect(send.style!.minimumSize!.resolve({}), const Size.square(48));
+    await tester.tap(find.byType(IconButton));
+    expect(sent, 1);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('approval switch changes the next-message preference',
       (tester) async {
     var mode = HandrailApprovalMode.required;

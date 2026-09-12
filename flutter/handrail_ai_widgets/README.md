@@ -4,6 +4,8 @@
 
 Pass a controller, the host attachment picker, the host send/cancel callbacks, and current availability. The host owns uploads, authorization, and network persistence. `input` and `voiceControls` let existing authenticated text/paste/transcription implementations share the layout. Dictation appends to the draft and never sends it. Default device dictation uses speech_to_text; platform availability and microphone/speech permissions apply.
 
+`decoration`, `inputTextStyle`, and `sendButtonStyle` customize the stock composer for host branding and dark themes. Unspecified properties retain the standard defaults. Custom input widgets retain their own typography. Set `showAttachmentControl: false` when the authenticated gateway does not offer uploads; this hides the toolbar control without changing upload policy.
+
 `showApprovalControl` only changes visibility. Default `approvalMode` is required. Wire `onApprovalModeChanged` to the per-message preference and include `handrailApprovalMetadata(mode)` in the retained gateway ChatRequest metadata. The server must validate and resolve this preference before executing tools, while enforcing account permissions. Never implement automatic mode by confirming old proposal cards in the client. Changes to the preference apply to the next submitted request; retained retries preserve their original preference.
 
 Image paste is opt-in via `onPasteImage`. The default editor includes a Paste image context action and Control/Command+V handling with normal text fallback. All pasted bytes go through the host's normal attachment validation and upload path. A custom `input` retains its own platform paste handling.

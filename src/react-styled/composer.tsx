@@ -139,6 +139,8 @@ export const HANDRAIL_CHAT_COMPOSER_CSS = `
 `;
 
 export interface StandardChatComposerProps extends ComposerApprovalControlProps {
+  /** Disable runtime styles when the host bundles HANDRAIL_CHAT_COMPOSER_CSS under its CSP. */
+  readonly includeStyles?: boolean;
   readonly composer?: ConversationComposerResult;
   readonly canStop?: boolean;
   readonly placeholder?: string;
@@ -158,7 +160,7 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
     if (node) { node.style.height = "auto"; node.style.height = `${Math.min(Math.max(26, node.scrollHeight), 120)}px`; }
   }, [props.composer?.draft]);
   return <Composer {...(props.composer ? { composer: props.composer } : {})} className="hr-composer">
-    <style>{HANDRAIL_CHAT_COMPOSER_CSS}</style>
+    {props.includeStyles === false ? null : <style>{HANDRAIL_CHAT_COMPOSER_CSS}</style>}
     <Form className="hr-composer__form">
       <AttachmentList showRetry={false} className="hr-composer__attachments"/>
       <Textarea ref={textarea} className="hr-composer__draft" rows={1} maxLength={props.maxLength} placeholder={props.placeholder ?? "Message…"}/>

@@ -173,6 +173,12 @@ export function createProviderToolLoopTransport(
             step = await stream.next();
           }
           finalResult = step.value;
+          // The loop owns this deadline. A provider only sees an aborted signal
+          // and may classify it as runtime shutdown; retain the actual cause.
+          // Parent cancellation stays under the transport's cancellation policy.
+          if (finalResult.status === "cancelled" && budget.signal.aborted && !turn.signal.aborted) {
+            finalResult = { ...finalResult, reason: "deadline_exceeded" };
+          }
           if (finalResult.usage) {
             usages.push(finalResult.usage);
             await options.captureUsage?.(projectProviderUsageToReceipt(finalResult.usage, {

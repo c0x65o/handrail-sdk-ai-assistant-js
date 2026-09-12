@@ -8,6 +8,35 @@ import { InMemoryConversationActivityStore } from "../src/conversation/activity.
 import { CatalogWorkspaceThreadPicker, HandrailAssistantLauncher, StandardConversationTitleObserver, StandardGatewayApprovals, StyledChatLauncher, StyledChatPreset, StyledChatPresetStyles, WorkspaceThreadPicker, createHandrailChatThemeStyle, gatewayAttachmentIntake, installToolRendererPlugins } from "../src/react-styled/index.js";
 
 describe("styled React preset", () => {
+  it("renders custom empty content only while the transcript has no messages", () => {
+    const initial = createInitialConversationState("cents" as never);
+    const view = render(<StyledChatPreset state={initial} emptyState={<p>Ask Cents</p>}/>);
+    expect(screen.getByText("Ask Cents")).toBeTruthy();
+    const loaded = reduceConversationEvent(initial, parseConversationEvent({ version: 1,
+      conversation_id: "cents", event_id: "imported-reply", revision: 1,
+      occurred_at: "2026-09-11T00:00:00.000Z", actor: { type: "assistant" }, source: { type: "import" },
+      payload: { type: "message.created", message_id: "saved-reply", role: "assistant",
+        content: [{ type: "text", text: "Your saved reply" }] } }));
+    view.rerender(<StyledChatPreset state={loaded} emptyState={<p>Ask Cents</p>}/>);
+    expect(screen.getByText("Your saved reply")).toBeTruthy();
+    expect(screen.queryByText("Ask Cents")).toBeNull();
+    view.rerender(<StyledChatPreset state={initial} emptyState={<p>Ask Cents</p>}/>);
+    expect(screen.getByText("Ask Cents")).toBeTruthy();
+    expect(screen.queryByText("Your saved reply")).toBeNull();
+    view.unmount();
+  });
+
+  it("supports host-bundled styles and hides unsupported attachment controls", () => {
+    const view = render(<StyledChatPreset includeStyles={false} attachmentsEnabled={false}/>);
+    expect(view.container.querySelector("style")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Attach" })).toBeNull();
+    expect(screen.getByRole("textbox")).toBeTruthy();
+    view.rerender(<StyledChatPreset/>);
+    expect(view.container.querySelector("style")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Attach" })).toBeTruthy();
+    view.unmount();
+  });
+
   it("counts concurrent runs and unread failures independently, then clears attention when read", () => {
     const activity = new InMemoryConversationActivityStore();
     activity.replace([
