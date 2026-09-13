@@ -1,3 +1,5 @@
+export { createTrackedOpenAIResponsesRequest, type TrackedOpenAIResponsesRequestOptions, type OpenAIResponsesExecutionContext } from "./openai-responses-request.js";
+export { retainProviderInvocation, type ProviderInvocationOperationStore } from "./provider-invocations.js";
 import { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
 export { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime, type AssistantToolRuntimeOptions } from "./assistant-tool-runtime.js";
 export { createActiveExecutionBudget } from "../tools/active-budget.js";
@@ -48,7 +50,7 @@ import { createAssistantActivityTransport } from "../presence/assistant-activity
 export { waitForApplicationApproval, ApplicationApprovalWaitExpiredError,
   type ApplicationApprovalWaitOptions, type ApplicationApprovalObservation } from "./application-approval-wait.js";
 export type { HandrailAssistantToolObserver } from "./tool-observer.js";
-export { openaiResponses, type HandrailOpenAIResponsesOptions } from "./openai-responses.js";
+export { openaiResponses, createOpenAIResponsesRequest, type HandrailOpenAIResponsesOptions } from "./openai-responses.js";
 export { createProviderToolLoopTransport, type ProviderToolLoopTransportOptions } from "./provider-tool-loop.js";
 export type { AssistantAutomaticTitleOptions, AssistantTitleProviderRequest } from "./conversation-titles.js";
 

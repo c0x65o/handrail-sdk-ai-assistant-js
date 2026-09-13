@@ -2,11 +2,11 @@ import { awaitWithSignal } from "../await-signal.js";
 import { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { AI_RUNTIME_PROTOCOL_VERSION, parseChatRequest, type ApplicationToolResult,
   type ChatRequest, type ResponseToolCallEvent, type StreamEvent } from "../protocol.js";
-import type { ProviderAdapter, ProviderAdapterError, ProviderAdapterResult, ProviderDocumentReferenceResolver, ProviderAttachmentReferenceResolver,
+import type { ProviderAdapter, ProviderAdapterInvocation, ProviderAdapterStream, ProviderAdapterError, ProviderAdapterResult, ProviderDocumentReferenceResolver, ProviderAttachmentReferenceResolver,
   ProviderRequestContext, ProviderUsage } from "../providers/index.js";
 import type { ToolLoopLimits } from "../tools/loop.js";
 import { createApplicationTurnTransport } from "../transports/application-turn.js";
-import type { ConversationTransport, TurnObservationResult } from "../transports/types.js";
+import type { ConversationTransport, DurableTurnExecutionIdentity, TurnObservationResult } from "../transports/types.js";
 import type { NormalizedUsageReceipt } from "../usage.js";
 import { projectProviderUsageToReceipt } from "../usage.js";
 
@@ -30,6 +30,10 @@ export interface ProviderToolLoopFailureResult {
 
 export interface ProviderToolLoopTransportOptions {
   readonly adapter: ProviderAdapter;
+  /** Scoped invocation seam for durable replay and physical request accounting. Metadata remains adapter-owned. */
+  readonly invokeProvider?: (input: { readonly invocation: ProviderAdapterInvocation;
+    readonly conversationId: string; readonly turnId: string; readonly mutationId: string;
+    readonly iteration: number; readonly durableExecution?: DurableTurnExecutionIdentity }) => ProviderAdapterStream;
   readonly tools: ChatRequest["tools"];
   readonly limits: Readonly<ToolLoopLimits>;
   readonly createContext: (input: {
@@ -59,6 +63,8 @@ export interface ProviderToolLoopTransportOptions {
     readonly reference: Parameters<ProviderAttachmentReferenceResolver>[0]; readonly signal: AbortSignal }) => ReturnType<ProviderAttachmentReferenceResolver>;
   /** Called after every provider invocation; production callers durably capture before resolving. */
   readonly captureUsage?: (receipt: NormalizedUsageReceipt) => void | Promise<void>;
+  /** False when invokeProvider already captures every physical attempt for durable executions. Defaults to true. */
+  readonly captureUsageForDurableExecution?: boolean;
   readonly resolveDocumentReference?: (input: {
     readonly conversationId: string;
     readonly reference: Parameters<ProviderDocumentReferenceResolver>[0];
@@ -140,7 +146,7 @@ export function createProviderToolLoopTransport(
             mutationId: turn.mutationId, iteration });
           rootRequestId ||= context.request_id; traceId ||= context.trace_id;
           const discovered: ResponseToolCallEvent[] = [];
-          const stream = options.adapter.invoke({
+          const invocation: ProviderAdapterInvocation = {
             continuation_of: request.continuation_of,
             messages: request.messages,
             tools: options.tools,
@@ -159,7 +165,10 @@ export function createProviderToolLoopTransport(
                   conversationId: turn.conversationId, reference, signal: resolution.signal,
                 }),
             }),
-          });
+          };
+          const stream = options.invokeProvider ? options.invokeProvider({ invocation, conversationId: turn.conversationId,
+            turnId: turn.turnId, mutationId: turn.mutationId, iteration,
+            ...(turn.durableExecution ? { durableExecution: turn.durableExecution } : {}) }) : options.adapter.invoke(invocation);
           let step = await stream.next();
           while (!step.done) {
             const event = step.value;
@@ -181,7 +190,7 @@ export function createProviderToolLoopTransport(
           }
           if (finalResult.usage) {
             usages.push(finalResult.usage);
-            await options.captureUsage?.(projectProviderUsageToReceipt(finalResult.usage, {
+            if (!turn.durableExecution || options.captureUsageForDurableExecution !== false) await options.captureUsage?.(projectProviderUsageToReceipt(finalResult.usage, {
               usage_receipt_id: `${rootRequestId}:usage:${iteration}`,
               conversation_id: turn.conversationId, turn_id: turn.turnId,
               logical_request_id: rootRequestId, trace_id: traceId,

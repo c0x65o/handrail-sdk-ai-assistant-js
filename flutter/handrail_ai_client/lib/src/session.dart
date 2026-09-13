@@ -114,6 +114,8 @@ class HandrailConversationSession {
   Future<void>? _refreshing;
   Future<void>? _submitting;
   String? _submittingJson;
+  HandrailTurnSubmission? _admittedSubmission;
+  final _admissionCallbacks = <void Function(HandrailTurnSubmission)>[];
   Completer<void>? _startAcknowledgement;
   StreamSubscription<HandrailStreamFrame>? _observation;
   String? _observedTurnId;
@@ -140,6 +142,7 @@ class HandrailConversationSession {
     }
   }
   HandrailConversationDocument? get document => _document;
+  HandrailGatewayCapabilities? get capabilities => _capabilities;
   HandrailGatewayException? get error => _error;
   bool get isRefreshing => _refreshing != null;
   bool get isSubmitting => _submitting != null;
@@ -331,27 +334,33 @@ class HandrailConversationSession {
       {required String operationId,
       required String clientId,
       required Map<String, Object?> request,
-      required HandrailPendingTurnStore pendingStore}) async {
+      required HandrailPendingTurnStore pendingStore,
+      void Function(HandrailTurnSubmission)? onAccepted}) async {
     final submission = await prepareTurn(
         operationId: operationId, clientId: clientId, request: request);
     await pendingStore.retain(submission);
-    await submitTurn(submission);
+    await submitTurn(submission, onAccepted: onAccepted);
     await pendingStore.acknowledge(submission);
     return submission;
   }
 
   Future<HandrailTurnSubmission?> retryPendingMessage(
-      HandrailPendingTurnStore pendingStore) async {
+      HandrailPendingTurnStore pendingStore,
+      {void Function(HandrailTurnSubmission)? onAccepted}) async {
     final submission = await pendingStore.load(conversationId);
     if (submission == null) return null;
-    await submitTurn(submission);
+    await submitTurn(submission, onAccepted: onAccepted);
     await pendingStore.acknowledge(submission);
     return submission;
   }
 
   /// Acknowledges admission/start, not completion. Repeating an uncertain send
   /// requires the exact saved submission; the server deduplicates both writes.
-  Future<void> submitTurn(HandrailTurnSubmission submission) {
+  /// [onAccepted] runs after durable admission is verified, before observing the
+  /// provider response. It is a presentation notification, not execution success.
+  /// Callback failures cannot strand admitted work. Coalesced callers are notified too.
+  Future<void> submitTurn(HandrailTurnSubmission submission,
+      {void Function(HandrailTurnSubmission)? onAccepted}) {
     if (_disposed)
       return Future.error(StateError('Conversation session is disposed'));
     if (submission.conversationId != conversationId)
@@ -359,10 +368,16 @@ class HandrailConversationSession {
           ArgumentError('Submission belongs to another conversation'));
     final json = jsonEncode(submission.toJson());
     if (_submitting != null) {
-      if (_submittingJson == json) return _submitting!;
+      if (_submittingJson == json) {
+        _registerAdmissionCallback(onAccepted);
+        return _submitting!;
+      }
       return Future.error(StateError('A different message is being submitted'));
     }
     _submittingJson = json;
+    _admittedSubmission = null;
+    _admissionCallbacks.clear();
+    _registerAdmissionCallback(onAccepted);
     return _submitting = _submitTurn(submission).catchError((Object cause) {
       if (_disposed) throw cause;
       _error = cause is HandrailGatewayException
@@ -375,9 +390,37 @@ class HandrailConversationSession {
     }).whenComplete(() {
       _submitting = null;
       _submittingJson = null;
+      _admittedSubmission = null;
+      _admissionCallbacks.clear();
       _startAcknowledgement = null;
       _publish();
     });
+  }
+
+  void _registerAdmissionCallback(
+      void Function(HandrailTurnSubmission)? callback) {
+    if (callback == null) return;
+    final admitted = _admittedSubmission;
+    if (admitted == null) {
+      _admissionCallbacks.add(callback);
+    } else {
+      try {
+        callback(admitted);
+      } catch (_) {/* Presentation does not own the turn. */}
+    }
+  }
+
+  void _publishAdmission(HandrailTurnSubmission submission) {
+    if (_disposed) return;
+    _admittedSubmission = submission;
+    final callbacks = List.of(_admissionCallbacks);
+    _admissionCallbacks.clear();
+    for (final callback in callbacks) {
+      if (_disposed) break;
+      try {
+        callback(submission);
+      } catch (_) {/* Keep admitted work recoverable. */}
+    }
   }
 
   Future<void> _submitTurn(HandrailTurnSubmission submission) async {
@@ -420,6 +463,8 @@ class HandrailConversationSession {
       throw const HandrailGatewayException('admission_unconfirmed',
           'The saved message is not visible yet. Retry the saved message.',
           retryable: true);
+    _publishAdmission(submission);
+    if (_disposed) throw StateError('Conversation session is disposed');
     // A lost start acknowledgement can arrive after the run finished. Never
     // restart a canonical terminal turn, even if its transport record expired.
     if (const ['completed', 'cancelled', 'failed']
@@ -485,6 +530,8 @@ class HandrailConversationSession {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _admissionCallbacks.clear();
+    _admittedSubmission = null;
     _timer?.cancel();
     await _disconnectObservation();
     await _changes.close();

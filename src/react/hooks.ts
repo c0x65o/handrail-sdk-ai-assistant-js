@@ -31,6 +31,7 @@ export interface ConversationActions<TRequest = unknown> {
   ): Promise<ConversationRuntimeTurnResult>;
   resumeTurn(turnId: ConversationTurnId): Promise<ConversationRuntimeTurnResult>;
   restoreActiveTurn(): Promise<ConversationRuntimeTurnResult | null>;
+  readonly cancelTurn: ConversationRuntime<TRequest>["cancelTurn"];
 }
 
 type ConversationMutableStore = ConversationReadableStore & Pick<
@@ -129,6 +130,8 @@ export function useConversationActions<TRequest = unknown>(): ConversationAction
       resumeTurn: (turnId: ConversationTurnId) =>
         requireRuntime().resumeTurn(turnId),
       restoreActiveTurn: () => requireRuntime().restoreActiveTurn(),
+      cancelTurn: (turnId: ConversationTurnId, reason: Parameters<ConversationRuntime<TRequest>["cancelTurn"]>[1]) =>
+        requireRuntime().cancelTurn(turnId, reason),
     });
   }, [binding]);
 }

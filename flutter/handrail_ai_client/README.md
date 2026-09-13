@@ -156,3 +156,35 @@ outcomes. Reading or selecting a conversation never acknowledges voice results.
 Hosts should label cached active state as last reported when an error is present,
 show the checking/error state before inferring absence, enforce authenticated
 transport timeouts, and dispose/recreate the monitor on account changes.
+
+
+### Submission admission notification
+
+`sendMessage`, `retryPendingMessage` and `submitTurn` accept an optional
+`onAccepted(HandrailTurnSubmission)` callback. It runs after all durable
+admission acknowledgements and the canonical turn have been verified, before
+starting/observing the provider response. Coalesced callers for the exact same
+submission are notified too. A callback exception cannot strand admitted work.
+Storage/admission failures do not clear an unsent draft, and a lost start reply
+can occur after acceptance: recover the same pending submission instead of
+constructing another message. Pair this notification with the Flutter widgets'
+`HandrailDraftController` or `HandrailComposerDrafts`, never with a completion-time
+text comparison. This additive API is part of the local consolidation candidate.
+
+
+### Protected transcription
+
+`HandrailGatewayCapabilities.transcription` describes available formats, bytes,
+duration and an optional endpoint. `HandrailConversationSession.capabilities`
+exposes the negotiated value after initialization. `transcribeAudio` validates
+that contract, sends raw audio through the protected client, bounds the response,
+and maps safe errors without provider text. The URI remains under the configured
+gateway; authenticated redirects are disabled. Pass a cancellation future to stop
+observation. A late response cannot be inserted after cancellation; cancellation
+alone does not prove the provider never ran.
+
+`transcribeAudioResult` returns a structural `(text, errorCode, retryable)` record.
+`transcriptionForConversation(id, capability: capability)` supplies the function
+expected by the optional Flutter composer. This keeps the two SDK packages
+independent while removing per-host HTTP/error adapters. A retained retry must
+reuse its exact recording and key; `outcome_unknown` is never retryable.

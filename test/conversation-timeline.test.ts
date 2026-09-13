@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { assistantToolArgumentReference } from "../src/conversation/approval-arguments.js";
 import { describe, expect, it } from "vitest";
 import { conversationTimeline } from "../src/conversation/timeline.js";
 import { createInitialConversationState, type ConversationState, type ConversationApprovalProposalRecord,
@@ -61,4 +63,10 @@ describe("conversation timeline", () => {
     expect(labels(conversationTimeline({ ...state(), turns: [failure, { ...failure, turn_id: "missing" as never }] })))
       .toEqual(["question", "answer", "failed:turn-1", "next-question", "next-answer", "failed:missing"]);
   });
+});
+
+it("uses the same portable canonical argument digest as the authorized server", () => {
+  const arguments_ = { amount: 212, category: "Software", nested: { z: false, a: ["é", 1] } };
+  const canonical = '{"amount":212,"category":"Software","nested":{"a":["é",1],"z":false}}';
+  expect(assistantToolArgumentReference(arguments_)).toBe(`args-sha256-${createHash("sha256").update(canonical).digest("hex")}`);
 });

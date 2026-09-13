@@ -27,6 +27,16 @@ it("focuses the editable draft on Send activation and does not steal later focus
   expect(screen.getByRole("textbox").hasAttribute("disabled")).toBe(false);
   expect(document.activeElement).toBe(elsewhere);
 });
+it("blocks form and Enter sends when a host exposes Stop before the composer observes the turn", () => {
+  const input = composer(), onKeyDown = vi.fn();
+  const view = render(<StandardChatComposer composer={{ ...input,
+    getTextareaProps: () => ({ ...input.getTextareaProps(), onKeyDown }) }} canStop voiceControls={null}/>);
+  expect(fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" })).toBe(false);
+  expect(onKeyDown).not.toHaveBeenCalled();
+  fireEvent.submit(view.container.querySelector("form")!);
+  expect(input.submit).not.toHaveBeenCalled();
+  expect(fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", shiftKey: true })).toBe(true);
+});
 it.each(["disabled", "running"])("prevents dropped files when attachments are %s while allowing text edits", (state) => {
   const onDrop = vi.fn();
   const input = { ...composer(), getDropProps: () => ({ onDrop, onDragOver: vi.fn() }) };

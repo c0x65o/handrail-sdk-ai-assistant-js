@@ -109,9 +109,20 @@ void main() {
     (wire['messages'] as List).clear();
     final saved = HandrailTurnSubmission.fromJson(
         jsonDecode(jsonEncode(prepared.toJson())) as Map<String, dynamic>);
-    final first = view.submitTurn(saved), duplicate = view.submitTurn(saved);
+    final accepted = <String>[];
+    final first = view.submitTurn(saved, onAccepted: (submission) {
+      expect(view.document!.activeTurnId, submission.turnId);
+      expect(view.document!.messages.where((m) => m['role'] == 'user'),
+          hasLength(1));
+      accepted.add('first:${submission.turnId}');
+      throw StateError('Presentation callback failure');
+    });
+    final duplicate = view.submitTurn(saved, onAccepted: (submission) {
+      accepted.add('duplicate:${submission.turnId}');
+    });
     expect(identical(first, duplicate), isTrue);
     await first;
+    expect(accepted, ['first:${saved.turnId}', 'duplicate:${saved.turnId}']);
     expect(view.document!.activeTurnId, saved.turnId);
     expect(view.document!.messages.where((m) => m['role'] == 'user'),
         hasLength(1));
@@ -203,6 +214,7 @@ void main() {
     final id = await conversation(api), view = session(api, id);
     final values = <String, String>{};
     var failStorage = true;
+    final accepted = <String>[];
     final journal = HandrailKeyValuePendingTurnStore(
         namespace: 'gateway-journal',
         read: (key) async => values[key],
@@ -219,24 +231,32 @@ void main() {
             operationId: 'unsaved',
             clientId: 'dart-test',
             request: request('Do not send before saving'),
-            pendingStore: journal),
+            pendingStore: journal,
+            onAccepted: (submission) => accepted.add(submission.turnId)),
         throwsStateError);
     expect((await stats())['admissions'], before['admissions']);
     expect((await stats())['starts'], before['starts']);
+    expect(accepted, isEmpty);
     failStorage = false;
     await expectLater(
         view.sendMessage(
             operationId: 'journal-${identity++}',
             clientId: 'dart-test',
             request: request('Recover the saved send'),
-            pendingStore: journal),
+            pendingStore: journal,
+            onAccepted: (submission) => accepted.add(submission.turnId)),
         throwsA(isA<HandrailGatewayException>()));
     final pending = await journal.load(id);
     expect(pending, isNotNull);
+    expect(accepted, [pending!.turnId]);
     await view.dispose();
     final recovered = session(api, id);
-    expect((await recovered.retryPendingMessage(journal))!.turnId,
-        pending!.turnId);
+    expect(
+        (await recovered.retryPendingMessage(journal,
+                onAccepted: (submission) => accepted.add(submission.turnId)))!
+            .turnId,
+        pending.turnId);
+    expect(accepted, [pending.turnId, pending.turnId]);
     expect(await journal.load(id), isNull);
     expect((await stats())['invocations'], before['invocations'] + 1);
     await finish();

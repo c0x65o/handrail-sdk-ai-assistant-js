@@ -1,3 +1,4 @@
+import { correlateOpenAIResponsesFunctionCalls } from "./openai-responses-stream.js";
 import { awaitWithSignal } from "../await-signal.js";
 import {
   normalizeCitationRecords,
@@ -393,7 +394,7 @@ export class OpenAIResponsesProviderAdapter implements ProviderAdapter {
       const citations = new Map<string, WebCitation>();
       let toolCalls = 0;
       let streamedText = false;
-      for await (const item of source) {
+      for await (const item of correlateOpenAIResponsesFunctionCalls(source)) {
         if (invocation.signal.aborted) throw new DOMException("Aborted", "AbortError");
         const event = record(item);
         collectWebCitations(event, citations);

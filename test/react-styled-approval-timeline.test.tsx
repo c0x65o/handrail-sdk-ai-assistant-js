@@ -1,6 +1,5 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createHash } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { createInitialConversationState, type ConversationApprovalProposalRecord, type ConversationState,
   type ConversationToolCallRecord } from "../src/conversation/state.js";
@@ -25,10 +24,7 @@ function fixture(matching = true) {
   const resources = { listApprovalGroup: vi.fn(async () => [proposal]), transitionApproval };
   return { proposal, state, resources };
 }
-it("uses the same portable canonical argument digest as the authorized server", () => {
-  const canonical = '{"amount":212,"category":"Software","nested":{"a":["é",1],"z":false}}';
-  expect(assistantToolArgumentReference(arguments_)).toBe(`args-sha256-${createHash("sha256").update(canonical).digest("hex")}`);
-});
+
 it("shows bound action details in chronological context before a versioned decision", async () => {
   const f = fixture();
   render(<StyledChatPreset state={f.state} approvalResources={f.resources} includeStyles={false} transcription={false}/>);

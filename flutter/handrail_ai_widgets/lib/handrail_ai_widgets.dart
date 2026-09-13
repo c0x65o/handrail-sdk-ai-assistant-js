@@ -4,8 +4,14 @@ import 'package:flutter/services.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'approval_mode.dart';
+import 'audio_recorder.dart';
+import 'transcription_control.dart';
 
 export 'approval_mode.dart';
+export 'draft_controller.dart';
+export 'composer_drafts.dart';
+export 'audio_recorder.dart';
+export 'transcription_control.dart';
 export 'markdown.dart';
 export 'attachment_preview.dart';
 
@@ -118,11 +124,18 @@ class _PasteImageIntent extends Intent {
   const _PasteImageIntent();
 }
 
-/// Shared two-row composer. Hosts keep attachment upload, permissions, and submission ownership.
+/// Shared two-row composer. Bind SDK draft/session lifecycles and host authorization adapters.
 class HandrailComposer extends StatefulWidget {
   const HandrailComposer(
       {super.key,
       required this.controller,
+      this.focusNode,
+      this.sendOnEnter = true,
+      this.maxLines = 6,
+      this.allowExpand = false,
+      this.expandedEditorTitle = 'Edit message',
+      this.expandKey,
+      this.expandedInputKey,
       this.input,
       this.decoration,
       this.inputTextStyle,
@@ -144,9 +157,23 @@ class HandrailComposer extends StatefulWidget {
       this.onApprovalModeChanged,
       this.showApprovalControl = true,
       this.voiceControls,
+      this.transcribeAudio,
+      this.transcriptionScope,
+      this.transcriptionMaximumDuration = maxHandrailVoiceRecordingDuration,
+      this.transcriptionMaximumBytes = 25 * 1024 * 1024,
+      this.transcriptionMaxDraftLength,
+      this.audioRecorderFactory,
       this.onPasteImage,
       this.onVoiceBusyChanged});
   final TextEditingController controller;
+
+  /// Also pass this to a custom [input] to retain shared Send focus behavior.
+  final FocusNode? focusNode;
+  final bool sendOnEnter;
+  final int maxLines;
+  final bool allowExpand;
+  final String expandedEditorTitle;
+  final Key? expandKey, expandedInputKey;
   final Widget? input;
 
   /// Host branding for the shared composer, without replacing its behavior.
@@ -165,6 +192,12 @@ class HandrailComposer extends StatefulWidget {
   final HandrailApprovalMode approvalMode;
   final ValueChanged<HandrailApprovalMode>? onApprovalModeChanged;
   final List<Widget>? voiceControls;
+  final HandrailAudioTranscriber? transcribeAudio;
+  final Object? transcriptionScope;
+  final Duration transcriptionMaximumDuration;
+  final int transcriptionMaximumBytes;
+  final int? transcriptionMaxDraftLength;
+  final HandrailAudioRecorder Function()? audioRecorderFactory;
   final FutureOr<void> Function(HandrailClipboardImage)? onPasteImage;
   final ValueChanged<bool>? onVoiceBusyChanged;
   @override
@@ -173,24 +206,142 @@ class HandrailComposer extends StatefulWidget {
 
 class _HandrailComposerState extends State<HandrailComposer> {
   bool _dictating = false;
+  final _ownedFocus = FocusNode(debugLabel: 'Handrail composer');
+  FocusNode get _inputFocus => widget.focusNode ?? _ownedFocus;
+  Route<void>? _editorRoute;
+
+  void _closeEditor() {
+    final route = _editorRoute;
+    _editorRoute = null;
+    if (route == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (route.isActive) route.navigator?.removeRoute(route);
+    });
+  }
+
+  @override
+  void didUpdateWidget(HandrailComposer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller) ||
+        oldWidget.transcriptionScope != widget.transcriptionScope ||
+        (oldWidget.transcribeAudio == null) !=
+            (widget.transcribeAudio == null) ||
+        oldWidget.voiceControls == null && widget.voiceControls != null ||
+        oldWidget.enabled && !widget.enabled) _dictating = false;
+    if (!identical(oldWidget.controller, widget.controller) ||
+        oldWidget.enabled && !widget.enabled) _closeEditor();
+  }
+
+  Future<void> _editDraft() async {
+    if (!widget.enabled || _editorRoute != null) return;
+    _inputFocus.unfocus();
+    final current = widget;
+    final route = _editorRoute = MaterialPageRoute<void>(
+        builder: (context) => Scaffold(
+              appBar:
+                  AppBar(title: Text(current.expandedEditorTitle), actions: [
+                TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Done')),
+              ]),
+              body: SafeArea(
+                  child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: TextField(
+                  key: current.expandedInputKey,
+                  controller: current.controller,
+                  autofocus: true,
+                  expands: true,
+                  minLines: null,
+                  maxLines: null,
+                  maxLength: current.maxLength,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  textAlignVertical: TextAlignVertical.top,
+                  onChanged: current.onChanged,
+                  decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      hintText: current.placeholder),
+                ),
+              )),
+            ));
+    await Navigator.of(context).push(route);
+    if (identical(_editorRoute, route)) _editorRoute = null;
+  }
+
+  void _send() {
+    if (!widget.enabled ||
+        !widget.canSend ||
+        widget.sending ||
+        _dictating ||
+        widget.onSend == null) return;
+    _inputFocus.requestFocus();
+    widget.onSend!();
+  }
+
+  KeyEventResult _key(FocusNode _, KeyEvent event) {
+    if (!widget.sendOnEnter ||
+        (event.logicalKey != LogicalKeyboardKey.enter &&
+            event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
+        HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isAltPressed ||
+        HardwareKeyboard.instance.isMetaPressed ||
+        (!widget.controller.value.composing.isCollapsed &&
+            widget.controller.value.composing.isValid))
+      return KeyEventResult.ignored;
+    if (HardwareKeyboard.instance.isShiftPressed) {
+      if (widget.enabled &&
+          (event is KeyDownEvent || event is KeyRepeatEvent)) {
+        final value = widget.controller.value;
+        final start =
+            value.selection.isValid ? value.selection.start : value.text.length;
+        final end =
+            value.selection.isValid ? value.selection.end : value.text.length;
+        final text = value.text.replaceRange(start, end, '\n');
+        if (widget.maxLength == null || text.length <= widget.maxLength!) {
+          widget.controller.value = TextEditingValue(
+              text: text,
+              selection: TextSelection.collapsed(offset: start + 1));
+          widget.onChanged?.call(text);
+        }
+      }
+    } else if (event is KeyDownEvent) {
+      _send();
+    }
+    return KeyEventResult.handled;
+  }
+
+  @override
+  void dispose() {
+    _closeEditor();
+    _ownedFocus.dispose();
+    super.dispose();
+  }
+
   Future<void> _paste({bool textFallback = false}) async {
-    if (!widget.enabled || widget.sending) return;
+    if (!widget.enabled) return;
+    final controller = widget.controller;
     try {
       HandrailClipboardImage? image;
       try {
-        image = await HandrailClipboardImage.read();
+        if (!widget.sending && widget.showAttachmentControl)
+          image = await HandrailClipboardImage.read();
       } catch (_) {
         if (!textFallback) rethrow;
       }
-      if (!mounted || !widget.enabled || widget.sending) return;
-      if (image != null) {
+      if (!mounted ||
+          !widget.enabled ||
+          !identical(controller, widget.controller)) return;
+      if (image != null && !widget.sending) {
         await widget.onPasteImage?.call(image);
         return;
       }
       if (textFallback) {
         final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
-        if (!mounted || !widget.enabled || widget.sending || text == null)
-          return;
+        if (!mounted ||
+            !widget.enabled ||
+            !identical(controller, widget.controller) ||
+            text == null) return;
         final value = widget.controller.value;
         final start =
             value.selection.isValid ? value.selection.start : value.text.length;
@@ -222,18 +373,30 @@ class _HandrailComposerState extends State<HandrailComposer> {
         TextField(
           key: widget.inputKey,
           controller: widget.controller,
+          focusNode: _inputFocus,
           enabled: widget.enabled,
           minLines: 1,
-          maxLines: 6,
+          maxLines: widget.maxLines,
           maxLength: widget.maxLength,
           keyboardType: TextInputType.multiline,
-          textInputAction: TextInputAction.newline,
+          textInputAction: widget.sendOnEnter
+              ? TextInputAction.send
+              : TextInputAction.newline,
+          onEditingComplete: () {},
+          onSubmitted: widget.sendOnEnter ? (_) => _send() : null,
           textCapitalization: TextCapitalization.sentences,
           style: widget.inputTextStyle ??
               const TextStyle(
                   color: Color(0xff202124), fontSize: 15, height: 1.4),
           decoration: InputDecoration(
               hintText: widget.placeholder,
+              suffixIcon: widget.allowExpand
+                  ? IconButton(
+                      key: widget.expandKey,
+                      tooltip: 'Edit full message',
+                      onPressed: widget.enabled ? _editDraft : null,
+                      icon: const Icon(Icons.open_in_full))
+                  : null,
               counterText: '',
               filled: false,
               border: InputBorder.none,
@@ -257,6 +420,7 @@ class _HandrailComposerState extends State<HandrailComposer> {
                       })
               ]),
         );
+    input = Focus(onKeyEvent: _key, child: input);
     if (widget.onPasteImage != null) {
       input = Shortcuts(
           shortcuts: const <ShortcutActivator, Intent>{
@@ -315,7 +479,25 @@ class _HandrailComposerState extends State<HandrailComposer> {
                     enabled: widget.enabled && !widget.sending),
               const Spacer(),
               ...?widget.voiceControls,
-              if (widget.voiceControls == null)
+              if (widget.voiceControls == null &&
+                  widget.transcribeAudio != null)
+                HandrailTranscriptionControl(
+                    controller: widget.controller,
+                    transcribe: widget.transcribeAudio!,
+                    scope: widget.transcriptionScope,
+                    enabled: widget.enabled && !widget.sending,
+                    maximumDuration: widget.transcriptionMaximumDuration,
+                    maximumBytes: widget.transcriptionMaximumBytes,
+                    maxDraftLength:
+                        widget.transcriptionMaxDraftLength ?? widget.maxLength,
+                    recorderFactory: widget.audioRecorderFactory,
+                    onChanged: widget.onChanged,
+                    onBusyChanged: (busy) {
+                      setState(() => _dictating = busy);
+                      widget.onVoiceBusyChanged?.call(busy);
+                    }),
+              if (widget.voiceControls == null &&
+                  widget.transcribeAudio == null)
                 HandrailDictationButton(
                     controller: widget.controller,
                     enabled: widget.enabled && !widget.sending,
@@ -343,7 +525,7 @@ class _HandrailComposerState extends State<HandrailComposer> {
                               widget.canSend &&
                               !widget.sending &&
                               !_dictating
-                          ? widget.onSend
+                          ? _send
                           : null,
                   icon: Icon(
                       widget.sending && widget.onStop != null

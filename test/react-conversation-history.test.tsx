@@ -186,3 +186,37 @@ it("uses the actual shared workspace for readable archived history and restores 
   expect(view.getByRole("button", { name: "Confirm request" }).matches(":disabled")).toBe(false);
   expect(confirmed).not.toHaveBeenCalled();
 });
+
+it("boots an empty catalog once and keeps the creation identity after a lost response", async () => {
+  const f = await fixture(0);
+  const original = f.catalog.create.bind(f.catalog);
+  const create = vi.spyOn(f.catalog, "create");
+  let lost = true;
+  create.mockImplementation(async input => {
+    const value = await original(input);
+    if (lost) { lost = false; throw new Error("lost creation acknowledgement"); }
+    return value;
+  });
+  const { result } = renderHook(() => useConversationHistory({ ...f, autoCreate: true, preloadCount: 0, recover: false }));
+  await waitFor(() => expect(result.current.error).toMatch(/New to retry/u));
+  expect(create).toHaveBeenCalledOnce();
+  await act(async () => { await result.current.create(); });
+  expect(create).toHaveBeenCalledTimes(2);
+  expect(create.mock.calls[0]?.[0].idempotencyKey).toBe(create.mock.calls[1]?.[0].idempotencyKey);
+  expect(result.current.descriptors).toHaveLength(1);
+  expect(result.current.snapshot.selectedConversationId).toBe("thread-1");
+});
+
+it("does not create replacement history after list or hydration failure", async () => {
+  const f = await fixture(1);
+  const create = vi.spyOn(f.catalog, "create");
+  vi.spyOn(f.catalog, "list").mockRejectedValueOnce(new Error("list unavailable"));
+  f.createRuntime.mockRejectedValue(new Error("history unavailable"));
+  const { result } = renderHook(() => useConversationHistory({ ...f, autoCreate: true, preloadCount: 0, recover: false }));
+  await waitFor(() => expect(result.current.loadFailed).toBe(true));
+  expect(create).not.toHaveBeenCalled();
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.loadFailed).toBe(false);
+  expect(result.current.failedThreads.size).toBe(1);
+  expect(create).not.toHaveBeenCalled();
+});

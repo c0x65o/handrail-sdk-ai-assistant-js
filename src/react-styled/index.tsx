@@ -32,7 +32,7 @@ import type { ConversationClientId, ConversationDeviceId } from "../conversation
 import type { ConversationAttachmentReference } from "../conversation/events.js";
 import type { ConversationMessageRecord, ConversationState, ConversationToolResultRecord } from "../conversation/state.js";
 import type { PresenceController } from "../presence/controller.js";
-import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
+import { type AiDiagnosticSink } from "../diagnostics.js";
 import type { MessageAttachmentRenderer, MessageContentRenderer, ToolResultRenderer } from "../react/primitives.js";
 import { ConversationProvider } from "../react/context.js";
 import { useConversationComposer, type ConversationComposerResult, type UseConversationComposerOptions } from "../react/use-conversation-composer.js";
@@ -603,7 +603,9 @@ export interface HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>
   readonly catalogOptions?: ConversationCatalogWorkspaceOptions<TAuthorizationContext>;
   /** The endpoint launcher defaults to the complete sidebar; custom workspace hosts can opt in. */
   readonly historyLayout?: "sidebar" | "compact";
-  readonly historyOptions?: Pick<UseConversationHistoryOptions<TRequest, TAuthorizationContext>, "preloadCount" | "recover" | "autoSelect" | "refreshKey">;
+  /** Show the selected saved title in the conversation header; title remains the fallback. */
+  readonly showConversationTitle?: boolean;
+  readonly historyOptions?: Pick<UseConversationHistoryOptions<TRequest, TAuthorizationContext>, "preloadCount" | "recover" | "autoSelect" | "autoCreate" | "refreshKey">;
   readonly getThreadLabel?: (conversationId: ConversationId) => ReactNode;
   readonly onConversationRead?: (conversationId: ConversationId, observed?: ConversationActivityRecord) => void | Promise<void>;
   readonly noConversation?: ReactNode;
@@ -615,7 +617,7 @@ export interface HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>
 export function HandrailChatWorkspace<TRequest, TAuthorizationContext>(
   props: HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>,
 ): ReactNode {
-  return props.catalogOptions && props.conversationPicker !== false
+  return props.catalogOptions
     ? <CatalogChatWorkspace {...props} catalogOptions={props.catalogOptions}/>
     : <SelectedChatWorkspace {...props}/>;
 }
@@ -638,16 +640,26 @@ function CatalogChatWorkspace<TRequest, TAuthorizationContext>(props: HandrailCh
     renderActivity={conversationId => <RealtimeWorkspaceActivity conversationId={String(conversationId)} showConnectionState={false}
       {...(props.voiceActivity ? { monitor: props.voiceActivity } : {})} {...(props.renderVoiceActivity ? { render: props.renderVoiceActivity } : {})}/>}/>;
   const readOnly = props.readOnly || history.selected?.lifecycle === "archived";
+  const title = props.showConversationTitle ? history.selected?.title ?? props.title : props.title;
+  if (props.conversationPicker === false) return <>
+    {props.includeStyles === false ? null : <StyledChatPresetStyles/>}
+    {history.loadFailed || history.error || !history.selected && history.failedThreads.size > 0
+      ? <div role="alert">{history.error ?? "Conversation history could not be loaded."}
+        <button type="button" disabled={history.loading} onClick={() => void history.refresh()}>Retry history</button>
+        {!history.selected && <button type="button" disabled={history.busyId !== null} onClick={() => void history.create()}>New</button>}
+      </div> : null}
+    <SelectedChatWorkspace {...props} title={title} readOnly={readOnly}/>
+  </>;
   if (props.historyLayout !== "sidebar") return <>
     {props.includeStyles === false ? null : <StyledChatPresetStyles/>}
-    <SelectedChatWorkspace {...props} readOnly={readOnly} conversationPicker={props.conversationPicker === undefined || props.conversationPicker === true
+    <SelectedChatWorkspace {...props} title={title} readOnly={readOnly} conversationPicker={props.conversationPicker === undefined || props.conversationPicker === true
       ? <details className="hr-history" data-presentation="compact"><summary>Threads</summary><div className="hr-history__panel">{panel}</div></details>
       : props.conversationPicker}/>
   </>;
   return <div className="hr-chat-workspace" data-layout={props.layout ?? "page"} style={{ ...createHandrailChatThemeStyle(props.theme), ...props.style }}>
     {props.includeStyles === false ? null : <StyledChatPresetStyles/>}
     <aside className="hr-history" aria-label="Conversation history">{panel}</aside>
-    <SelectedChatWorkspace {...props} conversationPicker={false} historyLayout="compact" readOnly={readOnly}/>
+    <SelectedChatWorkspace {...props} conversationPicker={false} title={title} historyLayout="compact" readOnly={readOnly}/>
   </div>;
 }
 
@@ -680,8 +692,8 @@ function SelectedChatWorkspace<TRequest, TAuthorizationContext>(props: HandrailC
   const { workspace: _workspace, composerForConversation: _composerFor, createConversation: _create,
     getThreadLabel: _label, onConversationRead: _onConversationRead, noConversation: _empty, conversationPicker: _picker,
     presenceForConversation: _presenceFor, catalogOptions: _catalogOptions, voiceActivity: _voiceActivity,
-    renderVoiceActivity: _renderVoiceActivity, historyLayout: _historyLayout, historyOptions: _historyOptions, ...chat } = props;
-  void _historyLayout; void _historyOptions;
+    renderVoiceActivity: _renderVoiceActivity, historyLayout: _historyLayout, historyOptions: _historyOptions, showConversationTitle: _showTitle, ...chat } = props;
+  void _historyLayout; void _historyOptions; void _showTitle;
   void _workspace; void _composerFor; void _create; void _label; void _onConversationRead; void _empty; void _picker; void _presenceFor; void _catalogOptions; void _voiceActivity; void _renderVoiceActivity;
   const runtime = selected.runtime as ConversationRuntime<TRequest>;
   const presence = props.presenceForConversation?.(selected.conversationId) ?? props.presence;
@@ -828,7 +840,6 @@ export function gatewayAttachmentIntake(
 interface AssistantLauncherState {
   readonly configurationKey: object;
   readonly client: HandrailAiClient<StreamEvent, ChatRequest, object>;
-  readonly initialConversationUnavailable?: boolean;
 }
 
 function AssistantWorkingObserver({ workspace, activity, voiceActivity, onChange }: {
@@ -936,7 +947,7 @@ function ClientAssistantWorkspace(props: HandrailAssistantWorkspaceProps & {
     ...view, workspace, approvalMode,
     ...(onApprovalModeChange ? { onApprovalModeChange } : {}),
     historyLayout: props.historyLayout ?? "sidebar",
-    historyOptions: { refreshKey: generatedTitles, ...props.historyOptions },
+    historyOptions: { autoCreate: true, refreshKey: generatedTitles, ...props.historyOptions },
     catalogOptions: { catalog: client.catalog, authorizationContext },
     ...(client.activity ? { activity: client.activity } : {}),
     presenceForConversation: client.presenceControllerFor,
@@ -990,7 +1001,6 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
     setFailure(null);
     void (async () => {
       try {
-        const authorizationContext = EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT;
         const clientId = (props.clientId ?? browserIdentity("client")) as ConversationClientId;
         const deviceId = (props.deviceId ?? browserIdentity("device")) as ConversationDeviceId;
         const client = await createHandrailAiClient<StreamEvent, ChatRequest, object>({
@@ -1021,23 +1031,7 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
           throw new TypeError("The assistant endpoint did not create a conversation workspace");
         }
         owned = { client, configurationKey };
-        const listed = await client.catalog.list({ authorizationContext, lifecycle: "active", pageSize: 1,
-          order: { field: "updated_at", direction: "desc" } });
-        const descriptor = listed.items[0] ?? (await client.catalog.create({ authorizationContext,
-          idempotencyKey: browserIdentity("conversation") as never })).descriptor;
         client.workspace.setVisible(props.presentation === "page");
-        try {
-          await client.workspace.open({ authorizationContext, conversationId: descriptor.conversationId });
-        } catch (cause) {
-          if (disposed) return;
-          // A retained thread can fail hydration independently of the endpoint.
-          // Keep the authorized catalog and New action available. Do not create
-          // replacement records automatically or hide failures in a fixed chat.
-          if (!listed.items[0] || props.conversationPicker === false) throw cause;
-          emitAiDiagnostic(props.diagnostics, { domain: "gateway", operation: "initial_conversation_open",
-            phase: "failed", retryable: true, conversationId: descriptor.conversationId, cause });
-          owned = { ...owned, initialConversationUnavailable: true };
-        }
         if (!disposed) setState(owned);
       } catch (cause) {
         const failed = owned; owned = null;
@@ -1095,9 +1089,7 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
       {...(props.uploaderForConversation ? { uploaderForConversation: props.uploaderForConversation } : {})}
       {...(props.attachmentIntake ? { attachmentIntake: props.attachmentIntake } : {})}
       {...(voiceMonitor ? { voiceActivity: voiceMonitor } : {})}
-      {...(props.includeStyles === undefined ? {} : { includeStyles: props.includeStyles })}
-      {...(state.initialConversationUnavailable && props.noConversation === undefined
-        ? { noConversation: <span role="alert">This conversation could not be opened. Select another conversation or start a new one.</span> } : {})}/></>;
+      {...(props.includeStyles === undefined ? {} : { includeStyles: props.includeStyles })}/></>;
 }
 
 export interface StyledChatLauncherProps extends StyledChatPresetProps {

@@ -26,6 +26,8 @@ export interface UseConversationHistoryOptions<TRequest, TContext> {
   /** Retry failed history reads with bounded backoff. Defaults to true. Mutations never retry automatically. */
   readonly recover?: boolean;
   readonly autoSelect?: boolean;
+  /** Create an initial thread after a successful empty active catalog read. One attempt per scope; failures require New to retry. */
+  readonly autoCreate?: boolean;
   readonly refreshKey?: unknown;
   readonly createConversation?: (input: { readonly idempotencyKey: ConversationCatalogIdempotencyKey }) => Promise<ConversationWorkspaceOpenInput<TContext>>;
   readonly onConversationRead?: (conversationId: ConversationId, observed?: ConversationActivityRecord) => void | Promise<void>;
@@ -49,7 +51,7 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
   const pageSize = options.pageSize ?? 50;
   const preloadCount = options.preloadCount ?? 20;
   if (!Number.isSafeInteger(preloadCount) || preloadCount < 0 || preloadCount > 100) throw new TypeError("History preloadCount must be between 0 and 100.");
-  const scope = useMemo(() => ({ active: false, load: 0, selection: 0, mutation: false,
+  const scope = useMemo(() => ({ active: false, load: 0, selection: 0, mutation: false, initialCreationConsidered: false,
     createKey: null as ConversationCatalogIdempotencyKey | null,
     mutationKeys: new Map<string, ConversationCatalogIdempotencyKey>(),
     refreshes: new Map<ConversationId, Promise<unknown>>() }), [workspace, catalog, authorizationContext]);
@@ -113,12 +115,14 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
       const descriptors = [...new Map(found.map((descriptor) => [descriptor.conversationId, descriptor])).values()];
       publish((value) => ({ ...value, descriptors, loading: false, loadFailed: false,
         failedThreads: new Set([...value.failedThreads].filter((id) => descriptors.some((descriptor) => descriptor.conversationId === id))) }));
+      const attempted = new Set<ConversationId>();
       const active = descriptors.filter((descriptor) => descriptor.lifecycle === "active");
       // Failed saved history never creates a replacement conversation or blocks navigation.
       if (latestOptions.current.autoSelect !== false && workspace.getSnapshot().selectedConversationId === null) {
         for (const descriptor of active) {
           if (!retained() || selection !== scope.selection || workspace.getSnapshot().selectedConversationId !== null) break;
           try {
+            attempted.add(descriptor.conversationId);
             await open(descriptor.conversationId);
             if (retained() && selection === scope.selection && workspace.getSnapshot().selectedConversationId === null) workspace.select(descriptor.conversationId);
             break;
@@ -127,7 +131,7 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
       }
       for (const descriptor of active.slice(0, preloadCount)) {
         if (!retained()) return;
-        if (workspace.getSnapshot().threads.some((thread) => thread.conversationId === descriptor.conversationId)) continue;
+        if (attempted.has(descriptor.conversationId) || workspace.getSnapshot().threads.some((thread) => thread.conversationId === descriptor.conversationId)) continue;
         try { await open(descriptor.conversationId); } catch { /* Expose a per-thread recovery state. */ }
       }
       for (const id of failedBefore) {
@@ -204,6 +208,13 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
     } catch { publish((value) => ({ ...value, error: "A new conversation could not be opened. Select New to retry." })); }
     finally { scope.mutation = false; publish((value) => ({ ...value, busyId: null })); }
   }, [scope, catalog, authorizationContext, workspace, refresh, isCurrent, publish]);
+
+  useEffect(() => {
+    if (!options.autoCreate || state.loading || state.loadFailed || scope.initialCreationConsidered || !isCurrent()) return;
+    scope.initialCreationConsidered = true;
+    if (view === "active" && !state.descriptors.some(item => item.lifecycle === "active") &&
+      workspace.getSnapshot().selectedConversationId === null && !scope.mutation) void create();
+  }, [options.autoCreate, state.loading, state.loadFailed, state.descriptors, scope, isCurrent, view, workspace, create]);
 
   const changeLifecycle = useCallback(async (descriptor: ConversationCatalogDescriptor) => {
     if (!isCurrent() || scope.mutation) return;

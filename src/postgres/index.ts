@@ -1100,6 +1100,8 @@ export class PostgresProviderOperationStore {
   async run<T>(input: {
     readonly operationId: string;
     readonly requestFingerprint: string;
+    /** False permits replay only; missing evidence cannot authorize a recovered legacy dispatch. */
+    readonly allowNewClaim?: boolean;
     /** Runs only after the claim transaction commits. Rejections retain the claim. */
     readonly execute: () => Promise<T>;
     /** Validate both newly returned and stored JSON before exposing it to callers. */
@@ -1123,6 +1125,7 @@ export class PostgresProviderOperationStore {
     };
     const existing = await readCompleted();
     if (existing.found) return existing.result!;
+    if (input.allowNewClaim === false) throw new PostgresProviderOperationUncertainError();
     try {
       await this.persistence.compareAndSetDocument<ProviderOperationRecord>({
         tenantId: this.tenantId, kind: "provider_operation", scopeId: this.scopeId,

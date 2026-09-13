@@ -2,6 +2,7 @@ library handrail_ai_client;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'src/platform_http_client.dart' as platform_http;
 
@@ -12,6 +13,7 @@ part 'src/pending_turn_store.dart';
 part 'src/realtime_calls.dart';
 part 'src/realtime_activity.dart';
 part 'src/realtime_workspace.dart';
+part 'src/transcription.dart';
 
 const applicationGatewayProtocolVersion = 'handrail.application-gateway.v1';
 
@@ -22,6 +24,7 @@ class HandrailGatewayCapabilities {
   final bool authoritativeCancellation;
   final Map<String, Object?>? attachments;
   final Map<String, Object?>? documentInput;
+  final HandrailTranscriptionCapability? transcription;
   final bool presence;
   final bool activity;
   final bool synchronization;
@@ -30,6 +33,7 @@ class HandrailGatewayCapabilities {
     required this.authoritativeCancellation,
     this.attachments,
     this.documentInput,
+    this.transcription,
     required this.presence,
     this.activity = false,
     required this.synchronization,
@@ -43,6 +47,10 @@ class HandrailGatewayCapabilities {
             : null,
         documentInput: json['documentInput'] is Map
             ? Map<String, Object?>.unmodifiable(json['documentInput'] as Map)
+            : null,
+        transcription: json['transcription'] is Map
+            ? HandrailTranscriptionCapability.fromJson(
+                Map<String, Object?>.from(json['transcription'] as Map))
             : null,
         presence: json['presence'] == true,
         activity: json['activity'] == true,

@@ -123,7 +123,8 @@ export function BrowserDictationControl({ composer }: { readonly composer: Conve
 
 export const HANDRAIL_CHAT_COMPOSER_CSS = `
 .hr-composer{padding:8px;min-width:0;color:var(--hr-text,#202124);background:var(--hr-bg,#fff)}
-.hr-composer .hr-composer__form{position:relative;display:flex;flex-direction:column;gap:4px;border:1px solid var(--hr-border,#e9e9e9);border-radius:18px;padding:10px;background:var(--hr-bg,#fff);box-shadow:0 4px 18px #00000006}
+.hr-composer .hr-composer[data-dragging] .hr-composer__form{outline:2px dashed var(--hr-accent,currentColor);outline-offset:-3px}
+.hr-composer__form{position:relative;display:flex;flex-direction:column;gap:4px;border:1px solid var(--hr-border,#e9e9e9);border-radius:18px;padding:10px;background:var(--hr-bg,#fff);box-shadow:0 4px 18px #00000006}
 .hr-composer .hr-composer__draft{box-sizing:border-box;display:block;inline-size:100%;min-inline-size:0;min-block-size:26px;max-block-size:120px;resize:none;border:0;border-radius:0;outline:none;background:transparent;color:inherit;font:inherit;font-size:15px;line-height:1.4;padding:2px 2px;margin:0}
 .hr-composer .hr-composer__draft:focus-visible{outline:none}.hr-composer .hr-composer__form:focus-within{border-color:var(--hr-muted,#999)}
 .hr-composer__toolbar{display:flex;align-items:center;gap:4px;min-width:0}.hr-composer__spacer{flex:1}.hr-composer__voice{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;min-width:0}
@@ -165,16 +166,23 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
     const node = textarea.current;
     if (node) { node.style.height = "auto"; node.style.height = `${Math.min(Math.max(26, node.scrollHeight), 120)}px`; }
   }, [props.composer?.draft]);
-  const guardDrop = (event: DragEvent<HTMLDivElement>) => {
-    if ((props.attachmentsEnabled === false || props.canStop || props.composer?.isSending) &&
-      (Array.from(event.dataTransfer.types).includes("Files") || event.dataTransfer.files.length > 0)) event.preventDefault();
-  };
+  const [dragging, setDragging] = useState(false);
+  const intakeDisabled = Boolean(props.attachmentsEnabled === false || props.canStop || props.composer?.isSending);
+  const isFileDrag = (event: DragEvent<HTMLDivElement>) => Array.from(event.dataTransfer.types).includes("Files") || event.dataTransfer.files.length > 0;
   return <Composer {...(props.composer ? { composer: props.composer } : {})} className="hr-composer"
-    onDragOver={guardDrop} onDrop={guardDrop}>
+    data-dragging={dragging && !intakeDisabled || undefined}
+    onDragEnter={event => { if (isFileDrag(event) && !intakeDisabled) setDragging(true); }}
+    onDragOver={event => { if (isFileDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = intakeDisabled ? "none" : "copy"; } }}
+    onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragging(false); }}
+    onDropCapture={event => { setDragging(false); if (intakeDisabled && isFileDrag(event)) { event.preventDefault(); event.stopPropagation(); } }}>
     {props.includeStyles === false ? null : <style>{HANDRAIL_CHAT_COMPOSER_CSS}</style>}
-    <Form className="hr-composer__form">
+    <Form className="hr-composer__form" onSubmit={event => { if (props.canStop) event.preventDefault(); }}>
       <AttachmentList showRetry={false} className="hr-composer__attachments"/>
       <Textarea ref={textarea} className="hr-composer__draft" rows={1} maxLength={props.maxLength} placeholder={props.placeholder ?? "Message…"}
+        onKeyDown={event => {
+          if (props.canStop && event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey
+            && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) event.preventDefault();
+        }}
         onPaste={(event) => {
           if ((props.composer?.isSending || props.canStop || props.attachmentsEnabled === false)
             && Array.from(event.clipboardData.items).some((item) => item.kind === "file")) event.preventDefault();

@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { PostgresProviderOperationStore } from "../postgres/index.js";
+import { createRetryPolicy, type RetryPolicyOptions } from "../retry.js";
+import { createTrackedOpenAIResponsesRequest } from "./openai-responses-request.js";
+import { retainProviderInvocation } from "./provider-invocations.js";
 import { createOpenAIResponsesProviderAdapter, type OpenAIResponsesProviderOptions } from "../providers/openai-responses.js";
 import type { OpenAIResponsesRequest } from "../providers/openai-responses-tools.js";
 import { parseServerSentEvents } from "../transports/sse.js";
@@ -11,6 +16,8 @@ import { openaiTranscription, type HandrailOpenAITranscriptionOptions } from "./
 export interface HandrailOpenAIResponsesOptions<TContext extends HandrailAssistantAuthorizationContext = HandrailAssistantAuthorizationContext> extends Omit<OpenAIResponsesProviderOptions,
   "request" | "instructions" | "continuationStore"> {
   readonly request?: OpenAIResponsesProviderOptions["request"];
+  /** Physical connection retries before streaming starts; never replay a partial stream. Defaults to two attempts. */
+  readonly retry?: RetryPolicyOptions;
   /** Host-owned history and admission checks before the SDK provider loop starts. */
   readonly prepareRequest?: (input: { readonly request: ChatRequest; readonly context: TContext;
     readonly conversationId: string; readonly turnId: string; readonly mutationId: string;
@@ -25,7 +32,7 @@ export interface HandrailOpenAIResponsesOptions<TContext extends HandrailAssista
   readonly transcription?: false | HandrailOpenAITranscriptionOptions;
 }
 
-function openAIRequest<TContext extends HandrailAssistantAuthorizationContext>(options: HandrailOpenAIResponsesOptions<TContext>): OpenAIResponsesProviderOptions["request"] {
+export function createOpenAIResponsesRequest<TContext extends HandrailAssistantAuthorizationContext>(options: HandrailOpenAIResponsesOptions<TContext>): OpenAIResponsesProviderOptions["request"] {
   if (options.request) return options.request;
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   if (!apiKey) throw new TypeError("OPENAI_API_KEY or openaiResponses.apiKey is required");
@@ -53,9 +60,9 @@ function openAIRequest<TContext extends HandrailAssistantAuthorizationContext>(o
 export function openaiResponses<TContext extends HandrailAssistantAuthorizationContext = HandrailAssistantAuthorizationContext>(
   options: HandrailOpenAIResponsesOptions<TContext>,
 ): HandrailAssistantProvider<TContext> {
-  const request = openAIRequest(options);
+  const request = createOpenAIResponsesRequest(options);
   const { apiKey: _apiKey, baseUrl: _baseUrl, fetch: _fetch, request: _request, prepareRequest, attachmentResolver,
-    transcription: speechOptions, ...adapterOptions } = options;
+    transcription: speechOptions, retry, ...adapterOptions } = options;
   void _apiKey; void _baseUrl; void _fetch; void _request;
   const metadata = createOpenAIResponsesProviderAdapter({ ...adapterOptions, request }).metadata;
   const transcription = speechOptions === false || (options.request && speechOptions === undefined) ? undefined
@@ -94,14 +101,41 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
       return title.trim().replace(/^["'“‘]+|["'”’]+$/gu, "").replace(/\s+/gu, " ").slice(0, 80);
     },
     createTransport(input: Parameters<HandrailAssistantProvider<TContext>["createTransport"]>[0]) {
-      const adapter = createOpenAIResponsesProviderAdapter({
-        ...adapterOptions,
-        request,
-        continuationStore: input.persistence.continuation,
+      const createAdapter = (network: OpenAIResponsesProviderOptions["request"]) => createOpenAIResponsesProviderAdapter({
+        ...adapterOptions, request: network, continuationStore: input.persistence.continuation,
         ...(input.instructions.length === 0 ? {} : { instructions: input.instructions.join("\n\n") }),
       });
+      const adapter = createAdapter(request);
       return createProviderToolLoopTransport({
         adapter,
+        invokeProvider: ({ invocation, ...execution }) => {
+          // The lower-level transport also supports ephemeral callers. The authenticated assistant always supplies a durable claim.
+          if (!execution.durableExecution) return adapter.invoke(invocation);
+          const network = createTrackedOpenAIResponsesRequest({ request,
+            context: { ...execution, tenantId: input.context.tenantId, scopeId: input.context.scopeId, attribution: input.context.attribution },
+            retryPolicy: createRetryPolicy({ maximumAttempts: 2, maximumElapsedMs: input.limits.maxElapsedMs, ...retry }),
+            ...(input.persistence.usageReceiptSink ? { capture: input.persistence.usageReceiptSink.capture } : {}),
+            ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}) });
+          const store = new PostgresProviderOperationStore(input.persistence.persistence, input.context.tenantId,
+            `handrail-openai-provider:${input.context.scopeId}`);
+          const toolChoice = typeof options.toolChoice === "function" ? options.toolChoice(invocation) : options.toolChoice;
+          return retainProviderInvocation({ store: { run: operation => store.run({ ...operation,
+            // A recovery without an initial receipt may predate this adapter. Never redispatch it blindly.
+            allowNewClaim: execution.durableExecution!.attempt === 1 || execution.iteration > 0 }) },
+            operationId: `invocation-${fingerprint([input.context.attribution.organization.id, input.context.attribution.project.id,
+              input.context.attribution.service_environment.id, execution.conversationId, execution.turnId, execution.iteration])}`,
+            requestFingerprint: fingerprint({ model: options.model, requestId: invocation.context.request_id,
+              continuation: invocation.continuation_of, messages: invocation.messages, tools: invocation.tools,
+              results: invocation.tool_results, generation: invocation.generation, instructions: input.instructions,
+              functionStrict: options.functionStrict, namespaces: options.namespaces, hosted: options.hosted, toolChoice,
+              supportsToolSearch: options.supportsToolSearch, maximumEagerTools: options.maximumEagerTools,
+              maximumInputMessages: options.maximumInputMessages, documentInput: options.document_input,
+              reasoningEffort: options.reasoningEffort, includeReasoningEncryptedContent: options.includeReasoningEncryptedContent }),
+            invocation, invoke: () => createOpenAIResponsesProviderAdapter({ ...adapterOptions, request: network,
+              continuationStore: input.persistence.continuation,
+              ...(input.instructions.length ? { instructions: input.instructions.join("\n\n") } : {}),
+              ...(toolChoice ? { toolChoice } : {}) }).invoke(invocation) });
+        },
         tools: [...input.tools.definitions],
         limits: input.limits,
         createContext: async ({ turnId, mutationId, iteration }) => {
@@ -123,6 +157,7 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
         },
         ...(input.persistence.usageReceiptSink === null ? {} : {
           captureUsage: input.persistence.usageReceiptSink.capture,
+          captureUsageForDurableExecution: false,
         }),
         ...(prepareRequest ? { prepareRequest: (turn) => prepareRequest({ ...turn, context: input.context }) } : {}),
         resolveAttachmentReference: async ({ conversationId, reference, signal }) => {
@@ -134,4 +169,11 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
       });
     },
   });
+}
+
+function fingerprint(value: unknown): string {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => [key, canonical(item)])) : value;
+  return createHash("sha256").update(JSON.stringify(canonical(JSON.parse(JSON.stringify(value))))).digest("hex");
 }

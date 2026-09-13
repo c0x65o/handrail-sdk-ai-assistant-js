@@ -57,15 +57,23 @@ it("disposes a late bootstrap client before reading its catalog", async () => {
   expect(list).not.toHaveBeenCalled();
 });
 
-it("disposes client resources when catalog bootstrap fails", async () => {
+it("keeps the authenticated client and exposes shared retry when catalog loading fails", async () => {
+  const snapshot = { selectedConversationId: null, threads: [], runningCount: 0, errorCount: 0, unreadCount: 0 };
+  const workspace = { getSnapshot: () => snapshot, subscribe: () => () => {}, open: vi.fn(),
+    select: vi.fn(), markRead: vi.fn(), setVisible: vi.fn() };
+  const list = vi.fn(async () => { throw new Error("private catalog failure"); });
   const dispose = vi.fn();
-  bootstrap.create.mockResolvedValue({ workspace: {}, attachmentUpload: null, dispose,
-    catalog: { list: vi.fn(async () => { throw new Error("private catalog failure"); }) } });
-  const view = render(<HandrailAssistantLauncher endpoint="/failed" includeStyles={false}/>);
-  await waitFor(() => expect(view.container.textContent).toBe("Assistant unavailable."));
-  expect(dispose).toHaveBeenCalledOnce();
-  view.unmount();
-  expect(dispose).toHaveBeenCalledOnce();
+  bootstrap.create.mockResolvedValue({ workspace, attachmentUpload: null, activity: null, dispose,
+    capabilities: { attachments: false, documentInput: false }, presenceControllerFor: () => null,
+    catalog: { list, capabilities: { archive: { supported: false }, restore: { supported: false } } } });
+  const view = render(<HandrailAssistantLauncher endpoint="/failed" presentation="page" autoTitle={false} includeStyles={false}/>);
+  const retry = await view.findByRole("button", { name: "Retry history" });
+  expect(view.getByRole("button", { name: "New" })).toBeTruthy();
+  expect(view.container.textContent).not.toContain("private catalog failure");
+  expect(dispose).not.toHaveBeenCalled();
+  fireEvent.click(retry);
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  view.unmount(); expect(dispose).toHaveBeenCalledOnce();
 });
 
 it.each([undefined, true])("keeps New and history navigation usable when a saved conversation cannot open (picker=%s)", async (conversationPicker) => {
@@ -100,12 +108,23 @@ it.each([undefined, true])("keeps New and history navigation usable when a saved
   expect(dispose).toHaveBeenCalledOnce();
 });
 
-it("retains the failure boundary when thread creation and switching are disabled", async () => {
-  const dispose = vi.fn();
-  bootstrap.create.mockResolvedValue({ workspace: { setVisible: vi.fn(), open: vi.fn(async () => { throw new Error("private failure"); }) },
-    attachmentUpload: null, dispose,
-    catalog: { list: vi.fn(async () => ({ items: [{ conversationId: "one" }] })) } });
-  const view = render(<HandrailAssistantLauncher endpoint="/fixed" conversationPicker={false} includeStyles={false}/>);
-  await waitFor(() => expect(view.container.textContent).toBe("Assistant unavailable."));
-  expect(dispose).toHaveBeenCalledOnce();
+it("provides history recovery when the conversation picker is hidden", async () => {
+  const snapshot = { selectedConversationId: null, threads: [], runningCount: 0, errorCount: 0, unreadCount: 0 };
+  const open = vi.fn(async () => { throw new Error("private history failure"); });
+  const workspace = { getSnapshot: () => snapshot, subscribe: () => () => {}, open,
+    select: vi.fn(), markRead: vi.fn(), setVisible: vi.fn() };
+  const dispose = vi.fn(), create = vi.fn();
+  bootstrap.create.mockResolvedValue({ workspace, attachmentUpload: null, activity: null, dispose,
+    capabilities: { attachments: false, documentInput: false }, presenceControllerFor: () => null,
+    catalog: { create, list: vi.fn(async () => ({ items: [{ conversationId: "one", lifecycle: "active" }], hasMore: false })),
+      capabilities: { archive: { supported: false }, restore: { supported: false } } } });
+  const view = render(<HandrailAssistantLauncher endpoint="/fixed" presentation="page" autoTitle={false}
+    conversationPicker={false} includeStyles={false}/>);
+  const retry = await view.findByRole("button", { name: "Retry history" });
+  expect(view.queryByRole("button", { name: "Archived" })).toBeNull();
+  expect(dispose).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
+  expect(view.container.textContent).not.toContain("private history failure");
+  const attempts = open.mock.calls.length; fireEvent.click(retry);
+  await waitFor(() => expect(open.mock.calls.length).toBeGreaterThan(attempts));
+  view.unmount(); expect(dispose).toHaveBeenCalledOnce();
 });

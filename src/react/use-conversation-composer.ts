@@ -508,6 +508,7 @@ export function useConversationComposer<TRequest = undefined>(
   >([]);
   const [isSending, setIsSending] = useState(false);
   const sendingRef = useRef(false);
+  const pendingCancellation = useRef<{ scope: object; requested: boolean } | null>(null);
   const submissionBlocks = useRef(new Set<symbol>());
   const [submissionBlockCount, setSubmissionBlockCount] = useState(0);
   const acquireSubmissionBlock = useCallback(() => {
@@ -919,6 +920,7 @@ export function useConversationComposer<TRequest = undefined>(
     if (!eligible) return null;
 
     sendingRef.current = true;
+    pendingCancellation.current = { scope: submissionScope, requested: false };
     setIsSending(true);
     setOperationErrors([]);
     const submission = Object.freeze({
@@ -928,6 +930,16 @@ export function useConversationComposer<TRequest = undefined>(
     const accept = () => {
       if (accepted || !isCurrent()) return;
       accepted = true;
+      if (pendingCancellation.current?.scope === submissionScope && pendingCancellation.current.requested) {
+        pendingCancellation.current.requested = false;
+        const turnId = store.getSnapshot().active_turn_id;
+        if (turnId) void actions.cancelTurn(turnId, "user").then(result => {
+          if (result.status === "failed" || result.status === "unsupported") throw new Error("Cancellation unavailable");
+        }).catch(() => {
+          if (isCurrent()) setOperationErrors([{ source: "cancel", code: "cancel_failed",
+            message: "The active response could not be stopped.", retryable: true }]);
+        });
+      }
       releaseOwned(currentOwned, uploader);
       const submittedIds = new Set(currentOwned.map((entry) => entry.id));
       const nextOwned = ownedRef.current.filter((entry) => !submittedIds.has(entry.id));
@@ -976,15 +988,28 @@ export function useConversationComposer<TRequest = undefined>(
     } finally {
       if (isCurrent()) {
         sendingRef.current = false;
+        pendingCancellation.current = null;
         setIsSending(false);
       }
     }
   }, [actions, createRequest, presence, releaseOwned, request, store, uploader]);
 
   const cancel = useCallback(async (): Promise<boolean> => {
-    if (onCancel === undefined) return false;
     try {
-      await onCancel();
+      if (onCancel) await onCancel();
+      else {
+        const turnId = store.getSnapshot().active_turn_id;
+        if (!turnId) {
+          if (sendingRef.current && pendingCancellation.current?.scope === lifecycleRef.current) {
+            pendingCancellation.current.requested = true;
+            return true;
+          }
+          return false;
+        }
+        if (pendingCancellation.current) pendingCancellation.current.requested = false;
+        const result = await actions.cancelTurn(turnId, "user");
+        if (result.status === "failed" || result.status === "unsupported") throw new Error("Cancellation unavailable");
+      }
       setOperationErrors((current) => current.filter((error) => error.source !== "cancel"));
       presence?.stopTyping("explicit");
       return true;
@@ -997,7 +1022,7 @@ export function useConversationComposer<TRequest = undefined>(
       }]);
       return false;
     }
-  }, [onCancel, presence]);
+  }, [onCancel, presence, store, actions]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>): void => {
     const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent;

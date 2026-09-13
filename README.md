@@ -53,6 +53,10 @@ credentials, and its Postgres pool. See the
 under-100-line migration target; legacy dual-write is deliberately outside the
 reusable template.
 
+The durable Responses server path also owns connection retries, physical usage
+accounting, native function-event correlation and retained invocation replay.
+See [provider replay](./docs/provider-replay.md) for defaults and migration seams.
+
 `openaiResponses` includes a separate text-only Responses API title generator.
 The server starts it after a saved turn completes, even when the client has
 disconnected. It owns bounded user-message context, usage capture, duplicate

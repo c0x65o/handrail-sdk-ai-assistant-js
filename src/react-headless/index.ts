@@ -37,3 +37,5 @@ export { useRealtimeWorkspaceActivity } from "../react/realtime-workspace.js";
 export { useConversationTitles, type UseConversationTitlesOptions } from "../react/use-conversation-titles.js";
 
 export { useComposerApprovalPreference } from "../react/composer-approval-preference.js";
+
+export { useBoundApprovalReview, type UseBoundApprovalReviewOptions } from "../react/use-bound-approval-review.js";
