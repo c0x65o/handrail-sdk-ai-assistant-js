@@ -22,20 +22,18 @@ export interface HandrailOpenAITranscriptionOptions {
   readonly request?: OpenAITranscriptionRequestFunction;
 }
 
-/** Standard authenticated speech provider. Hosts supply credentials, vocabulary and feature settings. */
-export function openaiTranscription<TContext extends HandrailAssistantAuthorizationContext = HandrailAssistantAuthorizationContext>(
-  options: HandrailOpenAITranscriptionOptions = {},
-): AssistantTranscriptionProvider<TContext> {
-  const model = options.model ?? (process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || "gpt-transcribe");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(model) || /^sk-/iu.test(model)) throw new TypeError("Invalid transcription model.");
-  const capability = validateTranscriptionHttpCapability(options.capability ?? DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY);
-  const hints = openAITranscriptionHintFields(model,
-    parseTranscriptionSpeechHints(options.speechHints ?? transcriptionSpeechHintsFromEnvironment(process.env)));
+/** Shared multipart transport for high-level and compatibility transcription adapters.
+ * The caller supplies the retained operation identity and bounded abort signal.
+ * This transport never retries an uncertain physical dispatch.
+ */
+export function createOpenAITranscriptionRequest(
+  options: Pick<HandrailOpenAITranscriptionOptions, "apiKey" | "baseUrl" | "organization" | "project" | "fetch"> = {},
+): OpenAITranscriptionRequestFunction {
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
-  if (!options.request && !apiKey) throw new TypeError("OPENAI_API_KEY or openaiTranscription.apiKey is required");
+  if (!apiKey) throw new TypeError("OPENAI_API_KEY or transcription apiKey is required");
   const endpoint = `${(options.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/u, "")}/audio/transcriptions`;
   const fetcher = options.fetch ?? globalThis.fetch;
-  const request: OpenAITranscriptionRequestFunction = options.request ?? (async (input, { signal, idempotency_key }) => {
+  return async (input, { signal, idempotency_key }) => {
     const body = new FormData();
     body.set("file", new Blob([new Uint8Array(input.file.bytes)], { type: input.file.media_type }), input.file.filename);
     body.set("model", input.model); body.set("response_format", input.response_format);
@@ -54,27 +52,50 @@ export function openaiTranscription<TContext extends HandrailAssistantAuthorizat
       : response.status === 408 || response.status === 504 ? "deadline_exceeded"
         : response.status === 413 ? "limit_exceeded" : response.status === 415 ? "unsupported_audio" : "service_unavailable");
     return response.json();
-  });
+  };
+}
+
+/** Provider operation for protected adapters that have no conversation/duration
+ * in their legacy contract. Caller authorization and durable dispatch stay outside.
+ */
+export function createOpenAIAudioTranscriber(options: HandrailOpenAITranscriptionOptions & { readonly preserveWhitespace?: boolean } = {}) {
+  const model = options.model ?? (process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || "gpt-transcribe");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(model) || /^sk-/iu.test(model)) throw new TypeError("Invalid transcription model.");
+  const capability = validateTranscriptionHttpCapability(options.capability ?? DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY);
+  const hints = openAITranscriptionHintFields(model,
+    parseTranscriptionSpeechHints(options.speechHints ?? transcriptionSpeechHintsFromEnvironment(process.env)));
+  const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
+  if (!options.request && !apiKey) throw new TypeError("OPENAI_API_KEY or openaiTranscription.apiKey is required");
+  const request = options.request ?? createOpenAITranscriptionRequest(options);
+  return async (input: Pick<Parameters<AssistantTranscriptionProvider<unknown>["transcribe"]>[0],
+    "bytes" | "mediaType" | "idempotencyKey" | "signal" | "recordUsage">): Promise<string> => {
+    const format = capability.formats.find((candidate) => candidate.media_type === input.mediaType);
+    if (!format) throw new TranscriptionOperationError("unsupported_audio");
+    const output = await request({ model, file: { bytes: input.bytes, media_type: input.mediaType,
+      filename: "recording." + format.container }, response_format: "json", ...hints },
+    { signal: input.signal, idempotency_key: input.idempotencyKey });
+    const result = output as { text?: unknown; usage?: unknown } | null;
+    let usage;
+    try { usage = parseOpenAIReportedAudioUsage(result?.usage); }
+    catch {
+      await input.recordUsage({ kind: "openai_audio", usage: { type: "unavailable" } }, "failed");
+      throw new TranscriptionOperationError("internal_failure");
+    }
+    const validText = typeof result?.text === "string" && result.text.trim().length > 0 && result.text.length <= 20_000;
+    // This may finish after cancellation; incurred provider evidence must still be stored.
+    await input.recordUsage({ kind: "openai_audio", usage }, validText ? "completed" : "failed");
+    if (!validText) throw new TranscriptionOperationError("internal_failure");
+    return options.preserveWhitespace ? result!.text as string : (result!.text as string).trim();
+  };
+}
+
+/** Standard authenticated speech provider. Hosts supply credentials, vocabulary and feature settings. */
+export function openaiTranscription<TContext extends HandrailAssistantAuthorizationContext = HandrailAssistantAuthorizationContext>(
+  options: HandrailOpenAITranscriptionOptions = {},
+): AssistantTranscriptionProvider<TContext> {
+  const model = options.model ?? (process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || "gpt-transcribe");
+  const capability = validateTranscriptionHttpCapability(options.capability ?? DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY);
+  const transcribe = createOpenAIAudioTranscriber({ ...options, model, capability });
   return Object.freeze({ providerId: "openai", modelId: model, capability,
-    ...(options.timeoutMilliseconds === undefined ? {} : { timeoutMilliseconds: options.timeoutMilliseconds }),
-    async transcribe(input) {
-      const format = capability.formats.find((candidate) => candidate.media_type === input.mediaType);
-      if (!format) throw new TranscriptionOperationError("unsupported_audio");
-      const output = await request({ model, file: { bytes: input.bytes, media_type: input.mediaType,
-        filename: "recording." + format.container }, response_format: "json", ...hints },
-      { signal: input.signal, idempotency_key: input.idempotencyKey });
-      const result = output as { text?: unknown; usage?: unknown } | null;
-      let usage;
-      try { usage = parseOpenAIReportedAudioUsage(result?.usage); }
-      catch {
-        await input.recordUsage({ kind: "openai_audio", usage: { type: "unavailable" } }, "failed");
-        throw new TranscriptionOperationError("internal_failure");
-      }
-      const validText = typeof result?.text === "string" && result.text.trim().length > 0 && result.text.length <= 20_000;
-      // This may finish after cancellation; incurred provider evidence must still be stored.
-      await input.recordUsage({ kind: "openai_audio", usage }, validText ? "completed" : "failed");
-      if (!validText) throw new TranscriptionOperationError("internal_failure");
-      return (result!.text as string).trim();
-    },
-  } satisfies AssistantTranscriptionProvider<TContext>);
+    ...(options.timeoutMilliseconds === undefined ? {} : { timeoutMilliseconds: options.timeoutMilliseconds }), transcribe });
 }

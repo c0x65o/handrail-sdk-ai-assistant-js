@@ -108,7 +108,7 @@ store.
 
 ## Standard UI offering
 
-The current local consolidation candidate is tracked in [shared-assistant-consolidation.md](./shared-assistant-consolidation.md). It adds `HandrailAssistantWorkspace` for applications that already create an authenticated SDK client, and the endpoint launcher delegates to that same component. The complete sidebar, uncontrolled approval preference, authenticated dictation and per-conversation upload queues are SDK responsibilities. A host counter uses `renderComposerActions`, which leaves the standard microphone available. See [the minimal shared UI example](../examples/minimal-shared-assistant.tsx). These APIs require the candidate's eventual committed SDK revision; an older Git pin does not acquire them automatically.
+The current local consolidation candidate and its release dependencies are qualified in [shared-assistant-acceptance.md](./shared-assistant-acceptance.md); the chronological ledger is [shared-assistant-consolidation.md](./shared-assistant-consolidation.md). It adds `HandrailAssistantWorkspace` for applications that already create an authenticated SDK client, and the endpoint launcher delegates to that same component. The complete sidebar, uncontrolled approval preference, authenticated dictation and per-conversation upload queues are SDK responsibilities. A host counter uses `renderComposerActions`, which leaves the standard microphone available. See [the minimal shared UI example](../examples/minimal-shared-assistant.tsx). These APIs require the candidate's eventual committed SDK revision; an older Git pin does not acquire them automatically.
 
 The default web experience is `HandrailAssistantLauncher` from
 `@handrail/ai-assistant/react/styled`. It is endpoint-driven and owns client

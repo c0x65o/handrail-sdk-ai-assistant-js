@@ -7,14 +7,22 @@ import { createOpenAIResponsesProviderAdapter, type OpenAIResponsesProviderOptio
 import type { OpenAIResponsesRequest } from "../providers/openai-responses-tools.js";
 import { parseServerSentEvents } from "../transports/sse.js";
 import type { HandrailAssistantAuthorizationContext, HandrailAssistantProvider } from "./assistant.js";
-import type { AttachmentReference, ChatRequest } from "../protocol.js";
-import type { ProviderAttachmentReferenceResolver } from "../providers/index.js";
+import { AI_RUNTIME_PROTOCOL_LIMITS, type AttachmentReference, type ChatRequest } from "../protocol.js";
+import type { DocumentInputCapabilityDescriptor, ProviderAttachmentReferenceResolver } from "../providers/index.js";
 import { createProviderToolLoopTransport } from "./provider-tool-loop.js";
 import type { AssistantTitleProviderRequest } from "./conversation-titles.js";
 import { openaiTranscription, type HandrailOpenAITranscriptionOptions } from "./openai-transcription.js";
 
+/** The high-level provider supplies protected resolution, so ordinary PDF intake needs no host adapter. */
+export const DEFAULT_ASSISTANT_DOCUMENT_INPUT: DocumentInputCapabilityDescriptor = Object.freeze({
+  supported_mime_types: Object.freeze(["application/pdf"] as const), max_document_count: AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerMessage,
+  max_document_bytes: 20 * 1024 * 1024, requires_host_resolution: true,
+});
+
 export interface HandrailOpenAIResponsesOptions<TContext extends HandrailAssistantAuthorizationContext = HandrailAssistantAuthorizationContext> extends Omit<OpenAIResponsesProviderOptions,
-  "request" | "instructions" | "continuationStore"> {
+  "request" | "instructions" | "continuationStore" | "document_input"> {
+  /** Defaults to protected PDF input. False opts out; a descriptor replaces formats and limits. */
+  readonly document_input?: false | DocumentInputCapabilityDescriptor;
   readonly request?: OpenAIResponsesProviderOptions["request"];
   /** Physical connection retries before streaming starts; never replay a partial stream. Defaults to two attempts. */
   readonly retry?: RetryPolicyOptions;
@@ -62,7 +70,9 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
 ): HandrailAssistantProvider<TContext> {
   const request = createOpenAIResponsesRequest(options);
   const { apiKey: _apiKey, baseUrl: _baseUrl, fetch: _fetch, request: _request, prepareRequest, attachmentResolver,
-    transcription: speechOptions, retry, ...adapterOptions } = options;
+    transcription: speechOptions, retry, document_input: documents, ...baseAdapterOptions } = options;
+  const adapterOptions = { ...baseAdapterOptions,
+    ...(documents === false ? {} : { document_input: documents ?? DEFAULT_ASSISTANT_DOCUMENT_INPUT }) };
   void _apiKey; void _baseUrl; void _fetch; void _request;
   const metadata = createOpenAIResponsesProviderAdapter({ ...adapterOptions, request }).metadata;
   const transcription = speechOptions === false || (options.request && speechOptions === undefined) ? undefined

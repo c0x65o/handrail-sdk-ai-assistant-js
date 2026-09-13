@@ -49,6 +49,7 @@ import type {
 } from "./types.js";
 
 export const APPLICATION_GATEWAY_PROTOCOL_VERSION = "handrail.application-gateway.v1" as const;
+import type { AttachmentDownloadCapability } from "../attachments/downloader.js";
 
 export interface ApplicationGatewayCapabilities {
   readonly protocolVersion: typeof APPLICATION_GATEWAY_PROTOCOL_VERSION;
@@ -63,6 +64,8 @@ export interface ApplicationGatewayCapabilities {
   readonly presence: boolean;
   readonly synchronization: boolean;
   readonly activity?: boolean;
+  /** Omitted by older gateways; never assume saved files have public URLs. */
+  readonly attachmentDownloads?: false | AttachmentDownloadCapability;
   /** Omitted by older gateways; audio capture must not assume a server transcription route exists. */
   readonly transcription?: false | TranscriptionHttpCapability;
   readonly resources?: {
@@ -94,13 +97,14 @@ export interface ApplicationGatewayRequestAuthorizer<TContext extends Applicatio
 }
 
 export type ApplicationGatewayAction = "capabilities" | "start" | "resume" | "cancel" |
-  "conversations" | "approvals" | "attachments" | "presence" | "activity" | "synchronization" | "title_generation" | "transcription";
+  "conversations" | "approvals" | "attachments" | "attachment_download" | "presence" | "activity" | "synchronization" | "title_generation" | "transcription";
 
 export interface ApplicationGatewayTitleGeneration<TContext> {
   generate(input: { readonly conversationId: string; readonly idempotencyKey: string }, context: TContext, signal: AbortSignal): Promise<string>;
 }
 
 export interface ApplicationGatewayResourceHandlers<TContext> {
+  readonly attachment_download?: (request: Request, context: TContext) => Response | Promise<Response>;
   readonly transcription?: (request: Request, context: TContext) => Response | Promise<Response>;
   readonly attachments?: (request: Request, context: TContext) => Response | Promise<Response>;
   readonly presence?: (request: Request, context: TContext) => Response | Promise<Response>;
@@ -348,6 +352,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
     attachments: options.capabilities?.attachments ?? false,
     presence: options.capabilities?.presence ?? false,
     activity: options.capabilities?.activity ?? false,
+    ...(options.capabilities?.attachmentDownloads === undefined ? {} : { attachmentDownloads: options.capabilities.attachmentDownloads }),
     ...(options.capabilities?.transcription === undefined ? {} : { transcription: options.capabilities.transcription }),
     synchronization: options.capabilities?.synchronization ?? false,
     ...(options.capabilities?.documentInput === undefined ? {} : { documentInput: options.capabilities.documentInput }),
@@ -372,6 +377,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
           : pathname.includes("/conversations/") ? "conversations"
           : pathname.includes("/approvals/") ? "approvals"
           : pathname.endsWith("/attachments") ? "attachments"
+          : pathname.endsWith("/attachments/content") ? "attachment_download"
           : pathname.endsWith("/transcriptions") ? "transcription"
           : pathname.endsWith("/presence") ? "presence"
           : pathname.endsWith("/activity") ? "activity"
@@ -379,10 +385,10 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
           : pathname.endsWith("/titles/generate") ? "title_generation" : null;
         if (action === null) return new Response(null, { status: 404 });
         diagnosticAction = action;
-        if ((action === "capabilities" && request.method !== "GET") ||
+        if (((action === "capabilities" || action === "attachment_download") && request.method !== "GET") ||
           (action !== "capabilities" && action !== "presence" && action !== "activity" &&
-            action !== "attachments" && request.method !== "POST")) {
-          return new Response(null, { status: 405, headers: { allow: action === "capabilities" ? "GET" : "POST" } });
+            action !== "attachments" && action !== "attachment_download" && request.method !== "POST")) {
+          return new Response(null, { status: 405, headers: { allow: action === "capabilities" || action === "attachment_download" ? "GET" : "POST" } });
         }
         let authorizationContext: TContext;
         try {
@@ -393,7 +399,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
         if (action === "capabilities") {
           return json({ ok: true, value: capabilitiesFor(await resolveTransport(authorizationContext)) });
         }
-        if (action === "attachments" || action === "presence" || action === "activity" || action === "synchronization" || action === "transcription") {
+        if (action === "attachments" || action === "attachment_download" || action === "presence" || action === "activity" || action === "synchronization" || action === "transcription") {
           const handler = options.handlers?.[action];
           return handler ? handler(request, authorizationContext) : new Response(null, { status: 501 });
         }

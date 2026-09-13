@@ -1,9 +1,9 @@
 import { PGlite } from "@electric-sql/pglite";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { postgresFromClient, PostgresOpenAIAudioUsageEvidenceStore, type PostgresSqlClient,
+import { postgresFromClient, PostgresOpenAIAudioUsageEvidenceStore, PostgresProviderOperationStore, type PostgresSqlClient,
   type PostgresAssistantPersistenceBundle } from "../src/postgres/index.js";
-import { createAssistantTranscription } from "../src/server/transcription.js";
+import { createAssistantTranscription, createTranscriptionUsageRecorder, runRetainedTranscription, runTranscriptionAttempt, validateTranscriptionAudio } from "../src/server/transcription.js";
 import { createHandrailAssistant, openaiResponses, openaiTranscription,
   type HandrailAssistantAuthorizationContext } from "../src/server/assistant.js";
 import type { OpenAITranscriptionRequestFunction } from "../src/providers/openai-transcription.js";
@@ -146,4 +146,112 @@ it("owns multipart provider HTTP and negotiates configured speech on the high-le
     } finally { assistant.stopUsageWorker(); }
   }
   expect(fetcher).toHaveBeenCalledOnce();
+});
+
+
+it("shared usage recording preserves legacy identity and never replaces failed evidence with unknown usage", async () => {
+  const f = await fixture(async () => ({ text: "unused" }));
+  const identity = {
+    occurred_at: "2026-09-01T00:00:00.000Z",
+    usage_receipt_id: "legacy:transcription:operation", conversation_id: "legacy:principal",
+    turn_id: "operation", logical_request_id: "operation", trace_id: "operation",
+    attempt: { id: "operation:0", index: 0 }, continuation: { id: "operation:0", index: 0 },
+    provider_id: "openai", model_id: "gpt-transcribe", source: "provider" as const,
+    attribution: f.context.attribution,
+  };
+  const capture = vi.fn(async (receipt: NormalizedUsageReceipt) => { void receipt; });
+  const evidenceCapture = vi.fn(async () => { throw new Error("evidence storage unavailable"); });
+  const evidence = vi.fn(() => ({ capture: evidenceCapture }));
+  const recording = createTranscriptionUsageRecorder({ identity, evidence, capture });
+  await expect(recording.record({ kind: "openai_audio", usage: { type: "duration", seconds: 2.75 } }, "completed"))
+    .rejects.toThrow("evidence storage unavailable");
+  expect(recording.attempted).toBe(true);
+  expect(evidence).toHaveBeenCalledWith("env");
+  expect(evidenceCapture).toHaveBeenCalledWith(expect.objectContaining({
+    context: expect.objectContaining(identity), usage: { type: "duration", seconds: 2.75 },
+  }));
+  expect(capture).not.toHaveBeenCalled();
+  await expect(recording.record(null, "failed")).rejects.toThrow("already reported");
+  expect(evidenceCapture).toHaveBeenCalledOnce();
+});
+
+
+it("retained adapters replay historical envelopes and preserve uncertain claims", async () => {
+  const f = await fixture(async () => ({ text: "unused" }));
+  const operations = new PostgresProviderOperationStore(f.bundle.persistence, f.context.tenantId, "legacy");
+  const retained = { text: "  Original whitespace  " };
+  await operations.run({ operationId: "completed", requestFingerprint: "original",
+    execute: async () => retained, parseResult: value => value });
+  await expect(operations.run({ operationId: "uncertain", requestFingerprint: "original",
+    execute: async () => { throw new Error("lost provider reply"); }, parseResult: value => value })).rejects.toThrow();
+  const usage = vi.fn(() => { throw new Error("must not construct a replay receipt"); });
+  const transcribe = vi.fn(async () => "wrong replacement");
+  const options = { operations, requestFingerprint: "original", usage, transcribe,
+    result: { encode: (text: string) => ({ text }), decode: (value: unknown) => (value as { text?: unknown })?.text } };
+  expect(await runRetainedTranscription({ ...options, operationId: "completed" })).toEqual(retained);
+  await expect(runRetainedTranscription({ ...options, operationId: "completed", requestFingerprint: "changed" }))
+    .rejects.toMatchObject({ name: "PostgresProviderOperationConflictError" });
+  await expect(runRetainedTranscription({ ...options, operationId: "uncertain" }))
+    .rejects.toMatchObject({ name: "PostgresProviderOperationUncertainError" });
+  expect(usage).not.toHaveBeenCalled();
+  expect(transcribe).not.toHaveBeenCalled();
+});
+
+it("a bounded retained wait rejects late success but captures incurred provider evidence", async () => {
+  const f = await fixture(async () => ({ text: "unused" }));
+  const operations = new PostgresProviderOperationStore(f.bundle.persistence, f.context.tenantId, "timeout");
+  let release!: () => void, finished!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const settled = new Promise<void>(resolve => { finished = resolve; });
+  const identity = { usage_receipt_id: "late-usage", conversation_id: f.conversationId,
+    turn_id: "late", logical_request_id: "late", trace_id: "late",
+    attempt: { id: "late:0", index: 0 }, continuation: { id: "late:0", index: 0 },
+    provider_id: "openai", model_id: "gpt-transcribe", source: "provider" as const, attribution: f.context.attribution };
+  const transcribe = vi.fn(async ({ recordUsage }: Parameters<Parameters<typeof runRetainedTranscription>[0]["transcribe"]>[0]) => {
+    await held;
+    await recordUsage({ kind: "openai_audio", usage: { type: "duration", seconds: 1.25 } }, "completed");
+    finished();
+    return "Too late";
+  });
+  const options = { operations, operationId: "late", requestFingerprint: "audio", timeoutMilliseconds: 30,
+    usage: () => createTranscriptionUsageRecorder({ identity, evidence: () => f.evidence, capture: f.capture }), transcribe };
+  await expect(runRetainedTranscription(options)).rejects.toMatchObject({ code: "deadline_exceeded" });
+  expect(transcribe).toHaveBeenCalledOnce();
+  await expect(runRetainedTranscription(options)).rejects.toMatchObject({ name: "PostgresProviderOperationUncertainError" });
+  release();
+  await settled;
+  expect(f.capture).toHaveBeenCalledOnce();
+  expect((await f.evidence.get("late-usage"))?.usage).toEqual({ type: "duration", seconds: 1.25 });
+  await expect(runRetainedTranscription(options)).rejects.toMatchObject({ name: "PostgresProviderOperationUncertainError" });
+  expect(transcribe).toHaveBeenCalledOnce();
+});
+
+it("legacy audio intake snapshots bytes without inventing capture duration", () => {
+  const source = new Uint8Array(bytes);
+  const audio = validateTranscriptionAudio({ bytes: source, mediaType: "Audio/WebM;codecs=opus", idempotencyKey: "legacy-1" });
+  source.fill(0);
+  expect(audio.bytes).toEqual(bytes);
+  expect(audio.mediaType).toBe("audio/webm");
+  expect(audio).not.toHaveProperty("durationSeconds");
+  expect(() => validateTranscriptionAudio({ ...audio, bytes: source })).toThrow();
+  expect(() => validateTranscriptionAudio({ ...audio, idempotencyKey: "../invalid" })).toThrow();
+  expect(() => validateTranscriptionAudio({ ...audio, durationSeconds: 61 })).toThrow();
+});
+
+it("preserves a compatibility text limit without replacing usage, and does no work after a prior abort", async () => {
+  const record = vi.fn(async () => {});
+  const usage = { kind: "openai_audio" as const, usage: { type: "duration" as const, seconds: 1.25 } };
+  await expect(runTranscriptionAttempt({ maximumTextLength: 4, usage: () => ({ record }),
+    transcribe: async ({ recordUsage }) => { await recordUsage(usage, "completed"); return "longer"; },
+  })).rejects.toMatchObject({ code: "internal_failure" });
+  expect(record).toHaveBeenCalledExactlyOnceWith(usage, "completed");
+  record.mockClear();
+  await expect(runTranscriptionAttempt({ maximumTextLength: 4, usage: () => ({ record }),
+    transcribe: async () => "longer",
+  })).rejects.toMatchObject({ code: "internal_failure" });
+  expect(record).toHaveBeenCalledExactlyOnceWith(null, "failed");
+  const controller = new AbortController(); controller.abort(new Error("caller left"));
+  const admit = vi.fn(); const transcribe = vi.fn(); const recorder = vi.fn(() => ({ record }));
+  await expect(runTranscriptionAttempt({ signal: controller.signal, admit, transcribe, usage: recorder })).rejects.toThrow("caller left");
+  expect(admit).not.toHaveBeenCalled(); expect(transcribe).not.toHaveBeenCalled(); expect(recorder).not.toHaveBeenCalled();
 });

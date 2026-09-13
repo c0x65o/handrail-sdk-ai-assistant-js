@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { AttachmentStagingError, createAttachmentStagingService,
   type StagedAttachmentRecord } from "../src/attachments/staging.js";
+import { parseChatRequest, type AttachmentReference } from "../src/protocol.js";
+
+function validateReference(reference: AttachmentReference) {
+  parseChatRequest({ protocol_version: "handrail.ai-runtime.v1", continuation_of: null,
+    messages: [{ role: "user", content: [{ type: reference.media_type.startsWith("image/") ? "image" : "document", attachment: reference }] }],
+    tools: [], tool_results: [], generation: { max_output_tokens: 1000, temperature: 0.2 }, correlation_hints: {}, metadata: {} });
+  return reference;
+}
 
 function fixture() {
   const records = new Map<string, StagedAttachmentRecord>(), blobs = new Map<string, Uint8Array>();
@@ -28,6 +36,7 @@ describe("attachment staging", () => {
       idempotencyKey: "upload-1", fingerprint: "sha256-1", mediaType: "application/pdf",
       filename: "report.pdf", bytes: new Uint8Array([1, 2, 3]) });
     expect(JSON.stringify([...value.records.values()])).not.toContain("1,2,3");
+    expect(validateReference(reference)).toEqual(reference);
     await expect(value.service.resolve({ ownerScopeId: "owner-2", conversationId: "conversation-1",
       contentRef: reference.content_ref })).rejects.toMatchObject({ code: "forbidden" });
     expect((await value.service.resolve({ ownerScopeId: "owner-1", conversationId: "conversation-1",
@@ -45,5 +54,25 @@ describe("attachment staging", () => {
     await expect(value.service.resolve({ ownerScopeId: "owner-1", conversationId: "conversation-1",
       contentRef: first.content_ref })).rejects.toMatchObject({ code: "expired" });
     expect(await value.service.cleanupExpired()).toBe(1); expect(value.records.size).toBe(0);
+  });
+
+  it("returns a wire-compatible alias on legacy staging replay while retaining storage identity, ownership and consumption", async () => {
+    const value = fixture(), input = { ownerScopeId: "owner-1", conversationId: "conversation-1",
+      idempotencyKey: "upload-1", fingerprint: "sha256-1", mediaType: "image/png", bytes: new Uint8Array([1]) };
+    const staged = await value.service.stage(input);
+    const original = value.records.get(staged.content_ref)!;
+    const legacy = { ...original, contentRef: original.contentRef.replace(/^ref_/u, "blob_") };
+    value.records.delete(original.contentRef); value.records.set(legacy.contentRef, legacy);
+    const replay = await value.service.stage(input);
+    expect(validateReference(replay)).toEqual(staged);
+    expect(value.records.size).toBe(1);
+    const read = { ownerScopeId: input.ownerScopeId, conversationId: input.conversationId, contentRef: replay.content_ref };
+    expect((await value.service.resolve(read)).bytes).toEqual(input.bytes);
+    expect((await value.service.resolve({ ...read, contentRef: legacy.contentRef })).bytes).toEqual(input.bytes);
+    await expect(value.service.resolve({ ...read, ownerScopeId: "other" })).rejects.toMatchObject({ code: "forbidden" });
+    await value.service.consume(read);
+    expect(value.records.get(legacy.contentRef)?.consumedAt).not.toBeNull();
+    expect(value.blobs.size).toBe(0);
+    await expect(value.service.resolve(read)).rejects.toMatchObject({ code: "not_found" });
   });
 });

@@ -31,6 +31,7 @@ import {
 import type { PresenceParticipantKind } from "../presence/types.js";
 import { emitAiDiagnostic } from "../diagnostics.js";
 import { createTranscriptionHttpClient, resolveTranscriptionEndpoint } from "../transcription-http.js";
+import { createAttachmentDownloadClient, resolveAttachmentDownloadEndpoint } from "../attachments/downloader.js";
 
 export interface HandrailAiClientBootstrapOptions<TEvent, TRequest, TAuthorizationContext, TSynchronization = unknown>
 extends ApplicationGatewayTransportOptions<TEvent, TSynchronization> {
@@ -103,6 +104,7 @@ export interface HandrailAiClient<TEvent, TRequest, TAuthorizationContext> {
   readonly workspace: ConversationWorkspace<TRequest, TAuthorizationContext> | null;
   readonly attachmentUpload: AttachmentUploadAdapter<ApplicationGatewayAttachmentSource> | null;
   readonly transcription: ReturnType<typeof createTranscriptionHttpClient> | null;
+  readonly attachmentDownload: ReturnType<typeof createAttachmentDownloadClient> | null;
   readonly presence: ApplicationGatewayPresenceClient | null;
   readonly synchronization: ConversationSyncAdapter | null;
   /** Returns a stable, client-owned controller for the conversation when presence was negotiated/configured. */
@@ -131,6 +133,12 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
     throw new TypeError("conversations cannot be combined with legacy runtime ownership options");
   }
   const capabilities = options.capabilities ?? await negotiateApplicationGatewayCapabilities(options);
+  const attachmentDownload = capabilities.attachmentDownloads ? createAttachmentDownloadClient({
+    endpoint: resolveAttachmentDownloadEndpoint(options.baseUrl, capabilities.attachmentDownloads),
+    capability: capabilities.attachmentDownloads,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.protectedRequest ? { protectedRequest: options.protectedRequest } : {}),
+  }) : null;
   const transcription = capabilities.transcription ? createTranscriptionHttpClient({
     endpoint: resolveTranscriptionEndpoint(options.baseUrl, capabilities.transcription),
     capability: capabilities.transcription,
@@ -211,7 +219,7 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
   }
   const conversationMode = singleConfiguration !== null ? "single" : multiple ? "multiple" : "none";
   return Object.freeze({ conversationMode, conversation, capabilities, transport, resources, activity, catalog, registry, workspace,
-    attachmentUpload, transcription, presence, synchronization,
+    attachmentUpload, attachmentDownload, transcription, presence, synchronization,
     presenceControllerFor(conversationId: ConversationId) {
       if (presenceAdapter === null || options.presenceIdentity === undefined) return null;
       const existing = presenceControllers.get(conversationId);

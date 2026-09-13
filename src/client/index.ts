@@ -1,5 +1,6 @@
 /** Cross-platform client entry point: no React, Node, database, or provider dependencies. */
 export * from "./bootstrap.js";
+export * from "../attachments/downloader.js";
 export * from "../transcription-http.js";
 export * from "./presence.js";
 export * from "./synchronization.js";

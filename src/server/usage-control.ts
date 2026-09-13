@@ -133,15 +133,52 @@ export function createAIRuntimeQuotaLeaseClient(options: AIRuntimeUsageClientOpt
   });
 }
 
-export function createAIRuntimeUsageClientFromEnv(env: Record<string, string | undefined> = process.env): AIRuntimeUsageClient | null {
+export function createAIRuntimeUsageClientFromEnv(env: Record<string, string | undefined> = process.env,
+  options: Pick<AIRuntimeUsageClientOptions, "fetch" | "retryLimit" | "timeoutMs"> = {}): AIRuntimeUsageClient | null {
   if (env.HANDRAIL_AI_RUNTIME_ENABLED !== "true") return null;
-  const apiUrl = env.HANDRAIL_AI_RUNTIME_TELEMETRY_URL ?? env.HANDRAIL_AI_RUNTIME_API_URL;
-  if (!apiUrl || !env.HANDRAIL_AI_RUNTIME_TOKEN || !env.HANDRAIL_AI_RUNTIME_SERVICE_ENV_ID) return null;
-  return createAIRuntimeUsageClient({ apiUrl, token: env.HANDRAIL_AI_RUNTIME_TOKEN, serviceEnvId: env.HANDRAIL_AI_RUNTIME_SERVICE_ENV_ID,
+  const apiUrl = env.HANDRAIL_AI_RUNTIME_TELEMETRY_URL?.trim() || env.HANDRAIL_AI_RUNTIME_API_URL?.trim();
+  const token = env.HANDRAIL_AI_RUNTIME_TOKEN?.trim();
+  const serviceEnvId = env.HANDRAIL_AI_RUNTIME_SERVICE_ENV_ID?.trim();
+  if (!apiUrl || !token || !serviceEnvId) return null;
+  return createAIRuntimeUsageClient({ ...options, apiUrl, token, serviceEnvId,
     ...(env.HANDRAIL_AI_RUNTIME_ORG_ID ? { organizationId: env.HANDRAIL_AI_RUNTIME_ORG_ID } : {}),
     ...(env.HANDRAIL_AI_RUNTIME_PROJECT_ID ? { projectId: env.HANDRAIL_AI_RUNTIME_PROJECT_ID } : {}),
     ...(env.HANDRAIL_AI_RUNTIME_SERVICE_ID ? { serviceId: env.HANDRAIL_AI_RUNTIME_SERVICE_ID } : {}),
     ...(env.HANDRAIL_AI_RUNTIME_ENV ? { environment: env.HANDRAIL_AI_RUNTIME_ENV } : {}) });
+}
+
+/** Optional startup/periodic delivery. Stop prevents new scheduled flushes but
+ * never deletes receipts or abandons a flush already writing acknowledgements.
+ */
+export function createAIRuntimeUsageDelivery(options: {
+  readonly flush: () => Promise<unknown>;
+  readonly enabled?: boolean;
+  readonly flushOnStartup?: boolean;
+  readonly retryIntervalMilliseconds?: number | null;
+  readonly onError?: (error: unknown) => void;
+}) {
+  const interval = options.retryIntervalMilliseconds === undefined ? 30_000 : options.retryIntervalMilliseconds;
+  if (interval !== null && (!Number.isSafeInteger(interval) || interval <= 0)) {
+    throw new TypeError("usageDelivery.retryIntervalMilliseconds must be null or a positive safe integer");
+  }
+  let running: Promise<void> | null = null;
+  let stopped = false;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const run = (): Promise<void> => {
+    if (stopped || options.enabled === false) return Promise.resolve();
+    return running ??= Promise.resolve().then(options.flush).then(() => undefined).catch(error => {
+      // Reporting must not turn background delivery into an unhandled rejection.
+      try { options.onError?.(error); } catch { /* Best-effort diagnostics. */ }
+    }).finally(() => { running = null; });
+  };
+  const ready = options.flushOnStartup === false ? Promise.resolve() : run();
+  void ready.then(() => {
+    if (!stopped && options.enabled !== false && interval !== null) {
+      timer = setInterval(() => { void run(); }, interval);
+      timer.unref?.();
+    }
+  });
+  return Object.freeze({ ready, stop() { stopped = true; if (timer !== null) clearInterval(timer); } });
 }
 
 /** High-level constructor input with an explicit disabled state when environment configuration is absent. */

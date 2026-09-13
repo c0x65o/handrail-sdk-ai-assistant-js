@@ -20,7 +20,7 @@ function usage(message) {
 }
 
 function extension(path) {
-  const match = /(?:\.[^.\/]+)$/u.exec(path);
+  const match = /(?:\.[^./]+)$/u.exec(path);
   return match?.[0] ?? "";
 }
 

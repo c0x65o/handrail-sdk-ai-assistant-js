@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createAIRuntimeUsageClient,
+  createAIRuntimeUsageClientFromEnv,
   createAIRuntimeUsageReceiptSink,
+  createAIRuntimeUsageDelivery,
   type AIRuntimeUsageOutboxEntry,
 } from "../src/server/usage-control.js";
 import { createAIRuntimeQuotaLeaseClient } from "../src/server/usage-control.js";
@@ -33,6 +35,25 @@ function receipt(id = "receipt-1") {
 }
 
 describe("AI Runtime usage-control client", () => {
+  it("treats blank environment configuration as absent and uses the API URL fallback", async () => {
+    const env = { HANDRAIL_AI_RUNTIME_ENABLED: "true", HANDRAIL_AI_RUNTIME_TELEMETRY_URL: "  ",
+      HANDRAIL_AI_RUNTIME_API_URL: " https://telemetry.example/api/ai-runtime/v1/ ",
+      HANDRAIL_AI_RUNTIME_TOKEN: " server-token ", HANDRAIL_AI_RUNTIME_SERVICE_ENV_ID: " service-env-1 " };
+    const fetcher = vi.fn(async () => Response.json({ accepted_count: 1 }));
+    const client = createAIRuntimeUsageClientFromEnv(env, { fetch: fetcher });
+    expect(client).not.toBeNull();
+    await client!.settle({ requestId: "turn-1", receipts: [receipt()] });
+    expect(fetcher).toHaveBeenCalledWith("https://telemetry.example/api/ai-usage/v1/receipts", expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer server-token" }),
+      body: expect.stringContaining('"service_env_id":"service-env-1"'),
+    }));
+    for (const key of ["HANDRAIL_AI_RUNTIME_TOKEN", "HANDRAIL_AI_RUNTIME_SERVICE_ENV_ID"]) {
+      expect(createAIRuntimeUsageClientFromEnv({ ...env, [key]: "  " }, { fetch: fetcher })).toBeNull();
+    }
+    expect(createAIRuntimeUsageClientFromEnv({ ...env, HANDRAIL_AI_RUNTIME_API_URL: " " })).toBeNull();
+    expect(createAIRuntimeUsageClientFromEnv({ ...env, HANDRAIL_AI_RUNTIME_ENABLED: "false" })).toBeNull();
+  });
+
   it("keeps admission local and observe-only so Handrail availability cannot block a provider call", async () => {
     const fetcher = vi.fn();
     const client = createAIRuntimeUsageClient({ apiUrl: "https://telemetry.example", token: "server-token", serviceEnvId: "service-env-1", fetch: fetcher });
@@ -97,5 +118,53 @@ describe("AI Runtime quota lease foundation", () => {
     const lease = await client.acquire({ logicalRequestId: "logical-1", requestedTokens: 10 });
     expect(() => client.assertCanInvoke(lease)).toThrow(/preflight denied/i);
     expect(fetcher).toHaveBeenCalledWith("https://telemetry.example/api/ai-usage/v1/leases", expect.any(Object));
+  });
+});
+
+
+describe("shared usage delivery worker", () => {
+  it("coalesces periodic delivery, survives failure and stops future work", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const flush = vi.fn(async () => {});
+    const onError = vi.fn();
+    const worker = createAIRuntimeUsageDelivery({ flush, onError, retryIntervalMilliseconds: 10 });
+    try {
+      await worker.ready;
+      expect(flush).toHaveBeenCalledOnce();
+      flush.mockImplementationOnce(() => held);
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(flush).toHaveBeenCalledTimes(2);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      flush.mockRejectedValueOnce(new Error("delivery offline"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(onError).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(flush).toHaveBeenCalledTimes(4);
+      worker.stop();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(flush).toHaveBeenCalledTimes(4);
+    } finally { worker.stop(); vi.useRealTimers(); }
+  });
+
+  it("stop during startup prevents creating a later timer, while disabled mode stays idle", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const flush = vi.fn(() => held);
+    const worker = createAIRuntimeUsageDelivery({ flush, retryIntervalMilliseconds: 10 });
+    const disabled = createAIRuntimeUsageDelivery({ flush, enabled: false });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(flush).toHaveBeenCalledOnce();
+      worker.stop(); release();
+      await worker.ready; await disabled.ready;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(flush).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { worker.stop(); disabled.stop(); vi.useRealTimers(); }
   });
 });

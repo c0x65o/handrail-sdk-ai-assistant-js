@@ -1,15 +1,20 @@
+export { createAttachmentContentValidator, AttachmentContentError, STANDARD_ATTACHMENT_MEDIA_TYPES,
+  type AttachmentContentFailure, type AttachmentContentInput, type AttachmentContentPolicy, type StandardAttachmentMediaType } from "./attachment-content.js";
 export { createTrackedOpenAIResponsesRequest, type TrackedOpenAIResponsesRequestOptions, type OpenAIResponsesExecutionContext } from "./openai-responses-request.js";
 export { retainProviderInvocation, type ProviderInvocationOperationStore } from "./provider-invocations.js";
+export { createConversationFileStorage, type ConversationFileStorageOptions, type ConversationFileInput,
+  type RetainedConversationFile } from "./conversation-files.js";
 import { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
 export { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime, type AssistantToolRuntimeOptions } from "./assistant-tool-runtime.js";
 export { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { createToolActivityObserver, type HandrailAssistantToolObserver } from "./tool-observer.js";
 import { createHash } from "node:crypto";
+import { AttachmentStagingError } from "../attachments/staging.js";
 import { composerApprovalModeFromRequest } from "../composer-approval.js";
 import { createAssistantTranscription, type AssistantTranscriptionProvider } from "./transcription.js";
 import { DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY } from "../transcription-http.js";
-export { openaiTranscription, type HandrailOpenAITranscriptionOptions } from "./openai-transcription.js";
-export { createAssistantTranscription, createTranscriptionHttpHandler, type AssistantTranscriptionProvider,
+export { openaiTranscription, createOpenAITranscriptionRequest, createOpenAIAudioTranscriber, type HandrailOpenAITranscriptionOptions } from "./openai-transcription.js";
+export { createAssistantTranscription, createTranscriptionHttpHandler, createTranscriptionUsageRecorder, runRetainedTranscription, runTranscriptionAttempt, validateTranscriptionAudio, type RetainedTranscriptionOptions, type TranscriptionAttemptOptions, type AssistantTranscriptionProvider,
   type TranscriptionHttpServerInput, type AssistantTranscriptionUsage } from "./transcription.js";
 import { reconcileDurableConversationTurn } from "./reconcile-conversation.js";
 import { replayConversation } from "../conversation/replay.js";
@@ -38,7 +43,7 @@ import { createAiApplication, type AiApplication, type ApplicationApprovalPolicy
 import type { ApplicationToolActivityUpdate, ApplicationToolExecutor, ApplicationToolPolicy,
   BoundedToolExecutorLimits } from "../tools/executor.js";
 import type { ToolPlugin } from "../tools/plugin.js";
-import type { AIRuntimeUsageConfiguration } from "./usage-control.js";
+import { createAIRuntimeUsageDelivery, type AIRuntimeUsageConfiguration } from "./usage-control.js";
 import { createApprovalExecutionCoordinator } from "../tools/approval-execution.js";
 import { createApprovalCoordinator } from "../conversation/approval-coordinator.js";
 import { createConversationSynchronizationHttpHandler } from "../sync/http.js";
@@ -50,7 +55,7 @@ import { createAssistantActivityTransport } from "../presence/assistant-activity
 export { waitForApplicationApproval, ApplicationApprovalWaitExpiredError,
   type ApplicationApprovalWaitOptions, type ApplicationApprovalObservation } from "./application-approval-wait.js";
 export type { HandrailAssistantToolObserver } from "./tool-observer.js";
-export { openaiResponses, createOpenAIResponsesRequest, type HandrailOpenAIResponsesOptions } from "./openai-responses.js";
+export { openaiResponses, createOpenAIResponsesRequest, DEFAULT_ASSISTANT_DOCUMENT_INPUT, type HandrailOpenAIResponsesOptions } from "./openai-responses.js";
 export { createProviderToolLoopTransport, type ProviderToolLoopTransportOptions } from "./provider-tool-loop.js";
 export type { AssistantAutomaticTitleOptions, AssistantTitleProviderRequest } from "./conversation-titles.js";
 
@@ -114,6 +119,8 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   readonly createConversationId?: () => string;
   /** Disable SDK byte intake while a migrating host retains its authorized upload route. Defaults to true. */
   readonly attachmentUpload?: boolean;
+  /** Protected reads of retained saved files. Defaults true, independent of upload controls. */
+  readonly attachmentDownloads?: boolean;
   /** Defaults to the provider's configured speech service; false disables authenticated dictation. */
   readonly transcription?: false | AssistantTranscriptionProvider<TContext>;
   /** Migration seam for a host-owned authorized catalog. New integrations use the SDK Postgres catalog. */
@@ -540,6 +547,24 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
     return true;
   };
+  const attachmentDownload = async (request: Request, context: TContext) => {
+    const headers = { "cache-control": "private, no-store", "x-content-type-options": "nosniff" };
+    const query = new URL(request.url).searchParams;
+    const conversationId = query.get("conversationId"), attachmentId = query.get("attachmentId");
+    if (!conversationId || !attachmentId) return new Response(null, { status: 400, headers });
+    try { await ownsConversation(context, conversationId); }
+    catch { return new Response(null, { status: 404, headers }); }
+    try {
+      const { record, bytes } = await bundleFor(context).attachments.download({ ownerScopeId: context.scopeId, conversationId, attachmentId });
+      const filename = (record.filename ?? "attachment").replace(/[^A-Za-z0-9._ -]/gu, "_").slice(0, 180) || "attachment";
+      return new Response(new Uint8Array(bytes), { headers: { ...headers, "content-type": record.mediaType,
+        "content-length": String(bytes.byteLength), "content-disposition": `attachment; filename="${filename}"` } });
+    } catch (error) {
+      const status = error instanceof AttachmentStagingError ? error.code === "expired" ? 410
+        : error.code === "not_found" || error.code === "forbidden" ? 404 : error.code === "invalid_input" ? 400 : 503 : 503;
+      return new Response(null, { status, headers });
+    }
+  };
   const attachments = async (request: Request, context: TContext) => {
     if (request.method !== "POST") return new Response(null, { status: 405, headers: { allow: "POST" } });
     try {
@@ -605,11 +630,14 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         approvals,
         titleGeneration: { generate: generateTitle },
         handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence,
+          ...(options.attachmentDownloads === false ? {} : { attachment_download: attachmentDownload }),
           ...(transcriptionProvider ? { transcription: createAssistantTranscription({
             assistantId, provider: transcriptionProvider,
             ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
             catalogFor, bundleFor }) } : {}) },
         capabilities: { activity: true, presence: true, synchronization: true,
+          attachmentDownloads: options.attachmentDownloads === false ? false : {
+            maximumBytes: options.persistence.attachmentLimits.maximumBytes, url: "attachments/content" },
           transcription: transcriptionProvider
             ? { ...(transcriptionProvider.capability ?? DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY), url: "transcriptions" } : false,
           attachments: options.attachmentUpload === false ? false : {
@@ -642,26 +670,17 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   if (usageBatchSize !== undefined && (!Number.isSafeInteger(usageBatchSize) || usageBatchSize <= 0)) {
     throw new TypeError("usageDelivery.batchSize must be a positive safe integer");
   }
-  const retryIntervalMilliseconds = options.usageDelivery?.retryIntervalMilliseconds === undefined
-    ? 30_000 : options.usageDelivery.retryIntervalMilliseconds;
-  if (retryIntervalMilliseconds !== null &&
-    (!Number.isSafeInteger(retryIntervalMilliseconds) || retryIntervalMilliseconds <= 0)) {
-    throw new TypeError("usageDelivery.retryIntervalMilliseconds must be null or a positive safe integer");
-  }
-  let usageFlushRunning = false;
-  const runUsageFlush = async () => {
-    if (usageFlushRunning) return;
-    usageFlushRunning = true;
-    try { await flushUsage(usageBatchSize); }
-    catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "usage_outbox_flush",
-      phase: "failed", code: "usage_delivery_failed", retryable: true, cause }); }
-    finally { usageFlushRunning = false; }
-  };
-  if (options.usage?.client != null && options.usageDelivery?.flushOnStartup !== false) await runUsageFlush();
-  const usageTimer = options.usage?.client != null && retryIntervalMilliseconds !== null
-    ? setInterval(() => void runUsageFlush(), retryIntervalMilliseconds)
-    : null;
-  usageTimer?.unref?.();
+  const usageDelivery = createAIRuntimeUsageDelivery({
+    enabled: options.usage?.client != null,
+    flushOnStartup: options.usageDelivery?.flushOnStartup !== false,
+    ...(options.usageDelivery?.retryIntervalMilliseconds === undefined ? {} : {
+      retryIntervalMilliseconds: options.usageDelivery.retryIntervalMilliseconds,
+    }),
+    flush: () => flushUsage(usageBatchSize),
+    onError: cause => emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "usage_outbox_flush",
+      phase: "failed", code: "usage_delivery_failed", retryable: true, cause }),
+  });
+  await usageDelivery.ready;
   return Object.freeze({
     version: HANDRAIL_ASSISTANT_VERSION,
     id: assistantId,
@@ -676,6 +695,6 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       return recovered;
     },
     flushUsage,
-    stopUsageWorker() { if (usageTimer !== null) clearInterval(usageTimer); },
+    stopUsageWorker: usageDelivery.stop,
   });
 }

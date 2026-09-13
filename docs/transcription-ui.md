@@ -58,3 +58,50 @@ The provider HTTP implementation follows the official [file transcription and sp
 ## Current release boundary
 
 These APIs are local candidate changes under the shared assistant consolidation goal. Applications pinned to the existing committed SDK SHA do not receive them yet. Consumer migration requires a reviewed committed SDK revision and matching HTTPS Git dependency/lockfile updates through the normal install/build pipeline. These tests do not establish deployed parity.
+
+### Compatibility server adapters
+
+Prefer `createHandrailAssistant` with `openaiTranscription` for new integrations.
+Existing authenticated multipart endpoints can reuse `validateTranscriptionAudio`,
+`createOpenAIAudioTranscriber`, `runRetainedTranscription` and
+`createTranscriptionUsageRecorder` from `@handrail/ai-assistant/server/assistant`
+while preserving historical operation IDs, result envelopes and persistence
+namespaces. Audio validation copies the bytes before asynchronous work and does
+not invent a duration for older clients. The retained-operation helper owns the
+deadline, one physical dispatch, result validation and usage fallback. A data-only
+`result: { encode, decode }` codec preserves a legacy envelope such as `{ text }`;
+`preserveWhitespace: true` on the provider preserves historical text formatting.
+Completed requests replay; failed or uncertain claims cannot dispatch again.
+
+`createOpenAITranscriptionRequest` is the lower-level multipart HTTP transport.
+It accepts the retained provider idempotency key and an abort signal and performs
+no automatic physical retries. Authenticate and validate configuration before
+claiming an operation. Prefer the retained-operation helper to a custom timer or
+retry loop. Late provider usage is still recorded after a deadline, while late
+text cannot complete the retained claim.
+
+For a compatibility endpoint that already owns an SDK durable operation claim,
+`runTranscriptionAttempt` provides the same bounded physical attempt used by
+`runRetainedTranscription`. It requires the caller to authorize and retain that
+claim first. It does not create another identity or authorize a retry. Supply a
+usage-recording adapter for an existing receipt contract; the SDK prevents a
+second/fallback receipt after the first capture attempt, including capture
+failure. `maximumTextLength` can preserve a smaller host limit (Mills uses 4,000);
+the default is 20,000. Both new provider results and completed replay are bounded
+when using `runRetainedTranscription`.
+
+The recorder accepts server-derived receipt identity, an audio-evidence store
+factory and a durable receipt capture callback. It writes reported audio evidence
+before the normalized receipt, preserves provider duration without estimating
+tokens, and rejects a second recording attempt even when the first storage write
+fails. Evidence writes remain independent of request cancellation. These adapters
+share implementation with the default high-level transcription path; they do not
+replace host authorization or authorize replay of uncertain provider operations.
+
+`createAIRuntimeUsageDelivery` from `@handrail/ai-assistant/server/usage-control`
+provides optional startup and periodic outbox delivery, shared by the high-level
+assistant and compatibility adapters. Await `ready` where startup must finish
+before serving; call `stop()` on shutdown. It coalesces scheduled flushes, survives
+delivery errors, and stops new work without deleting receipts or abandoning an
+in-flight acknowledgement. The host supplies the existing durable sink and
+namespace, not another scheduler.

@@ -15,6 +15,8 @@ export interface StagedAttachmentRecord {
 export interface AttachmentStagingMetadataStore {
   getByIdempotency(ownerScopeId: string, conversationId: string, idempotencyKey: string): Promise<StagedAttachmentRecord | null>;
   getByContentRef(contentRef: string): Promise<StagedAttachmentRecord | null>;
+  /** Optional for older stores; enables protected reads of saved attachment identities. */
+  getByAttachmentId?(ownerScopeId: string, conversationId: string, attachmentId: string): Promise<StagedAttachmentRecord | null>;
   create(record: StagedAttachmentRecord): Promise<"created" | "conflict">;
   markConsumed(contentRef: string, consumedAt: string): Promise<void>;
   listExpired(before: string, limit: number): Promise<readonly StagedAttachmentRecord[]>;
@@ -44,7 +46,9 @@ function safeId(value: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/u.test(value)) throw new AttachmentStagingError("invalid_input"); return value;
 }
 function reference(record: StagedAttachmentRecord): AttachmentReference {
-  return { attachment_id: record.attachmentId, content_ref: record.contentRef,
+  // Older staging returned a blob_ key that the public wire grammar rejects.
+  // Keep its stored identity and expose a compatible alias without restaging bytes.
+  return { attachment_id: record.attachmentId, content_ref: record.contentRef.replace(/^blob_/u, "ref_"),
     media_type: record.mediaType as AttachmentReference["media_type"], byte_size: record.byteSize,
     ...(record.filename ? { filename: record.filename } : {}) };
 }
@@ -58,6 +62,18 @@ export function createAttachmentStagingService(options: AttachmentStagingOptions
   }
   const owns = (record: StagedAttachmentRecord, ownerScopeId: string, conversationId: string) =>
     record.ownerScopeId === ownerScopeId && record.conversationId === conversationId;
+  const read = async (record: StagedAttachmentRecord | null, ownerScopeId: string, conversationId: string) => {
+    if (!record) throw new AttachmentStagingError("not_found");
+    if (!owns(record, ownerScopeId, conversationId)) throw new AttachmentStagingError("forbidden");
+    if (!Number.isFinite(Date.parse(record.expiresAt)) || Date.parse(record.expiresAt) <= now()) throw new AttachmentStagingError("expired");
+    if (record.consumedAt) throw new AttachmentStagingError("not_found");
+    if (!Number.isSafeInteger(record.byteSize) || record.byteSize < 1 || record.byteSize > maximumBytes ||
+      !acceptable(record.mediaType, acceptedMediaTypes)) throw new AttachmentStagingError("invalid_input");
+    const bytes = await options.blobs.get(record.blobKey);
+    if (!bytes) throw new AttachmentStagingError("not_found");
+    if (bytes.byteLength !== record.byteSize) throw new AttachmentStagingError("unavailable");
+    return Object.freeze({ record, bytes });
+  };
   return Object.freeze({
     async stage(input: { readonly ownerScopeId: string; readonly conversationId: string; readonly idempotencyKey: string;
       readonly fingerprint: string; readonly mediaType: string; readonly filename?: string; readonly bytes: Uint8Array }): Promise<AttachmentReference> {
@@ -71,7 +87,7 @@ export function createAttachmentStagingService(options: AttachmentStagingOptions
         if (Date.parse(existing.expiresAt) <= now()) throw new AttachmentStagingError("expired");
         return reference(existing);
       }
-      const attachmentId = safeId(`att_${createId()}`), contentRef = safeId(`blob_${createId()}`), blobKey = safeId(`attachments/${contentRef}`);
+      const attachmentId = safeId(`att_${createId()}`), contentRef = safeId(`ref_${createId()}`), blobKey = safeId(`attachments/${contentRef}`);
       const createdAt = new Date(now()).toISOString(), expiresAt = new Date(now() + ttlMilliseconds).toISOString();
       const record: StagedAttachmentRecord = { attachmentId, contentRef, blobKey, ownerScopeId, conversationId,
         idempotencyKey: input.idempotencyKey, fingerprint: input.fingerprint, mediaType: input.mediaType,
@@ -91,15 +107,21 @@ export function createAttachmentStagingService(options: AttachmentStagingOptions
           conversationId, code: "unavailable", retryable: true }); throw new AttachmentStagingError("unavailable"); }
     },
     async resolve(input: { readonly ownerScopeId: string; readonly conversationId: string; readonly contentRef: string }) {
-      const record = await options.metadata.getByContentRef(safeId(input.contentRef));
-      if (!record) throw new AttachmentStagingError("not_found");
-      if (!owns(record, safeId(input.ownerScopeId), safeId(input.conversationId))) throw new AttachmentStagingError("forbidden");
-      if (Date.parse(record.expiresAt) <= now()) throw new AttachmentStagingError("expired");
-      const bytes = await options.blobs.get(record.blobKey); if (!bytes) throw new AttachmentStagingError("not_found");
-      return Object.freeze({ record, bytes });
+      const contentRef = safeId(input.contentRef);
+      const record = await options.metadata.getByContentRef(contentRef) ?? (contentRef.startsWith("ref_")
+        ? await options.metadata.getByContentRef(contentRef.replace(/^ref_/u, "blob_")) : null);
+      return read(record, safeId(input.ownerScopeId), safeId(input.conversationId));
+    },
+    /** Reads existing bytes without changing expiry or reviving consumed content. */
+    async download(input: { readonly ownerScopeId: string; readonly conversationId: string; readonly attachmentId: string }) {
+      const owner = safeId(input.ownerScopeId), conversation = safeId(input.conversationId), attachment = safeId(input.attachmentId);
+      if (!options.metadata.getByAttachmentId) throw new AttachmentStagingError("unavailable");
+      const record = await options.metadata.getByAttachmentId(owner, conversation, attachment);
+      if (record && record.attachmentId !== attachment) throw new AttachmentStagingError("not_found");
+      return read(record, owner, conversation);
     },
     async consume(input: { readonly ownerScopeId: string; readonly conversationId: string; readonly contentRef: string }) {
-      const resolved = await this.resolve(input); await options.metadata.markConsumed(input.contentRef, new Date(now()).toISOString());
+      const resolved = await this.resolve(input); await options.metadata.markConsumed(resolved.record.contentRef, new Date(now()).toISOString());
       await options.blobs.delete(resolved.record.blobKey); return resolved.record;
     },
     async cleanupExpired() {

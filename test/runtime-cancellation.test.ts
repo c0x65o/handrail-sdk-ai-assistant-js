@@ -231,7 +231,6 @@ async function activeTurnId(runtime: Awaited<ReturnType<typeof runtimeFor>>["run
 
 describe("ConversationRuntime cancellation", () => {
   it.each(["acknowledgement", "history race"])("synchronizes a saved completion when Stop encounters an %s", async (mode) => {
-    let complete!: () => Promise<void>;
     const transport = new TestTransport(async () => {
       await complete();
       return { ok: true, value: { status: "already_terminal" } };
@@ -242,7 +241,7 @@ describe("ConversationRuntime cancellation", () => {
     const sending = runtime.sendMessage({ content: "Already finished", request });
     const turnId = await activeTurnId(runtime);
     const append = eventStore.append.bind(eventStore);
-    complete = async () => {
+    const complete = async () => {
       const revision = await eventStore.getLatestRevision(conversationId);
       await append({ conversationId, expectedRevision: revision, events: [parseConversationEvent({
         version: 1, conversation_id: conversationId, event_id: "server-completion", revision: (revision ?? 0) + 1,

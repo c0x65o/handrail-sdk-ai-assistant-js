@@ -989,6 +989,14 @@ export class PostgresAttachmentStagingMetadataStore implements AttachmentStaging
       id(contentRef, "contentRef"));
     return value ? jsonClone(value.value) : null;
   }
+  async getByAttachmentId(ownerScopeId: string, conversationId: string, attachmentId: string) {
+    if (ownerScopeId !== this.scopeId) return null;
+    const result = await this.persistence.client.query<{ payload: StagedAttachmentRecord }>(
+      "SELECT payload FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment' AND scope_id=$2 AND payload->>'conversationId'=$3 AND payload->>'attachmentId'=$4 LIMIT 1",
+      [this.tenantId, this.scopeId, id(conversationId, "conversationId"), id(attachmentId, "attachmentId")],
+    );
+    return result.rows[0] ? jsonClone(result.rows[0].payload) : null;
+  }
   async create(record: StagedAttachmentRecord): Promise<"created" | "conflict"> {
     return this.persistence.client.transaction(async (tx) => {
       await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
