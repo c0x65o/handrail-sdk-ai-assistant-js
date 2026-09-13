@@ -6,6 +6,11 @@ immutable `@handrail/ai` pin. New and migrated hosts must follow the
 [adoption standard](./docs/adoption-standard.md), which is also the source for
 Handrail's implementation Knowledge Base entry.
 
+Flutter source lives in the separate
+[handrail-sdk-ai-assistant-flutter repository](https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter),
+under `packages/handrail_ai_client` and `packages/handrail_ai_widgets`.
+This repository owns the JavaScript/TypeScript SDK and the application gateway.
+
 For styled React chat or Markdown components, install the optional UI peers
 `react-markdown@^10.1.0` and `remark-gfm@^4.0.1` alongside React.
 Core, client, server, and headless entry points do not load these peers. See
@@ -265,7 +270,7 @@ styled React preset remains a separate optional entry point so custom web,
 React Native, and Flutter UI do not inherit DOM dependencies.
 
 See [`docs/wire-protocol.md`](./docs/wire-protocol.md) for the language-neutral
-contract and `flutter/handrail_ai_client` for the tested Dart implementation.
+contract and [`handrail_ai_client`](https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter/tree/main/packages/handrail_ai_client) for the tested Dart implementation.
 See [`docs/platform-contracts.md`](./docs/platform-contracts.md) for security,
 compatibility, package boundaries, and production persistence guidance. The
 writable server-authoritative Spartan Aegis qualification mapping is in
@@ -286,7 +291,9 @@ host-owned while the complete typed headless path remains shared.
 The Dart client includes the same typed gateway lifecycle operations,
 `HandrailConversationState`, and `HandrailConversationWorkspace` for keeping
 background streams alive across native navigation. It intentionally supplies
-state rather than imposing Flutter widgets.
+state for custom Flutter UI. The separate Flutter repository also provides the
+optional `handrail_ai_widgets` package for standard assistant presentation.
+Dart source and Flutter build artifacts are not part of this JavaScript package.
 
 ## Direct/BYOK and managed operation
 

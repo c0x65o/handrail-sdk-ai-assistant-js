@@ -1,9 +1,0 @@
-name: handrail_ai_client
-description: Cross-platform Flutter client for an application-hosted Handrail AI gateway.
-version: 0.1.1
-environment:
-  sdk: ">=3.4.0 <4.0.0"
-dependencies:
-  http: ^1.6.0
-dev_dependencies:
-  test: ^1.25.0

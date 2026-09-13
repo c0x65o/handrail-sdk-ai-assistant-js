@@ -69,8 +69,9 @@ disabled so apps retain their separate attachment flow.
 ## Adoption and validation
 
 Pin Handrail packages to a published, full Git commit SHA over public HTTPS with
-matching npm/pub lockfiles. Flutter packages use the repository paths
-`flutter/handrail_ai_widgets` and `flutter/handrail_ai_client`. Do not ship a local
+matching npm/pub lockfiles. Flutter packages live in the separate
+[Flutter SDK repository](https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter), at
+`packages/handrail_ai_widgets` and `packages/handrail_ai_client`. Do not ship a local
 path override, vendored candidate, branch/tag pin, or fabricated revision.
 The selected revision must actually contain these components before consumers
 can install the migration normally.

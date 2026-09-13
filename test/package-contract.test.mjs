@@ -461,7 +461,6 @@ test("dry pack contains only intended package assets", () => {
     "dist/providers/openai-transcription.d.ts",
     "dist/react-markdown/index.js",
     "dist/react-markdown/index.d.ts",
-    "flutter/handrail_ai_widgets/lib/markdown.dart",
     "dist/providers/openai-realtime.js",
     "dist/providers/openai-realtime.d.ts",
     "dist/providers/anthropic.js",
@@ -480,12 +479,13 @@ test("dry pack contains only intended package assets", () => {
 
   for (const filePath of packedFiles) {
     assert.doesNotMatch(filePath, /(?:^|\/)\.dart_tool\//u);
+    assert.doesNotMatch(filePath, /^flutter\/|\.dart$/u);
     assert.doesNotMatch(filePath, /^(?:src|test)\//u);
     if (filePath.startsWith("scripts/")) assert.equal(filePath, "scripts/adopt.mjs");
     assert.doesNotMatch(
       filePath,
       /\.(?:css|less|sass|scss|eot|otf|ttf|woff2?)$/u,
     );
-    assert.match(filePath, /^(?:dist\/|docs\/|flutter\/handrail_ai_(?:client|widgets)\/|scripts\/adopt\.mjs$|templates\/standard-react-node\/|LICENSE$|README\.md$|package\.json$)/u);
+    assert.match(filePath, /^(?:dist\/|docs\/|scripts\/adopt\.mjs$|templates\/standard-react-node\/|LICENSE$|README\.md$|package\.json$)/u);
   }
 });

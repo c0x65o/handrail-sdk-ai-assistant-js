@@ -10,13 +10,13 @@ The target ownership is SDK-managed assistant behavior with host formatting, bus
 | --- | --- | --- |
 | Send acceptance and editable next draft | SDK runtime emits `onAccepted` after durable admission; shared composer clears only that edit revision. Cents and Spartan now consume the same client workspace. Spartan's draft workaround is removed. | Spartan also verifies Stop requested before admission. Finish registered mobile and application qualification. |
 | Composer focus, keyboard, Send/Stop | Shared Send focuses on activation only. Runtime cancellation is now the default, without a required host callback. Spartan DOM tests cover identical later drafts, failure/cancellation and focus. | Finish browser/consumer qualification and retain server cancellation semantics. |
-| Attachment lifecycle | SDK owns per-conversation queues, admission cleanup, busy intake gates, drag feedback and codec-compatible capture. Cents uploads are enabled; Spartan's runtime/uploader/drop wrappers are removed. | Finish shared authorized saved-attachment display/download and mobile adapters. |
+| Attachment lifecycle | SDK owns per-conversation queues, admission cleanup, busy intake gates, drag feedback and codec-compatible capture. Cents uploads are enabled; Spartan's runtime/uploader/drop wrappers are removed. | Flutter now supplies the bounded picker, authenticated upload queue and retained retry identities; Cents and Spartan use them. Finish shared authorized saved-attachment display/download and remaining mobile adapters. |
 | Approval settings | SDK owns the preference, per-request metadata and policy default. Cents uses it; Spartan retains its authorized domain policy. | Preserve domain review and mandatory approvals across consumer validation. |
 | Authenticated STT | Web workspace and Flutter composer negotiate shared capture/transcription. Cents and Spartan use SDK controls; Mills uses the SDK recorder. Spartan's SDK raw route passes durable replay/account isolation tests. | Migrate Mills' remaining UI/legacy endpoint and retire multipart dispatch after installed clients and queued usage are handled. |
 | Conversation management | Shared history owns active/archived/unread views, previews, stale selections, New identity, read recovery and archive/restore, including initial load and one initial empty-catalog creation attempt. Cents no longer bootstraps history in its client factory; endpoint launchers use the same controller. | Finish mobile adoption and remaining consumer/legacy fixture validation. |
 | Transcript and activity | Shared timeline owns chronology, failures and scrolling. Optional UI shows bound approval details and saved statuses; domain render callbacks retain Spartan's cards. Cents activity is enabled. | SDK useBoundApprovalReview now owns domain review loading/retry/invalidation for Spartan and Mills; finish full consumer coverage. |
 | Responses provider infrastructure | SDK owns native function correlation, HTTP/SSE networking, connection retries, physical usage receipts and normalized invocation replay. Default durable server assembly installs these; Spartan preserves only its existing identity scheme and domain preparation. | Review remaining legacy voice/upload server adapters and release migration. Recovered initial requests with no receipt stop safely. |
-| Mobile | SDK Flutter owns admission callbacks, per-conversation drafts/files, Send/keyboard/editor behavior, and authenticated capture/transcription. Cents and Spartan use the shared composer; Mills uses the shared recorder. | Finish mobile upload/history/workspace and Mills UI consolidation; qualify committed pins and authorized previews. |
+| Mobile | SDK Flutter owns admission callbacks, per-conversation drafts/files, bounded intake/upload/retry, Send/keyboard/editor behavior, and authenticated capture/transcription. Cents and Spartan use the shared composer; Mills uses the shared recorder. | Finish mobile upload/history/workspace and Mills UI consolidation; qualify committed pins and authorized previews. |
 | Mills compatibility | Mills uses the SDK launcher, composer, preview and transcription controls; keyboard/submitted-draft/recorder/compact-CSS workarounds are removed. Its household history recovery and authorization remain. | Validate remaining legacy STT/live-call and household approval integration with mobile consumers. |
 | Adoption documentation | `examples/minimal-shared-assistant.tsx` demonstrates endpoint-only adoption. This ledger documents shared ownership and release limits. | Finish migration instructions and validation evidence as remaining consumers are consolidated. |
 
@@ -99,8 +99,8 @@ Remaining: shared saved-attachment handling, remaining domain/legacy server and 
 
 Initial mobile audit (superseded by the candidate progress below):
 
-- `flutter/handrail_ai_widgets/lib/handrail_ai_widgets.dart` supplies `HandrailComposer`, attachment/dictation controls and an approval badge. Hosts still own the `TextEditingController` and send callback. Default input uses newline, and Send does not yet restore focus or own admission/revision handling. The widgets package has no dependency on the client package, which is useful for retaining a platform-neutral submission adapter.
-- `flutter/handrail_ai_client/lib/src/session.dart` already persists intent before admission and retains uncertain requests. `_submitTurn` validates every mutation acknowledgement and the refreshed canonical turn before starting observation, but it has no UI admission callback. Reusable draft clearing should be triggered there without changing persisted idempotency or retry semantics.
+- [`packages/handrail_ai_widgets/lib/handrail_ai_widgets.dart`](https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter/blob/main/packages/handrail_ai_widgets/lib/handrail_ai_widgets.dart) supplies `HandrailComposer`, attachment/dictation controls and an approval badge. Hosts still own the `TextEditingController` and send callback. Default input uses newline, and Send does not yet restore focus or own admission/revision handling. The widgets package has no dependency on the client package, which is useful for retaining a platform-neutral submission adapter.
+- [`packages/handrail_ai_client/lib/src/session.dart`](https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter/blob/main/packages/handrail_ai_client/lib/src/session.dart) already persists intent before admission and retains uncertain requests. `_submitTurn` validates every mutation acknowledgement and the refreshed canonical turn before starting observation, but it has no UI admission callback. Reusable draft clearing should be triggered there without changing persisted idempotency or retry semantics.
 - Cents mobile `cents_sheet.dart` replaces the shared input, disables input while `sdk.busy`, hides approval settings, supplies an empty voice slot, and clears/refocuses only after `sdk.send` (which also refreshes and names the thread). It has the same adoption problem as the old web shell. `cents_sdk.dart` captures each request once and uses the SDK pending-message store; preserve that contract while moving the shared composer behavior into the Flutter SDK.
 - Spartan mobile still has `aegis_draft_controller.dart` for per-thread drafts/files and a custom composer section in `aegis_conversation_screen.dart`; its repository sends through `HandrailConversationSession.sendMessage`. Reuse the shared behavior instead of copying those controllers into Cents. Mills' `assistant_session_screen.dart` and legacy voice/history-recovery adapters remain part of the audit.
 
@@ -299,3 +299,63 @@ and its candidate client compile passed. Scoped Cents and Spartan source/test li
 passed. Combined working-tree diffs against HEAD pass whitespace checks for the
 SDK, Cents and Spartan; existing staging owned by other workspace activity was
 preserved. No test process or browser from this stage remains open.
+
+
+## Flutter upload consolidation candidate
+
+Spartan's repository previously uploaded each selected file in a host loop using
+new send-derived identities on every attempt. Cents had no file controls and kept
+one sheet-local draft that its history callback cleared on navigation. Both gaps
+are addressed through shared Flutter APIs in this local candidate:
+
+- `HandrailAiClient.attachmentUploader` binds the optional UI to the protected
+  application gateway. Upload HTTP now has cancellation/deadline/response bounds,
+  validates returned reference identity and metadata, and keeps diagnostics free
+  of file content. The existing `uploadAttachment` API remains available.
+- `HandrailComposerController` owns negotiated intake limits, bounded native file
+  reads, per-conversation selection state, upload identities/references, progress,
+  errors, retry and cancellation. A partially successful batch reuses its successful
+  references. Admission removes exact original selections; later text and file
+  selections survive. Disposal excludes late results.
+- The default `HandrailComposer` includes a bounded, scrollable file list, picker,
+  remove controls, inline guidance and image-paste binding. Minimal adoption and
+  the structural client binding are documented in the Flutter widgets README.
+- Cents uses an account-owned controller that survives closing/reopening the sheet.
+  Navigation retains each conversation's draft/files. File-only messages keep
+  Cents' route and approval metadata and receive a filename-based conversation
+  label. An upload from a conversation left before admission cannot submit into
+  the newly selected conversation. Prompt limits and domain rendering remain.
+- Spartan's picker and upload loop now delegate to the SDK, preserving its MIME
+  mapping, file limits, progress presentation, request identity and pending journal.
+  Its failed-upload retry uses the original file upload key; the server receives
+  one eventual message admission/start.
+- Dart file-only submissions now emit valid durable `message.created` content
+  plus attachment-reference events before execution, preserving the original
+  attachment-only request. This is exercised against the real Node SDK gateway.
+
+Validation for this stage (overlapping previous suites, not additive): client
+attachment/transcription 14 tests and gateway submission 8 tests passed; SDK
+widgets composer/drafts/uploads/recorder/transcription 41 tests passed. Client
+library and widgets library/test analyses passed. Cents' sheet and SDK suites
+passed 24 cases; its file-only case passed again after adding filename-based
+naming. Spartan repository 20 and screen 38 tests passed, including shared picker
+MIME mapping, preflight capability rejection, retries and responsive composer
+coverage. Consumer tests compile their real typed application sources with
+explicit temporary candidate resolution. No application manifest/lock was changed. Mills' real assistant screen also
+compiled and passed its focused speech-recording/transcript insertion check.
+
+The picker dependency is `file_picker: 12.1.1`, the version already used by
+Spartan. Its current platform-interface and native plugin dependencies must be
+resolved together by normal Flutter installation; mixing old plugin versions
+with a newer platform interface fails compilation. Candidate configurations were
+corrected as a unit. The SDK widgets now declare Dart >=3.10/Flutter >=3.38; the
+picker requires iOS >=14. Cents and Mills already declare iOS 15. This is not native
+plugin registration, OS microphone/file access, protected Mobile Preview, or
+production qualification. The SDK and consumers still need an authorized public
+committed revision and matching normal lockfiles before this code is installed.
+
+Remaining for the full goal: complete Flutter history/workspace/transcript
+adoption; mobile Stop during the pre-admission interval; Mills' remaining
+composer/legacy voice adapter; shared authorized saved-attachment handling;
+remaining server/legacy adapter audit; available application/mobile qualification
+and the final acceptance review. The goal is active, not complete.

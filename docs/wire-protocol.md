@@ -1,6 +1,6 @@
 # Application gateway wire protocol v1
 
-`handrail.application-gateway.v1` is JSON over HTTPS with SSE turn delivery. The TypeScript `@handrail/ai-assistant/client` entry works in browsers and React Native runtimes that provide Fetch, AbortController, ReadableStream, TextDecoder, and crypto-grade application IDs. The Dart reference client is in `flutter/handrail_ai_client`.
+`handrail.application-gateway.v1` is JSON over HTTPS with SSE turn delivery. The TypeScript `@handrail/ai-assistant/client` entry works in browsers and React Native runtimes that provide Fetch, AbortController, ReadableStream, TextDecoder, and crypto-grade application IDs. The Dart reference client is in [`handrail_ai_client`](https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter/tree/main/packages/handrail_ai_client).
 
 All endpoints are relative to an application-owned mount path. Every request must pass the application's authentication, authorization, origin/CSRF, rate-limit, concurrency, body-size, and idempotency controls. Provider credentials never enter a client.
 
