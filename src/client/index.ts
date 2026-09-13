@@ -1,5 +1,6 @@
 /** Cross-platform client entry point: no React, Node, database, or provider dependencies. */
 export * from "./bootstrap.js";
+export * from "../transcription-http.js";
 export * from "./presence.js";
 export * from "./synchronization.js";
 export {
@@ -77,3 +78,7 @@ export {
   createInitialConversationState,
   type ConversationState,
 } from "../conversation/state.js";
+
+export { conversationTimeline, type ConversationTimelineEntry, type ConversationTimelineOptions } from "../conversation/timeline.js";
+
+export { assistantToolArgumentReference, reviewedToolArguments } from "../conversation/approval-arguments.js";

@@ -10,12 +10,34 @@ import { parseChatRequest, type ChatRequest } from "../src/protocol.js";
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function composer() {
   return { draft: "A draft", setDraft: vi.fn(), attachments: [], errors: [], canSend: true, isSending: false,
-    acquireSubmissionBlock: vi.fn(() => vi.fn()), submit: vi.fn(async () => null), stop: vi.fn(),
-    getTextareaProps: () => ({ value: "A draft", onChange: vi.fn(), onPaste: vi.fn() }),
+    acquireSubmissionBlock: vi.fn(() => vi.fn()), submit: vi.fn(async (event) => { event?.preventDefault(); return null; }), stop: vi.fn(),
+    getTextareaProps: () => ({ value: "A draft", onChange: vi.fn(), onPaste: vi.fn(), onBlur: vi.fn() }),
     getFileInputProps: () => ({ multiple: true, accept: "image/png,application/pdf", onChange: vi.fn() }),
     getDropProps: () => ({ onDrop: vi.fn() }),
   } as unknown as ConversationComposerResult;
 }
+it("focuses the editable draft on Send activation and does not steal later focus", () => {
+  const input = composer();
+  const view = render(<><button>Elsewhere</button><StandardChatComposer composer={input} voiceControls={null}/></>);
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  expect(document.activeElement).toBe(screen.getByRole("textbox"));
+  const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+  elsewhere.focus();
+  view.rerender(<><button>Elsewhere</button><StandardChatComposer composer={{ ...input, draft: "Next draft", isSending: true, canSend: false }} canStop voiceControls={null}/></>);
+  expect(screen.getByRole("textbox").hasAttribute("disabled")).toBe(false);
+  expect(document.activeElement).toBe(elsewhere);
+});
+it.each(["disabled", "running"])("prevents dropped files when attachments are %s while allowing text edits", (state) => {
+  const onDrop = vi.fn();
+  const input = { ...composer(), getDropProps: () => ({ onDrop, onDragOver: vi.fn() }) };
+  const view = render(<StandardChatComposer composer={input} voiceControls={null}
+    attachmentsEnabled={state !== "disabled"} canStop={state === "running"}/>);
+  fireEvent.drop(view.container.querySelector(".hr-composer")!, { dataTransfer: {
+    types: ["Files"], files: [new File(["file"], "file.pdf", { type: "application/pdf" })],
+  } });
+  expect(onDrop).not.toHaveBeenCalled();
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).disabled).toBe(false);
+});
 it("keeps badge visibility separate from automatic execution and shows an accessible switch", () => {
   function Host() {
     const [mode, setMode] = useState<ComposerApprovalMode>("required");

@@ -6,6 +6,7 @@ import type { AttachmentReference, ChatRequest } from "../protocol.js";
 import type { ProviderAttachmentReferenceResolver } from "../providers/index.js";
 import { createProviderToolLoopTransport } from "./provider-tool-loop.js";
 import type { AssistantTitleProviderRequest } from "./conversation-titles.js";
+import { openaiTranscription, type HandrailOpenAITranscriptionOptions } from "./openai-transcription.js";
 
 export interface HandrailOpenAIResponsesOptions<TContext extends HandrailAssistantAuthorizationContext = HandrailAssistantAuthorizationContext> extends Omit<OpenAIResponsesProviderOptions,
   "request" | "instructions" | "continuationStore"> {
@@ -20,6 +21,8 @@ export interface HandrailOpenAIResponsesOptions<TContext extends HandrailAssista
   readonly apiKey?: string;
   readonly baseUrl?: string;
   readonly fetch?: typeof globalThis.fetch;
+  /** Standard speech input is enabled for the built-in HTTP provider. Custom request adapters opt in. */
+  readonly transcription?: false | HandrailOpenAITranscriptionOptions;
 }
 
 function openAIRequest<TContext extends HandrailAssistantAuthorizationContext>(options: HandrailOpenAIResponsesOptions<TContext>): OpenAIResponsesProviderOptions["request"] {
@@ -51,11 +54,16 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
   options: HandrailOpenAIResponsesOptions<TContext>,
 ): HandrailAssistantProvider<TContext> {
   const request = openAIRequest(options);
-  const { apiKey: _apiKey, baseUrl: _baseUrl, fetch: _fetch, request: _request, prepareRequest, attachmentResolver, ...adapterOptions } = options;
+  const { apiKey: _apiKey, baseUrl: _baseUrl, fetch: _fetch, request: _request, prepareRequest, attachmentResolver,
+    transcription: speechOptions, ...adapterOptions } = options;
   void _apiKey; void _baseUrl; void _fetch; void _request;
   const metadata = createOpenAIResponsesProviderAdapter({ ...adapterOptions, request }).metadata;
+  const transcription = speechOptions === false || (options.request && speechOptions === undefined) ? undefined
+    : openaiTranscription<TContext>({ ...(options.apiKey ? { apiKey: options.apiKey } : {}),
+      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}), ...(options.fetch ? { fetch: options.fetch } : {}), ...speechOptions });
   return Object.freeze({
     metadata,
+    ...(transcription ? { transcription } : {}),
     async generateTitle(input: AssistantTitleProviderRequest<TContext>): Promise<string> {
       // Deliberately exclude conversation tools, hosted search, attachments,
       // continuation state, and the assistant's domain instructions.

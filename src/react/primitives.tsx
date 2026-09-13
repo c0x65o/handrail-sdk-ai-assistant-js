@@ -1122,7 +1122,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         {...props}
         ref={forwardedRef}
         value={value ?? bindings?.value}
-        disabled={Boolean(disabled || composer?.isSending)}
+        disabled={Boolean(disabled)}
         aria-busy={props["aria-busy"] ?? Boolean(composer?.isSending)}
         onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
           onChange?.(event);

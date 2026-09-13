@@ -3,6 +3,12 @@ export { createAssistantToolRuntime, assistantToolArgumentReference, type Assist
 export { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { createToolActivityObserver, type HandrailAssistantToolObserver } from "./tool-observer.js";
 import { createHash } from "node:crypto";
+import { composerApprovalModeFromRequest } from "../composer-approval.js";
+import { createAssistantTranscription, type AssistantTranscriptionProvider } from "./transcription.js";
+import { DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY } from "../transcription-http.js";
+export { openaiTranscription, type HandrailOpenAITranscriptionOptions } from "./openai-transcription.js";
+export { createAssistantTranscription, createTranscriptionHttpHandler, type AssistantTranscriptionProvider,
+  type TranscriptionHttpServerInput, type AssistantTranscriptionUsage } from "./transcription.js";
 import { reconcileDurableConversationTurn } from "./reconcile-conversation.js";
 import { replayConversation } from "../conversation/replay.js";
 import { findConversationEvent } from "../conversation/find-event.js";
@@ -56,6 +62,7 @@ export interface HandrailAssistantAuthorizationContext extends ApplicationGatewa
 
 export interface HandrailAssistantProvider<TContext extends HandrailAssistantAuthorizationContext> {
   readonly metadata: ProviderAdapterMetadata;
+  readonly transcription?: AssistantTranscriptionProvider<TContext>;
   /** Text-only generation hook. The SDK owns completion triggers, persistence, and usage attribution. */
   generateTitle?(input: AssistantTitleProviderRequest<TContext>): Promise<string>;
   /** SDK-owned provider packages return this transport with their bounded tool loop already installed. */
@@ -105,6 +112,8 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   readonly createConversationId?: () => string;
   /** Disable SDK byte intake while a migrating host retains its authorized upload route. Defaults to true. */
   readonly attachmentUpload?: boolean;
+  /** Defaults to the provider's configured speech service; false disables authenticated dictation. */
+  readonly transcription?: false | AssistantTranscriptionProvider<TContext>;
   /** Migration seam for a host-owned authorized catalog. New integrations use the SDK Postgres catalog. */
   readonly conversationCatalogFor?: (input: {
     readonly context: TContext;
@@ -178,6 +187,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   options: CreateHandrailAssistantOptions<TContext>,
 ): Promise<HandrailAssistant> {
   const assistantId = identifier(options.id, "assistant id");
+  const transcriptionProvider = options.transcription ?? options.provider.transcription;
   const instructions = Object.freeze(typeof options.instructions === "string"
     ? [options.instructions] : [...(options.instructions ?? [])]);
   const limits = Object.freeze({ ...DEFAULT_LIMITS, ...options.toolLoopLimits });
@@ -243,7 +253,18 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       application = createAiApplication({
         plugins: options.tools ?? [], installContext: context,
         policy: options.toolPolicy ?? (() => ({ outcome: "allow" })),
-        ...(options.approvalPolicy === undefined ? {} : { approvalPolicy: options.approvalPolicy }),
+        approvalPolicy: options.approvalPolicy ?? (async ({ location, signal }) => {
+          // Read the admitted request, including during recovery. A later UI
+          // preference cannot alter an already running turn. This is only the
+          // confirmation policy; application/plugin authorization runs first.
+          if (!location) return "require_approval";
+          signal.throwIfAborted();
+          const document = await bundle.durableTurns.load(location.conversationId, location.turnId);
+          signal.throwIfAborted();
+          const request = document?.record.request as ChatRequest | null | undefined;
+          return request && composerApprovalModeFromRequest(request) === "automatic"
+            ? "allow_without_approval" : "require_approval";
+        }),
         ...(options.toolExecutorLimits === undefined ? {} : { executorLimits: options.toolExecutorLimits }),
         toolExecutionLedger: bundle.toolLedger,
         approvalCoordinator: createApprovalExecutionCoordinator<TContext>({
@@ -581,8 +602,14 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         conversations: { ...catalog, get capabilities() { return catalogFor(context).capabilities; } },
         approvals,
         titleGeneration: { generate: generateTitle },
-        handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence },
+        handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence,
+          ...(transcriptionProvider ? { transcription: createAssistantTranscription({
+            assistantId, provider: transcriptionProvider,
+            ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
+            catalogFor, bundleFor }) } : {}) },
         capabilities: { activity: true, presence: true, synchronization: true,
+          transcription: transcriptionProvider
+            ? { ...(transcriptionProvider.capability ?? DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY), url: "transcriptions" } : false,
           attachments: options.attachmentUpload === false ? false : {
             maximumFiles: 16, maximumBytesPerFile: options.persistence.attachmentLimits.maximumBytes,
             acceptedMediaTypes: options.persistence.attachmentLimits.acceptedMediaTypes, uploadUrl: "attachments" },

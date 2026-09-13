@@ -167,7 +167,7 @@ describe("headless chat primitives", () => {
     expect(screen.getByRole("listitem", { name: "assistant message" }).textContent).toBe("Hi");
     expect(screen.getByRole("form", { name: "Message composer" }).getAttribute("aria-busy"))
       .toBe("true");
-    expect(screen.getByRole("textbox", { name: "Message" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("textbox", { name: "Message" }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("button", { name: "Send message" }).hasAttribute("disabled"))
       .toBe(true);
     expect(screen.getByRole("button", { name: "Stop response" }).hasAttribute("disabled"))

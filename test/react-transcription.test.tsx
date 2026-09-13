@@ -278,7 +278,7 @@ describe("TranscriptionControls", () => {
 
   it.each([
     ["permission_denied", "Microphone access was not granted."],
-    ["unsupported_format", "No declared audio format is available for recording."],
+    ["unsupported_format", "This browser cannot record audio in a supported format."],
   ] as const)("announces the safe %s capture error", async (code, message) => {
     const controller = new FakeCaptureController();
     controller.start.mockImplementation(async () => {

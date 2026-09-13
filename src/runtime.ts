@@ -176,6 +176,15 @@ export interface ConversationRuntimeSendMessageInput<TRequest> {
   readonly content: string | readonly ConversationMessageContentPart[];
   readonly attachments?: readonly ConversationAttachmentReference[];
   readonly request: TRequest;
+  /** Notification after the user message and turn are durably admitted, before observing the response.
+   * This is not confirmation that the requested business operation succeeded.
+   * Exceptions from this presentation callback do not interrupt the admitted turn.
+   */
+  readonly onAccepted?: (identity: {
+    readonly conversationId: ConversationId;
+    readonly messageId: ConversationMessageId;
+    readonly turnId: ConversationTurnId;
+  }) => void;
 }
 
 export type ConversationRuntimeTurnStatus =
@@ -1059,8 +1068,13 @@ export async function createConversationRuntime<TRequest>(
     input: ConversationRuntimeSendMessageInput<TRequest>,
   ): Promise<ConversationRuntimeTurnResult> => {
     assertUsable();
-    const content = normalizeMessageContent(input.content);
     const attachments = input.attachments ?? [];
+    const normalizedContent = normalizeMessageContent(input.content);
+    // Durable message.created requires a text part; attachment references are
+    // appended as separate events in the same admission. Preserve a file-only
+    // message without inventing text or weakening the saved event contract.
+    const content = normalizedContent.length === 0 && attachments.length > 0
+      ? [{ type: "text" as const, text: "" }] : normalizedContent;
     const messageId = createId("message") as ConversationMessageId;
     const turnId = createId("turn") as ConversationTurnId;
     const startMutationId = createId("mutation") as ConversationClientMutationId;
@@ -1098,6 +1112,12 @@ export async function createConversationRuntime<TRequest>(
       },
     ];
     await persistAdmittedTurn(initialDrafts);
+
+    try {
+      input.onAccepted?.({ conversationId: options.conversationId, messageId, turnId });
+    } catch {
+      // UI notification failures must never strand an already admitted turn.
+    }
 
     return startPersistedTurn(turnId, startMutationId, idempotencyKey, input.request);
   };

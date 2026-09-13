@@ -1,17 +1,31 @@
+import { createInitialConversationState } from "../conversation/state.js";
+import { ConversationTranscript } from "../react/conversation-transcript.js";
+import { reviewedToolArguments } from "../conversation/approval-arguments.js";
+import type { ConversationTimelineOptions } from "../conversation/timeline.js";
+import type { ConversationApprovalResources } from "../react/use-conversation-approvals.js";
+import type { ConversationApprovalProposalRecord, ConversationToolCallRecord } from "../conversation/state.js";
 import { HandrailMarkdown } from "../react-markdown/index.js";
+import { useConversationHistory, type UseConversationHistoryOptions } from "../react/conversation-history.js";
+import { useComposerApprovalPreference } from "../react/composer-approval-preference.js";
+import { useWorkspaceUploaders } from "../react/workspace-uploaders.js";
+import { ConversationHistoryPanel, HANDRAIL_CONVERSATION_HISTORY_CSS } from "./history.js";
+export { ConversationHistoryPanel, HANDRAIL_CONVERSATION_HISTORY_CSS, type ConversationHistoryPanelProps } from "./history.js";
 export { HandrailMarkdown, type HandrailMarkdownProps } from "../react-markdown/index.js";
 import { useConversationTitles, type UseConversationTitlesOptions } from "../react/use-conversation-titles.js";
 import { StandardChatComposer, type ComposerApprovalControlProps } from "./composer.js";
-import { withComposerApprovalMode } from "../composer-approval.js";
+import type { ComposerTranscriptionOptions } from "../react/composer-transcription.js";
+export { ComposerTranscriptionControl } from "./transcription.js";
+export type { ComposerTranscriptionOptions } from "../react/composer-transcription.js";
+import { type ComposerApprovalMode } from "../composer-approval.js";
 export { StandardChatComposer, ComposerApprovalControl, ComposerIcon, BrowserDictationControl, HANDRAIL_CHAT_COMPOSER_CSS, type StandardChatComposerProps, type ComposerApprovalControlProps } from "./composer.js";
 import type { ConversationActivityRecord } from "../conversation/activity.js";
 import { useRealtimeWorkspaceActivity } from "../react/realtime-workspace.js";
 import { RealtimeWorkspaceMonitor, summarizeRealtimeWorkspace, type RealtimeWorkspaceMonitorOptions, type RealtimeWorkspaceSnapshot, type RealtimeWorkspaceSummary } from "../realtime/workspace.js";
 import { useConversationApprovals } from "../react/use-conversation-approvals.js";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { createHandrailAiClient, type HandrailAiClient } from "../client/bootstrap.js";
-import { createAttachmentUploader, type AttachmentUploader } from "../attachments/uploader.js";
-import type { ApplicationGatewayAttachmentSource, ApplicationGatewayCapabilities } from "../transports/application-gateway.js";
+import { type AttachmentUploader } from "../attachments/uploader.js";
+import type { ApplicationGatewayCapabilities } from "../transports/application-gateway.js";
 import { AI_RUNTIME_DOCUMENT_MIME_TYPES, AI_RUNTIME_IMAGE_MIME_TYPES, AI_RUNTIME_PROTOCOL_LIMITS,
   AI_RUNTIME_PROTOCOL_VERSION, type AttachmentMimeType, type ChatRequest, type StreamEvent } from "../protocol.js";
 import type { ConversationClientId, ConversationDeviceId } from "../conversation/events.js";
@@ -22,19 +36,18 @@ import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 import type { MessageAttachmentRenderer, MessageContentRenderer, ToolResultRenderer } from "../react/primitives.js";
 import { ConversationProvider } from "../react/context.js";
 import { useConversationComposer, type ConversationComposerResult, type UseConversationComposerOptions } from "../react/use-conversation-composer.js";
-import { useSmartTranscriptFollow } from "../react/transcript-follow.js";
 import { resolveConversationActivity } from "../conversation/activity-projection.js";
 import { useResolvedState } from "../react/primitive-context.js";
 import type { ConversationRuntime } from "../runtime.js";
 import type { ConversationId } from "../conversation/events.js";
-import type { ConversationCatalog, ConversationCatalogDescriptor } from "../conversation/catalog.js";
+import type { ConversationCatalog, ConversationCatalogIdempotencyKey } from "../conversation/catalog.js";
 import type { ConversationWorkspaceOpenInput } from "../conversation/workspace.js";
 import { useConversationLauncherBinding, useConversationWorkspaceSnapshot, useConversationActivitySnapshot, useConversationReadState,
   type ConversationActivityReadable, type ConversationWorkspaceReadable } from "../react/workspace.js";
 import type { ChatLauncherConnectionStatus, ChatLauncherState } from "../react/launcher.js";
 import {
   ChatRoot, LiveRegion,
-  AssistantActivityIndicator, Message, StreamStatus, Transcript, TypingIndicator,
+  AssistantActivityIndicator, Message, StreamStatus, TypingIndicator,
 } from "../react/primitives.js";
 import { CopyMessageButton } from "../react/message-actions.js";
 import { BadResponseButton } from "../react/bad-response-button.js";
@@ -46,6 +59,8 @@ import { ChatLauncherBadge, ChatLauncherPanel, ChatLauncherPortal, ChatLauncherR
   ChatLauncherStatus, ChatLauncherTitle, ChatLauncherTrigger } from "../react/launcher.js";
 import { ChatDialogContent, ChatDialogOverlay, ChatDialogPortal, ChatDialogRoot, ChatDialogTrigger } from "../react/dialog.js";
 import { ChatDrawerContent, ChatDrawerOverlay, ChatDrawerPortal, ChatDrawerRoot, ChatDrawerTrigger, type ChatDrawerSide } from "../react/drawer.js";
+
+const EMPTY_CHAT_STATE = createInitialConversationState(null);
 
 export const HANDRAIL_CHAT_PRESET_VERSION = "handrail.react-preset.v1" as const;
 export const HANDRAIL_ASSISTANT_UI_STANDARD_VERSION = "handrail.ai-assistant-ui.v1" as const;
@@ -133,7 +148,13 @@ export function installToolRendererPlugins(
   return Object.freeze({ renderers: Object.freeze(renderers), toolRendererKeys: Object.freeze(toolRendererKeys) });
 }
 
-export interface StyledChatPresetProps extends ComposerApprovalControlProps {
+export interface StyledApprovalRenderContext {
+  readonly state: ConversationState;
+  readonly busy: boolean;
+  readonly readOnly: boolean;
+  readonly decide: (status: "confirmed" | "rejected") => Promise<void>;
+}
+export interface StyledChatPresetProps extends ComposerApprovalControlProps, ConversationTimelineOptions {
   /** Disable composer style injection when styles are supplied by the host build. */
   readonly includeStyles?: boolean;
   /** Hide attachment selection when the gateway has no attachment capability. */
@@ -150,11 +171,22 @@ export interface StyledChatPresetProps extends ComposerApprovalControlProps {
   readonly renderToolActivity?: (activity: ToolActivitySnapshot) => ReactNode;
   readonly conversationPicker?: ReactNode;
   readonly approvals?: ReactNode;
+  /** Protected proposal resources; supplied automatically by the client workspace. */
+  readonly approvalResources?: ConversationApprovalResources;
+  readonly renderApproval?: (proposal: ConversationApprovalProposalRecord, context: StyledApprovalRenderContext) => ReactNode;
+  readonly renderConversationMessage?: (message: ConversationMessageRecord, state: ConversationState) => ReactNode;
+  readonly renderCompletedTool?: (call: ConversationToolCallRecord, state: ConversationState) => ReactNode;
   readonly citations?: ReactNode;
   readonly emptyState?: ReactNode;
   readonly footer?: ReactNode;
   /** Optional transcription or realtime-voice controls rendered beside Attach. */
   readonly voiceControls?: ReactNode;
+  readonly transcription?: false | ComposerTranscriptionOptions;
+  /** Accessories render below the toolbar, independently of microphone controls. */
+  readonly composerActions?: ReactNode;
+  readonly maxPromptCharacters?: number;
+  /** Presentation for archived history. Server authorization still governs every action. */
+  readonly readOnly?: boolean;
   /** Safe semantic Markdown for assistant/system messages. Enabled by default. */
   readonly markdown?: boolean;
   /** Normalized citations are rendered below their target message by default. */
@@ -191,6 +223,7 @@ export interface HandrailChatProps<TRequest> extends Omit<StyledChatPresetProps,
   readonly runtime: ConversationRuntime<TRequest>;
   /** Return a control component bound to this conversation and its current draft. */
   readonly renderVoiceControls?: (context: HandrailChatVoiceControlsContext) => ReactNode;
+  readonly renderComposerActions?: (context: HandrailChatVoiceControlsContext) => ReactNode;
   readonly composer: UseConversationComposerOptions<TRequest>;
   readonly presence?: PresenceController;
   readonly rendererPlugins?: readonly ToolRendererPlugin[];
@@ -212,7 +245,7 @@ export const handrailChatPresetCss = `
 .hr-chat__workspace-picker{align-items:flex-start;display:flex;gap:.4rem;position:relative}.hr-chat__workspace-picker summary{background:var(--hr-panel,#f6f7fb);border:1px solid var(--hr-border,#dfe3eb);border-radius:9px;cursor:pointer;list-style:none;padding:.55rem .7rem}.hr-chat__workspace-picker summary::-webkit-details-marker{display:none}.hr-chat__workspace-picker ul{background:var(--hr-bg,#fff);border:1px solid var(--hr-border,#dfe3eb);border-radius:10px;box-shadow:0 12px 35px #17192724;display:grid;gap:.2rem;inset-block-start:calc(100% + .35rem);inset-inline-end:0;list-style:none;margin:0;max-block-size:20rem;min-inline-size:18rem;overflow:auto;padding:.4rem;position:absolute;z-index:10}.hr-chat__workspace-picker li{align-items:center;display:flex;margin:0;padding:0}.hr-chat__workspace-picker li button:first-child{align-items:center;display:flex;flex:1;inline-size:100%;justify-content:space-between;max-inline-size:none;text-align:start}.hr-chat__workspace-picker small{color:var(--hr-muted,#687083);margin-inline-start:.5rem}.hr-chat__workspace-picker [data-turn-status=running] small{color:var(--hr-activity)}.hr-chat__empty{display:grid;min-block-size:12rem;place-items:center;padding:1rem}
 .hr-chat__approvals{display:grid;gap:.5rem}.hr-chat__approval{background:var(--hr-panel);border:1px solid var(--hr-border);border-radius:var(--hr-radius-control);display:grid;gap:.4rem;padding:.65rem}.hr-chat__approval-actions{display:flex;gap:.5rem}.hr-chat__approval-error{color:var(--hr-danger)}
 .hr-chat__message-actions{align-items:center;flex-wrap:wrap;gap:.25rem}
-`;
+` + HANDRAIL_CONVERSATION_HISTORY_CSS;
 
 export function StyledChatPresetStyles(): ReactNode {
   return <style data-handrail-ai-preset={HANDRAIL_CHAT_PRESET_VERSION}>{handrailChatPresetCss}</style>;
@@ -242,7 +275,9 @@ export function createHandrailChatThemeStyle(theme: HandrailChatTheme = {}): Han
 /** Accessible responsive drop-in surface; all headless primitives remain independently usable. */
 export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
   const labels = { ...DEFAULT_LABELS, ...props.labels };
-  const resolvedState = useResolvedState(props.state);
+  const resolvedState = useResolvedState(props.state) ?? EMPTY_CHAT_STATE;
+  const approvalReview = useConversationApprovals(props.approvalResources ?? null, resolvedState?.conversation_id ?? null);
+  const proposals = props.proposals ?? (props.approvalResources ? approvalReview.proposals : resolvedState?.approval_proposals);
   const activity = props.activity;
   const subscribeActivity = useCallback((notify: () => void) =>
     activity?.subscribe(notify) ?? (() => undefined), [activity]);
@@ -281,25 +316,32 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
   >
     <header className="hr-chat__header"><h2>{props.title ?? "Assistant"}</h2>{props.conversationPicker && <div className="hr-chat__picker">{props.conversationPicker}</div>}</header>
     <main className="hr-chat__body">
-      <FollowedTranscript className="hr-chat__transcript" {...(renderToolResult ? { renderToolResult } : { toolCalls: [] })}
-        renderToolCall={(call, message, renderResult) => call.result && renderResult ? renderResult(call.result, call, message) : null}
-        {...(renderContent ? { renderContent } : {})}
-        renderAttachment={renderAttachment}
-        {...(props.messageActions === false ? {} : { renderMessage: (message, _index, context) => <div className="hr-chat__message-row">
-          <Message message={message} error={context.error} toolCalls={renderToolResult ? context.toolCalls : []}
-            renderToolCall={(call, message, renderResult) => call.result && renderResult ? renderResult(call.result, call, message) : null}
-            {...(renderContent ? { renderContent } : {})}
-            renderAttachment={renderAttachment}
-            {...(renderToolResult ? { renderToolResult } : {})}/>
-          {props.messageCitations === false ? null : <CitationList
-            className="hr-chat__message-citations" messageId={message.message_id}/>}
-          <div className="hr-chat__message-actions"><CopyMessageButton className="hr-chat__copy" message={message}/>
-            {props.badResponseReporting?.enabled && resolvedState?.conversation_id && <BadResponseButton className="hr-chat__copy" message={message}
-              conversationId={resolvedState.conversation_id}
-              disabled={!responseIsComplete(resolvedState, message)}
-              reporting={props.badResponseReporting}/>}
-          </div>
-        </div> })}>{resolvedState?.messages.length ? undefined : props.emptyState}</FollowedTranscript>
+      {resolvedState && <ConversationTranscript state={resolvedState} className="hr-chat__transcript" role="region"
+        {...(proposals ? { proposals } : {})} emptyState={props.emptyState}
+        {...(props.resolveLegacyTurnMessageId ? { resolveLegacyTurnMessageId: props.resolveLegacyTurnMessageId } : {})}
+        includeToolResult={props.includeToolResult ?? (call => !!props.toolRendererKeys?.[call.name ?? ""])}
+        renderToolResult={call => props.renderCompletedTool ? props.renderCompletedTool(call, resolvedState)
+          : call.result && renderToolResult ? renderToolResult(call.result, call, undefined) : null}
+        renderApproval={proposal => {
+          const context: StyledApprovalRenderContext = { state: resolvedState, busy: approvalReview.busy !== null,
+            readOnly: Boolean(props.readOnly || !props.approvalResources),
+            decide: async status => { if (!props.readOnly) await approvalReview.decide(proposal, status); } };
+          return props.renderApproval ? props.renderApproval(proposal, context)
+            : <StandardApprovalCard proposal={proposal} context={context}/>;
+        }}
+        renderMessage={message => props.renderConversationMessage ? props.renderConversationMessage(message, resolvedState)
+          : <div className="hr-chat__message-row">
+          <Message message={message} toolCalls={[]}
+            {...(renderContent ? { renderContent } : {})} renderAttachment={renderAttachment}/>
+          {props.messageCitations === false ? null : <CitationList className="hr-chat__message-citations" messageId={message.message_id}/>}
+          {props.messageActions === false ? null : <div className="hr-chat__message-actions"><CopyMessageButton className="hr-chat__copy" message={message}/>
+            {props.badResponseReporting?.enabled && resolvedState.conversation_id && <BadResponseButton className="hr-chat__copy" message={message}
+              conversationId={resolvedState.conversation_id} disabled={!responseIsComplete(resolvedState, message)} reporting={props.badResponseReporting}/>}
+          </div>}
+        </div>}/>} 
+      {approvalReview.error && <p className="hr-chat__approval-error" role="alert">{approvalReview.error === "decision"
+        ? "That approval decision could not be saved. Please retry." : "Action approvals could not be refreshed."}
+        <button type="button" onClick={approvalReview.refresh}>Retry approvals</button></p>}
       <div className="hr-chat__status">{currentActivity?.turnStatus === "running" && currentActivity.summary
         ? <span role="status" className="hr-chat__assistant-activity">{currentActivity.summary}{activityProgress
           ? ` (${activityProgress.completed}/${activityProgress.total}${activityProgress.unit ? ` ${activityProgress.unit}` : ""})`
@@ -312,15 +354,21 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
         {...(props.renderToolActivity ? { children: props.renderToolActivity } : {})}/>
       <LiveRegion className="hr-chat__sr"/>
     </main>
-    {(props.approvals || props.citations) && <aside className="hr-chat__aux">{props.approvals}{props.citations}</aside>}
-    <StandardChatComposer key={resolvedState?.conversation_id ?? "unselected"} {...(props.composer ? { composer: props.composer } : {})} canStop={canStop}
+    {(props.approvals || props.citations) && <aside className="hr-chat__aux">{props.readOnly
+      ? <fieldset disabled style={{ border: 0, margin: 0, padding: 0 }}>{props.approvals}</fieldset> : props.approvals}{props.citations}</aside>}
+    {props.readOnly ? <p className="hr-history__notice">Archived conversations are read-only. Restore this conversation to continue.</p>
+      : <StandardChatComposer key={resolvedState?.conversation_id ?? "unselected"} {...(props.composer ? { composer: props.composer } : {})} canStop={canStop}
       placeholder={labels.placeholder} labels={labels}
+      {...(props.maxPromptCharacters === undefined ? {} : { maxLength: props.maxPromptCharacters })}
+      {...(resolvedState?.conversation_id ? { conversationId: resolvedState.conversation_id } : {})}
+      {...(props.transcription === undefined ? {} : { transcription: props.transcription })}
+      actions={props.composerActions}
       {...(props.includeStyles === undefined ? {} : { includeStyles: props.includeStyles })}
       {...(props.attachmentsEnabled === undefined ? {} : { attachmentsEnabled: props.attachmentsEnabled })}
       {...(props.approvalMode === undefined ? {} : { approvalMode: props.approvalMode })}
       {...(props.onApprovalModeChange === undefined ? {} : { onApprovalModeChange: props.onApprovalModeChange })}
       {...(props.showApprovalControl === undefined ? {} : { showApprovalControl: props.showApprovalControl })}
-      {...(props.voiceControls === undefined ? {} : { voiceControls: props.voiceControls })}/>
+      {...(props.voiceControls === undefined ? {} : { voiceControls: props.voiceControls })}/>}
     {props.footer}
   </ChatRoot>;
 }
@@ -330,22 +378,6 @@ function responseIsComplete(state: ConversationState, message: ConversationMessa
     || candidate.output_message_ids.includes(message.message_id));
   return turn ? ["completed", "cancelled", "failed"].includes(turn.status) && !turn.remote_may_still_be_running
     : !state.active_turn_id;
-}
-
-function FollowedTranscript(props: ComponentProps<typeof Transcript>): ReactNode {
-  const state = useResolvedState(props.state);
-  const contentVersion = `${String(state?.revision ?? "none")}:${state?.messages.length ?? 0}:${state?.active_turn_id ?? "idle"}`;
-  const follow = useSmartTranscriptFollow({ conversationId: state?.conversation_id ?? null, contentVersion });
-  return <div className="hr-chat__transcript-wrap">
-    <Transcript {...props} tabIndex={props.tabIndex ?? 0} ref={follow.transcriptRef} onScroll={(event) => {
-      props.onScroll?.(event);
-      if (!event.defaultPrevented) follow.onScroll(event);
-    }}/>
-    {!follow.following
-      ? <button className="hr-chat__jump" type="button" aria-label="Jump to latest message"
-          onClick={() => follow.scrollToLatest()}>{follow.hasNewContent ? "New messages" : "Jump to latest"}</button>
-      : null}
-  </div>;
 }
 
 function messageText(parts: ConversationMessageRecord["content"]): string {
@@ -410,12 +442,15 @@ function BoundHandrailChat<TRequest>(props: HandrailChatProps<TRequest>): ReactN
   const composer = useConversationComposer(props.composer);
   const installed = installToolRendererPlugins(props.rendererPlugins ?? [], props.toolCatalog);
   const { runtime: _runtime, rendererPlugins: _plugins, toolCatalog: _catalog,
-    composer: _composer, presence: _presence, renderVoiceControls: _voiceRenderer, ...preset } = props;
+    composer: _composer, presence: _presence, renderVoiceControls: _voiceRenderer, renderComposerActions: _actionsRenderer, ...preset } = props;
+  void _actionsRenderer;
   void _runtime; void _plugins; void _catalog; void _composer; void _presence; void _voiceRenderer;
   const voiceControls = props.renderVoiceControls === undefined ? props.voiceControls
     : props.renderVoiceControls({ composer,
       conversationId: props.composer.conversationId ?? props.runtime.getSnapshot().conversation_id });
-  return <StyledChatPreset {...preset} composer={composer} voiceControls={voiceControls} {...(props.presence ? { presence: props.presence } : {})}
+  const composerActions = props.renderComposerActions?.({ composer,
+    conversationId: props.composer.conversationId ?? props.runtime.getSnapshot().conversation_id }) ?? props.composerActions;
+  return <StyledChatPreset {...preset} composer={composer} voiceControls={voiceControls} composerActions={composerActions} {...(props.presence ? { presence: props.presence } : {})}
     toolRendererKeys={installed.toolRendererKeys} toolResultRenderers={installed.renderers}/>;
 }
 
@@ -530,111 +565,31 @@ export interface CatalogWorkspaceThreadPickerProps<TRequest, TAuthorizationConte
 export function CatalogWorkspaceThreadPicker<TRequest, TAuthorizationContext>(
   props: CatalogWorkspaceThreadPickerProps<TRequest, TAuthorizationContext>,
 ): ReactNode {
-  const snapshot = useConversationWorkspaceSnapshot(props.workspace);
-  const activity = useConversationActivitySnapshot(props.workspace, props.activity);
-  const runningCount = activity.filter((record) => record.turnStatus === "running").length;
-  const [descriptors, setDescriptors] = useState<readonly ConversationCatalogDescriptor[]>([]);
-  const [refreshRevision, setRefreshRevision] = useState(0);
-  const [busyId, setBusyId] = useState<ConversationId | "create" | null>(null);
-  const [error, setError] = useState("");
-  const { catalog, authorizationContext } = props.catalogOptions;
-  const pageSize = props.catalogOptions.pageSize ?? 50;
+  const history = useConversationHistory({ workspace: props.workspace, ...props.catalogOptions,
+    ...(props.activity ? { activity: props.activity } : {}),
+    ...(props.createConversation ? { createConversation: props.createConversation } : {}),
+    ...(props.onConversationRead ? { onConversationRead: props.onConversationRead } : {}),
+  });
+  const voiceIds = JSON.stringify(history.descriptors.filter((row) => row.lifecycle === "active").map((row) => String(row.conversationId)).sort());
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const found: ConversationCatalogDescriptor[] = [];
-        let cursor: Awaited<ReturnType<typeof catalog.list>>["nextCursor"] | undefined;
-        do {
-          const page = await catalog.list({ authorizationContext, lifecycle: "all", pageSize,
-            order: { field: "updated_at", direction: "desc" }, ...(cursor ? { cursor } : {}) });
-          found.push(...page.items);
-          cursor = page.nextCursor ?? undefined;
-          if (!page.hasMore) break;
-        } while (cursor);
-        if (cancelled) return;
-        setDescriptors(found);
-        if (props.voiceActivity && !props.voiceActivity.usesConversationLoader) {
-          void props.voiceActivity.setConversations(found.filter((item) => item.lifecycle === "active").map((item) => String(item.conversationId)));
-        }
-        const active = found.filter((descriptor) => descriptor.lifecycle === "active");
-        if (props.workspace.getSnapshot().selectedConversationId === null && active[0]) {
-          await props.workspace.open({ authorizationContext,
-            conversationId: active[0].conversationId });
-        }
-      } catch { if (!cancelled) setError("Conversations could not be loaded."); }
-    })();
-    return () => { cancelled = true; };
-  }, [authorizationContext, catalog, pageSize, props.workspace, props.voiceActivity, refreshRevision]);
-  const create = async () => {
-    if (!props.createConversation || busyId !== null) return;
-    setBusyId("create"); setError("");
-    try { await props.workspace.open(await props.createConversation()); setRefreshRevision((value) => value + 1); }
-    catch { setError("Conversation could not be created."); }
-    finally { setBusyId(null); }
-  };
-  const mutate = async (descriptor: ConversationCatalogDescriptor) => {
-    if (busyId !== null) return;
-    setBusyId(descriptor.conversationId); setError("");
-    try {
-      if (descriptor.lifecycle === "active") {
-        await catalog.archive({ authorizationContext, conversationId: descriptor.conversationId,
-          expectedVersion: descriptor.version, idempotencyKey: browserIdentity("archive") as never });
-        await props.workspace.close?.(descriptor.conversationId);
-      } else {
-        await catalog.restore({ authorizationContext, conversationId: descriptor.conversationId,
-          expectedVersion: descriptor.version, idempotencyKey: browserIdentity("restore") as never });
-        await props.workspace.open({ authorizationContext, conversationId: descriptor.conversationId });
-      }
-      setRefreshRevision((value) => value + 1);
-    } catch { setError(descriptor.lifecycle === "active"
-      ? "Conversation could not be archived." : "Conversation could not be restored."); }
-    finally { setBusyId(null); }
-  };
-  const labels = new Map(descriptors.map((descriptor) => [descriptor.conversationId, descriptor.title]));
-  const active = descriptors.filter((descriptor) => descriptor.lifecycle === "active");
-  const archived = descriptors.filter((descriptor) => descriptor.lifecycle === "archived");
-  return <div className="hr-chat__workspace-picker">
-    {props.createConversation && <button type="button" disabled={busyId !== null} aria-busy={busyId === "create"}
-      onClick={() => void create()}>{busyId === "create" ? "Creating…" : "New"}</button>}
-    <details><summary>Threads{runningCount > 0 ? ` (${runningCount} running)` : ""}
-      <RealtimeWorkspaceActivity {...(props.voiceActivity ? { monitor: props.voiceActivity } : {})} {...(props.renderVoiceActivity ? { render: props.renderVoiceActivity } : {})}/>
-    </summary>
-      <ul aria-label="Conversations">{active.map((descriptor) => {
-        const thread = activity.find((item) => item.conversationId === descriptor.conversationId);
-        const opened = snapshot.threads.some((item) => item.conversationId === descriptor.conversationId);
-        return <li key={descriptor.conversationId} data-turn-status={thread?.turnStatus === "running" ? "running" : thread?.unread ? "unread" : "idle"}>
-          <button type="button" aria-current={snapshot.selectedConversationId === descriptor.conversationId ? "true" : undefined}
-            onClick={() => void (async () => {
-              if (opened) props.workspace.select(descriptor.conversationId);
-              else await props.workspace.open({ authorizationContext, conversationId: descriptor.conversationId });
-              props.workspace.markRead?.(descriptor.conversationId);
-              await Promise.resolve(props.onConversationRead?.(descriptor.conversationId)).catch(() => undefined);
-            })()}>
-            <span>{props.getThreadLabel?.(descriptor.conversationId) ?? labels.get(descriptor.conversationId) ?? descriptor.conversationId}</span>
-            <small>{thread?.turnStatus === "running" ? `Running${thread.unread ? " · Unread" : ""}` : thread?.unread ? "Unread" : ""}</small>
-            <RealtimeWorkspaceActivity {...(props.voiceActivity ? { monitor: props.voiceActivity } : {})} conversationId={String(descriptor.conversationId)}
-              showConnectionState={false} {...(props.renderVoiceActivity ? { render: props.renderVoiceActivity } : {})}/>
-          </button>
-          {catalog.capabilities.archive.supported && <button type="button"
-            disabled={busyId !== null} aria-label={`Archive ${descriptor.title ?? "conversation"}`}
-            onClick={() => void mutate(descriptor)}>Archive</button>}
-        </li>;
-      })}
-      {archived.map((descriptor) => <li key={descriptor.conversationId}>
-        <span>{descriptor.title ?? descriptor.conversationId}</span>
-        {catalog.capabilities.restore.supported && <button type="button" disabled={busyId !== null}
-          aria-label={`Restore ${descriptor.title ?? "conversation"}`}
-          onClick={() => void mutate(descriptor)}>Restore</button>}
-      </li>)}</ul>
-    </details>
-    {error && <span role="alert">{error}</span>}
-  </div>;
+    if (props.voiceActivity && !props.voiceActivity.usesConversationLoader) void props.voiceActivity.setConversations(JSON.parse(voiceIds) as string[]);
+  }, [props.voiceActivity, voiceIds]);
+  const runningCount = history.activity.filter((record) => record.turnStatus === "running").length;
+  return <details className="hr-history" data-presentation="compact"><summary>Threads{runningCount ? ` (${runningCount} running)` : ""}
+    <RealtimeWorkspaceActivity {...(props.voiceActivity ? { monitor: props.voiceActivity } : {})}
+      {...(props.renderVoiceActivity ? { render: props.renderVoiceActivity } : {})}/>
+  </summary><div className="hr-history__panel"><ConversationHistoryPanel controller={history}
+    {...(props.getThreadLabel ? { getThreadLabel: props.getThreadLabel } : {})}
+    renderActivity={(conversationId) => <RealtimeWorkspaceActivity conversationId={String(conversationId)} showConnectionState={false}
+      {...(props.voiceActivity ? { monitor: props.voiceActivity } : {})}
+      {...(props.renderVoiceActivity ? { render: props.renderVoiceActivity } : {})}/>}/></div></details>;
 }
 
 export interface HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>
   extends Omit<HandrailChatProps<TRequest>, "runtime" | "composer" | "conversationPicker"> {
   readonly workspace: ConversationWorkspaceController<TRequest, TAuthorizationContext>;
+  /** False keeps background work alive without acknowledging hidden messages as read. */
+  readonly visible?: boolean;
   readonly voiceActivity?: RealtimeWorkspaceMonitor;
   readonly renderVoiceActivity?: VoiceActivityRenderer;
   readonly composerForConversation: (
@@ -642,10 +597,13 @@ export interface HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>
     conversationId: ConversationId,
   ) => UseConversationComposerOptions<TRequest>;
   readonly createConversation?: () => Promise<ConversationWorkspaceOpenInput<TAuthorizationContext>>;
-  /** Set to false to disable New and Threads; the selected conversation and composer remain active. */
+  /** Omit or use true for standard New/Threads controls; false disables them; a node customizes them. */
   readonly conversationPicker?: ReactNode;
   /** Enables full authorized catalog hydration plus archive/restore UI. */
   readonly catalogOptions?: ConversationCatalogWorkspaceOptions<TAuthorizationContext>;
+  /** The endpoint launcher defaults to the complete sidebar; custom workspace hosts can opt in. */
+  readonly historyLayout?: "sidebar" | "compact";
+  readonly historyOptions?: Pick<UseConversationHistoryOptions<TRequest, TAuthorizationContext>, "preloadCount" | "recover" | "autoSelect" | "refreshKey">;
   readonly getThreadLabel?: (conversationId: ConversationId) => ReactNode;
   readonly onConversationRead?: (conversationId: ConversationId, observed?: ConversationActivityRecord) => void | Promise<void>;
   readonly noConversation?: ReactNode;
@@ -657,11 +615,48 @@ export interface HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>
 export function HandrailChatWorkspace<TRequest, TAuthorizationContext>(
   props: HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>,
 ): ReactNode {
-  useConversationReadState(props.workspace, props.activity, true, props.onConversationRead);
+  return props.catalogOptions && props.conversationPicker !== false
+    ? <CatalogChatWorkspace {...props} catalogOptions={props.catalogOptions}/>
+    : <SelectedChatWorkspace {...props}/>;
+}
+
+function CatalogChatWorkspace<TRequest, TAuthorizationContext>(props: HandrailChatWorkspaceProps<TRequest, TAuthorizationContext> & {
+  readonly catalogOptions: ConversationCatalogWorkspaceOptions<TAuthorizationContext>;
+}): ReactNode {
+  const history = useConversationHistory({ workspace: props.workspace, ...props.catalogOptions,
+    ...props.historyOptions,
+    ...(props.activity ? { activity: props.activity } : {}),
+    ...(props.createConversation ? { createConversation: props.createConversation } : {}),
+    ...(props.onConversationRead ? { onConversationRead: props.onConversationRead } : {}),
+  });
+  const voiceIds = JSON.stringify(history.descriptors.filter((row) => row.lifecycle === "active").map((row) => String(row.conversationId)).sort());
+  useEffect(() => {
+    if (props.voiceActivity && !props.voiceActivity.usesConversationLoader) void props.voiceActivity.setConversations(JSON.parse(voiceIds) as string[]);
+  }, [props.voiceActivity, voiceIds]);
+  const panel = <ConversationHistoryPanel controller={history} includeStyles={false}
+    {...(props.getThreadLabel ? { getThreadLabel: props.getThreadLabel } : {})}
+    renderActivity={conversationId => <RealtimeWorkspaceActivity conversationId={String(conversationId)} showConnectionState={false}
+      {...(props.voiceActivity ? { monitor: props.voiceActivity } : {})} {...(props.renderVoiceActivity ? { render: props.renderVoiceActivity } : {})}/>}/>;
+  const readOnly = props.readOnly || history.selected?.lifecycle === "archived";
+  if (props.historyLayout !== "sidebar") return <>
+    {props.includeStyles === false ? null : <StyledChatPresetStyles/>}
+    <SelectedChatWorkspace {...props} readOnly={readOnly} conversationPicker={props.conversationPicker === undefined || props.conversationPicker === true
+      ? <details className="hr-history" data-presentation="compact"><summary>Threads</summary><div className="hr-history__panel">{panel}</div></details>
+      : props.conversationPicker}/>
+  </>;
+  return <div className="hr-chat-workspace" data-layout={props.layout ?? "page"} style={{ ...createHandrailChatThemeStyle(props.theme), ...props.style }}>
+    {props.includeStyles === false ? null : <StyledChatPresetStyles/>}
+    <aside className="hr-history" aria-label="Conversation history">{panel}</aside>
+    <SelectedChatWorkspace {...props} conversationPicker={false} historyLayout="compact" readOnly={readOnly}/>
+  </div>;
+}
+
+function SelectedChatWorkspace<TRequest, TAuthorizationContext>(props: HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>): ReactNode {
+  useConversationReadState(props.workspace, props.activity, props.visible !== false, props.onConversationRead);
   const snapshot = useConversationWorkspaceSnapshot(props.workspace);
   const selected = snapshot.threads.find((thread) =>
     thread.conversationId === snapshot.selectedConversationId);
-  const picker = props.conversationPicker ?? (props.catalogOptions
+  const picker = (props.conversationPicker === true ? undefined : props.conversationPicker) ?? (props.catalogOptions
     ? <CatalogWorkspaceThreadPicker workspace={props.workspace} catalogOptions={props.catalogOptions}
       {...(props.activity ? { activity: props.activity } : {})}
       {...(props.voiceActivity ? { voiceActivity: props.voiceActivity } : {})}
@@ -685,7 +680,8 @@ export function HandrailChatWorkspace<TRequest, TAuthorizationContext>(
   const { workspace: _workspace, composerForConversation: _composerFor, createConversation: _create,
     getThreadLabel: _label, onConversationRead: _onConversationRead, noConversation: _empty, conversationPicker: _picker,
     presenceForConversation: _presenceFor, catalogOptions: _catalogOptions, voiceActivity: _voiceActivity,
-    renderVoiceActivity: _renderVoiceActivity, ...chat } = props;
+    renderVoiceActivity: _renderVoiceActivity, historyLayout: _historyLayout, historyOptions: _historyOptions, ...chat } = props;
+  void _historyLayout; void _historyOptions;
   void _workspace; void _composerFor; void _create; void _label; void _onConversationRead; void _empty; void _picker; void _presenceFor; void _catalogOptions; void _voiceActivity; void _renderVoiceActivity;
   const runtime = selected.runtime as ConversationRuntime<TRequest>;
   const presence = props.presenceForConversation?.(selected.conversationId) ?? props.presence;
@@ -767,6 +763,8 @@ export interface HandrailAssistantLauncherProps extends Omit<HandrailChatWorkspa
   readonly onWorkingChange?: (working: boolean) => void;
   /** Generate and persist a bounded title after a conversation's first completed turn. Defaults to true. */
   readonly autoTitle?: boolean;
+  /** Uncontrolled preference for new client lifetimes. Defaults to required. */
+  readonly defaultApprovalMode?: ComposerApprovalMode;
   /** Render the endpoint-driven workspace directly when the host already owns the surrounding shell. */
   readonly presentation?: "launcher" | "page";
   /** Migration/domain seam for an existing authorized upload route. The SDK uploader remains the default. */
@@ -795,9 +793,12 @@ export function gatewayAttachmentIntake(
   const acceptedMediaTypes = [
     ...AI_RUNTIME_IMAGE_MIME_TYPES,
     ...AI_RUNTIME_DOCUMENT_MIME_TYPES,
-  ].filter((mediaType): mediaType is AttachmentMimeType => advertised.some((candidate) =>
-    candidate === mediaType ||
-    (candidate.endsWith("/*") && mediaType.startsWith(candidate.slice(0, -1)))));
+  ].filter((mediaType): mediaType is AttachmentMimeType => {
+    if (!mediaType.startsWith("image/") && (capabilities.documentInput === false ||
+      documentCapability && !documentCapability.supported_mime_types.some((type) => type === mediaType))) return false;
+    return advertised.some((candidate) => candidate === mediaType ||
+      (candidate.endsWith("/*") && mediaType.startsWith(candidate.slice(0, -1))));
+  });
   if (acceptedMediaTypes.length === 0) return undefined;
   const imageMaximumBytes = capabilities.attachments === false
     ? AI_RUNTIME_PROTOCOL_LIMITS.imageAttachmentMaxBytes
@@ -815,11 +816,11 @@ export function gatewayAttachmentIntake(
     acceptedMediaTypes,
     maxFileBytes: {
       image: Math.min(imageMaximumBytes, AI_RUNTIME_PROTOCOL_LIMITS.imageAttachmentMaxBytes),
-      document: Math.min(documentMaximumBytes, AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentMaxBytes),
+      document: Math.min(documentMaximumBytes, documentCapability?.max_document_bytes ?? Infinity, AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentMaxBytes),
     },
     maxSelectionCount: {
       image: Math.min(imageMaximumFiles, AI_RUNTIME_PROTOCOL_LIMITS.imageAttachmentsPerMessage),
-      document: Math.min(documentMaximumFiles, AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerMessage),
+      document: Math.min(documentMaximumFiles, documentCapability?.max_document_count ?? Infinity, AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerMessage),
     },
   };
 }
@@ -827,7 +828,7 @@ export function gatewayAttachmentIntake(
 interface AssistantLauncherState {
   readonly configurationKey: object;
   readonly client: HandrailAiClient<StreamEvent, ChatRequest, object>;
-  readonly uploader: AttachmentUploader<ApplicationGatewayAttachmentSource>;
+  readonly initialConversationUnavailable?: boolean;
 }
 
 function AssistantWorkingObserver({ workspace, activity, voiceActivity, onChange }: {
@@ -863,23 +864,111 @@ function ConversationGatewayApprovals({ resources, conversationId }: {
   readonly conversationId: string;
 }) {
   const { proposals, busy, error, decide } = useConversationApprovals(resources, conversationId);
-  const failed = error !== null;
-  const pending = proposals.filter((proposal) => proposal.status === "pending");
-  if (pending.length === 0 && !failed) return null;
+  const state = useResolvedState() ?? createInitialConversationState(conversationId as ConversationId);
   return <section className="hr-chat__approvals" aria-label="Assistant approvals">
-    {failed ? <span className="hr-chat__approval-error" role="alert">Approvals could not be refreshed.</span> : null}
-    {pending.map((proposal) => <article className="hr-chat__approval" key={proposal.proposal_id}>
-      <strong>{proposal.tool_name.replaceAll("_", " ")}</strong>
-      <span>This action requires your confirmation.</span>
-      <div className="hr-chat__approval-actions">
-        <button disabled={busy !== null} onClick={() => void decide(proposal, "confirmed")}>Confirm</button>
-        <button disabled={busy !== null} onClick={() => void decide(proposal, "rejected")}>Reject</button>
-      </div>
-    </article>)}
+    {error && <span className="hr-chat__approval-error" role="alert">Approvals could not be refreshed.</span>}
+    {proposals.filter(proposal => proposal.status === "pending").map(proposal =>
+      <StandardApprovalCard key={proposal.proposal_id} proposal={proposal} context={{ state, busy: busy !== null, readOnly: false,
+        decide: status => decide(proposal, status) }}/>) }
   </section>;
 }
 
+/** Concrete review with argument-binding checks; domain formatting can replace this card. */
+export function StandardApprovalCard({ proposal, context }: {
+  readonly proposal: ConversationApprovalProposalRecord; readonly context: StyledApprovalRenderContext;
+}) {
+  const arguments_ = reviewedToolArguments(context.state, proposal);
+  const pending = proposal.status === "pending";
+  const expired = Date.parse(proposal.expires_at) <= Date.now();
+  return <article className="hr-chat__approval" role="listitem" aria-label="Assistant action">
+    <strong>{proposal.tool_name.replaceAll("_", " ")}</strong><span>{expired && pending ? "expired" : proposal.status}</span>
+    {arguments_ ? <details open={pending}><summary>Action details</summary><pre>{JSON.stringify(arguments_, null, 2)}</pre></details>
+      : <p>Action details are unavailable. Refresh this conversation before confirming.</p>}
+    {proposal.failure_reason && <p>{proposal.failure_reason}</p>}
+    {pending && <div className="hr-chat__approval-actions">
+      <button type="button" disabled={context.busy || context.readOnly || expired || arguments_ === null}
+        onClick={() => { void context.decide("confirmed"); }}>Confirm</button>
+      <button type="button" disabled={context.busy || context.readOnly || expired}
+        onClick={() => { void context.decide("rejected"); }}>Reject</button>
+    </div>}
+  </article>;
+}
+
 const EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT = Object.freeze({});
+
+export interface HandrailAssistantWorkspaceProps extends Omit<HandrailChatWorkspaceLauncherProps<ChatRequest, object>,
+  "workspace" | "composerForConversation" | "createConversation" | "activity" | "presenceForConversation" | "catalogOptions"> {
+  /** Already authenticated SDK client; the host retains its account lifetime. */
+  readonly client: HandrailAiClient<StreamEvent, ChatRequest, object>;
+  readonly authorizationContext?: object;
+  readonly presentation?: "page" | "launcher";
+  readonly defaultApprovalMode?: ComposerApprovalMode;
+  readonly autoTitle?: boolean;
+  readonly titleOptions?: Pick<UseConversationTitlesOptions, "placeholderTitles" | "diagnostics">;
+  readonly newConversationTitle?: string;
+  readonly uploaderForConversation?: (conversationId: ConversationId) => AttachmentUploader<Blob>;
+  readonly attachmentIntake?: UseConversationComposerOptions<ChatRequest>["attachmentIntake"];
+}
+
+/** Complete optional UI for hosts that already create an authenticated SDK client. */
+export function HandrailAssistantWorkspace(props: HandrailAssistantWorkspaceProps): ReactNode {
+  const { client } = props;
+  if (!client.workspace) throw new TypeError("The assistant client requires a multiple-conversation workspace.");
+  return <ClientAssistantWorkspace {...props} workspace={client.workspace}/>;
+}
+
+function ClientAssistantWorkspace(props: HandrailAssistantWorkspaceProps & {
+  readonly workspace: NonNullable<HandrailAiClient<StreamEvent, ChatRequest, object>["workspace"]>;
+}): ReactNode {
+  const { client, workspace, authorizationContext = EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT } = props;
+  const { approvalMode, onApprovalModeChange, decorateRequest } = useComposerApprovalPreference(client, props);
+  const uploaderFor = useWorkspaceUploaders(workspace, client.attachmentUpload, props.uploaderForConversation);
+  const [titles, setTitles] = useState({ client, values: new Map<ConversationId, string>() });
+  const rememberTitle = useCallback((id: ConversationId, title: string) => setTitles((previous) => ({ client,
+    values: new Map(previous.client === client ? previous.values : []).set(id, title) })), [client]);
+  const generatedTitles = titles.client === client ? titles.values : new Map<ConversationId, string>();
+  const attachmentIntake = props.attachmentIntake ?? gatewayAttachmentIntake(client.capabilities, !!props.uploaderForConversation);
+  const { client: _client, authorizationContext: _context, presentation, defaultApprovalMode: _defaultMode,
+    autoTitle: _autoTitle, titleOptions: _titleOptions, newConversationTitle: _newTitle,
+    uploaderForConversation: _upload, attachmentIntake: _intake, ...view } = props;
+  void _client; void _context; void _defaultMode; void _autoTitle; void _titleOptions; void _newTitle; void _upload; void _intake;
+  const options: HandrailChatWorkspaceProps<ChatRequest, object> = {
+    ...view, workspace, approvalMode,
+    ...(onApprovalModeChange ? { onApprovalModeChange } : {}),
+    historyLayout: props.historyLayout ?? "sidebar",
+    historyOptions: { refreshKey: generatedTitles, ...props.historyOptions },
+    catalogOptions: { catalog: client.catalog, authorizationContext },
+    ...(client.activity ? { activity: client.activity } : {}),
+    presenceForConversation: client.presenceControllerFor,
+    attachmentsEnabled: props.attachmentsEnabled ?? (!!client.attachmentUpload || !!props.uploaderForConversation),
+    transcription: props.transcription ?? (client.transcription && client.capabilities.transcription
+      ? { transcribe: client.transcription, capability: client.capabilities.transcription } : false),
+    ...(props.approvals === undefined ? { approvalResources: client.resources } : {}),
+    getThreadLabel: (id) => generatedTitles.get(id) ?? props.getThreadLabel?.(id),
+    onConversationRead: props.onConversationRead ?? ((id, observed) => client.markActivityRead(id, observed)),
+    createConversation: async (input?: { readonly idempotencyKey: ConversationCatalogIdempotencyKey }) => {
+      const created = await client.catalog.create({ authorizationContext,
+        idempotencyKey: input?.idempotencyKey ?? browserIdentity("conversation") as never,
+        ...(props.newConversationTitle ? { title: props.newConversationTitle } : {}),
+      });
+      return { authorizationContext, conversationId: created.descriptor.conversationId };
+    },
+    composerForConversation: (_runtime, conversationId) => ({
+      conversationId, uploader: uploaderFor(conversationId),
+      ...(attachmentIntake ? { attachmentIntake } : {}),
+      createRequest: ({ text, attachments }) => {
+        if (props.maxPromptCharacters !== undefined && text.length > props.maxPromptCharacters) {
+          throw new TypeError(`Shorten your message to ${props.maxPromptCharacters.toLocaleString()} characters before sending.`);
+        }
+        return decorateRequest(client.buildRequest({ content: text, attachments }));
+      },
+    }),
+  };
+  return <><StandardConversationTitleObserver client={client} enabled={props.autoTitle !== false}
+    onTitle={rememberTitle} {...props.titleOptions}/>
+    {presentation === "launcher" ? <HandrailChatWorkspaceLauncher {...options}/>
+      : <HandrailChatWorkspace {...options} layout={props.layout ?? "page"}/>}</>;
+}
 
 function browserIdentity(prefix: string): string {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -895,20 +984,10 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
   const state = savedState?.configurationKey === configurationKey ? savedState : null;
   const [failure, setFailure] = useState<{ readonly configurationKey: object; readonly cause: unknown } | null>(null);
   const error = failure?.configurationKey === configurationKey ? failure.cause : null;
-  const [generatedTitles, setGeneratedTitles] = useState<ReadonlyMap<ConversationId, string>>(new Map());
-  const rememberGeneratedTitle = useCallback((conversationId: ConversationId, title: string) => {
-    setGeneratedTitles((current) => new Map(current).set(conversationId, title));
-  }, []);
-  const hostUploaders = useRef(new Map<ConversationId, AttachmentUploader<Blob>>());
-  useEffect(() => () => {
-    for (const uploader of hostUploaders.current.values()) uploader.dispose();
-    hostUploaders.current.clear();
-  }, [configurationKey]);
   useEffect(() => {
     let disposed = false;
     let owned: AssistantLauncherState | null = null;
     setFailure(null);
-    setGeneratedTitles(new Map());
     void (async () => {
       try {
         const authorizationContext = EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT;
@@ -941,20 +1020,27 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
           await client.dispose();
           throw new TypeError("The assistant endpoint did not create a conversation workspace");
         }
-        const uploader = createAttachmentUploader<ApplicationGatewayAttachmentSource>(client.attachmentUpload ?? {
-          upload: async () => { throw new TypeError("This assistant does not accept attachments"); },
-        });
-        owned = { client, uploader, configurationKey };
+        owned = { client, configurationKey };
         const listed = await client.catalog.list({ authorizationContext, lifecycle: "active", pageSize: 1,
           order: { field: "updated_at", direction: "desc" } });
         const descriptor = listed.items[0] ?? (await client.catalog.create({ authorizationContext,
           idempotencyKey: browserIdentity("conversation") as never })).descriptor;
         client.workspace.setVisible(props.presentation === "page");
-        await client.workspace.open({ authorizationContext, conversationId: descriptor.conversationId });
+        try {
+          await client.workspace.open({ authorizationContext, conversationId: descriptor.conversationId });
+        } catch (cause) {
+          if (disposed) return;
+          // A retained thread can fail hydration independently of the endpoint.
+          // Keep the authorized catalog and New action available. Do not create
+          // replacement records automatically or hide failures in a fixed chat.
+          if (!listed.items[0] || props.conversationPicker === false) throw cause;
+          emitAiDiagnostic(props.diagnostics, { domain: "gateway", operation: "initial_conversation_open",
+            phase: "failed", retryable: true, conversationId: descriptor.conversationId, cause });
+          owned = { ...owned, initialConversationUnavailable: true };
+        }
         if (!disposed) setState(owned);
       } catch (cause) {
         const failed = owned; owned = null;
-        failed?.uploader.dispose();
         await failed?.client.dispose();
         if (!disposed) setFailure({ configurationKey, cause });
       }
@@ -962,7 +1048,6 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
     return () => {
       disposed = true;
       const previous = owned; owned = null;
-      previous?.uploader.dispose();
       void previous?.client.dispose();
     };
   }, [configurationKey, props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId]);
@@ -999,67 +1084,20 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
   void _failure; void _includeStyles; void _onWorkingChange; void _autoTitle; void _presentation;
   void _uploaderForConversation; void _attachmentIntake; void _voiceOptions;
   const authorizationContext = EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT;
-  const approvals = props.approvals === undefined
-    ? <StandardGatewayApprovals client={state.client}/>
-    : props.approvals;
-  const attachmentIntake = props.attachmentIntake ?? gatewayAttachmentIntake(
-    state.client.capabilities,
-    props.uploaderForConversation !== undefined,
-  );
-  const workspaceProps = {
-    ...launcher,
-    includeStyles: props.includeStyles !== false,
-    attachmentsEnabled: props.attachmentsEnabled ?? (state.client.attachmentUpload !== null || props.uploaderForConversation !== undefined),
-    workspace: state.client.workspace,
-    ...(voiceMonitor ? { voiceActivity: voiceMonitor } : {}),
-    ...(state.client.activity === null ? {} : { activity: state.client.activity }),
-    catalogOptions: { catalog: state.client.catalog, authorizationContext },
-    getThreadLabel: (conversationId: ConversationId) => generatedTitles.get(conversationId)
-      ?? props.getThreadLabel?.(conversationId),
-    onConversationRead: (conversationId: ConversationId, observed?: ConversationActivityRecord) => {
-      const seen = observed ?? state.client.activity?.getSnapshot().find((record) => record.conversationId === conversationId);
-      const latest = state.client.workspace?.getSnapshot().threads.find((thread) => thread.conversationId === conversationId)?.runtime.getSnapshot().turns.at(-1);
-      if (!latest || !["completed", "failed", "cancelled"].includes(latest.status) ||
-          (seen?.turnId !== undefined && seen.turnId !== latest.turn_id)) return;
-      state.client.workspace?.markRead(conversationId);
-      return state.client.markActivityRead(conversationId, seen).catch((cause) => {
-        emitAiDiagnostic(props.diagnostics, { domain: "gateway", operation: "activity_mark_read",
-          phase: "failed", retryable: true, conversationId, cause });
-        throw cause;
-      });
-    },
-    presenceForConversation: state.client.presenceControllerFor,
-    createConversation: async () => {
-      const created = await state.client.catalog.create({ authorizationContext,
-        idempotencyKey: browserIdentity("conversation") as never });
-      return { authorizationContext, conversationId: created.descriptor.conversationId };
-    },
-    composerForConversation: (runtime: ConversationRuntime<ChatRequest>, conversationId: ConversationId) => ({
-      uploader: props.uploaderForConversation === undefined ? state.uploader
-        : hostUploaders.current.get(conversationId) ?? (() => {
-            const uploader = props.uploaderForConversation!(conversationId);
-            hostUploaders.current.set(conversationId, uploader);
-            return uploader;
-      })(),
-      conversationId,
-      createRequest: ({ text, attachments }) => {
-        const request = state.client.buildRequest({ content: text, attachments });
-        return props.approvalMode === undefined ? request : withComposerApprovalMode(request, props.approvalMode);
-      },
-      ...(attachmentIntake === undefined ? {} : { attachmentIntake }),
-    }),
-    approvals,
-  } satisfies HandrailChatWorkspaceProps<ChatRequest, object>;
-  const workspace = props.presentation === "page"
-    ? <HandrailChatWorkspace {...workspaceProps} layout="page"/>
-    : <HandrailChatWorkspaceLauncher {...workspaceProps}/>;
   return <>{styles}<AssistantWorkingObserver workspace={state.client.workspace}
     {...(voiceMonitor ? { voiceActivity: voiceMonitor } : {})}
     {...(state.client.activity === null ? {} : { activity: state.client.activity })}
     {...(props.onWorkingChange === undefined ? {} : { onChange: props.onWorkingChange })}/>
-    <StandardConversationTitleObserver client={state.client} enabled={props.autoTitle !== false}
-      onTitle={rememberGeneratedTitle}
-      {...(props.diagnostics === undefined ? {} : { diagnostics: props.diagnostics })}/>{workspace}</>;
+    <HandrailAssistantWorkspace {...launcher} client={state.client} authorizationContext={authorizationContext}
+      presentation={props.presentation ?? "launcher"}
+      {...(props.autoTitle === undefined ? {} : { autoTitle: props.autoTitle })}
+      {...(props.diagnostics ? { titleOptions: { diagnostics: props.diagnostics } } : {})}
+      {...(props.uploaderForConversation ? { uploaderForConversation: props.uploaderForConversation } : {})}
+      {...(props.attachmentIntake ? { attachmentIntake: props.attachmentIntake } : {})}
+      {...(voiceMonitor ? { voiceActivity: voiceMonitor } : {})}
+      {...(props.includeStyles === undefined ? {} : { includeStyles: props.includeStyles })}
+      {...(state.initialConversationUnavailable && props.noConversation === undefined
+        ? { noConversation: <span role="alert">This conversation could not be opened. Select another conversation or start a new one.</span> } : {})}/></>;
 }
 
 export interface StyledChatLauncherProps extends StyledChatPresetProps {

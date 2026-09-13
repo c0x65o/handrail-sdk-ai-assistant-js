@@ -1,7 +1,9 @@
+import { assistantToolArgumentReference } from "../conversation/approval-arguments.js";
+export { assistantToolArgumentReference } from "../conversation/approval-arguments.js";
 import { jsonValuesEqual } from "../json-equality.js";
 import { createHash } from "node:crypto";
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
-import type { ApplicationToolResult, JsonObject, JsonValue, ResponseToolCallEvent, ToolDefinition } from "../protocol.js";
+import type { ApplicationToolResult, JsonObject, ResponseToolCallEvent, ToolDefinition } from "../protocol.js";
 import type { AiApplication } from "./application.js";
 import type { ApplicationToolActivityUpdate, BoundedToolExecutionOutcome } from "../tools/executor.js";
 import type { ApprovalExecutionResume } from "../tools/approval-execution.js";
@@ -39,20 +41,11 @@ const SYSTEM_ATTRIBUTION: ConversationEventAttribution = Object.freeze({
   actor: Object.freeze({ type: "system" }), source: Object.freeze({ type: "runtime" }),
 });
 
-function canonicalJson(value: JsonValue): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  return `{${Object.keys(value).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`).join(",")}}`;
-}
-
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export function assistantToolArgumentReference(arguments_: JsonObject): string {
-  return `args-sha256-${digest(canonicalJson(arguments_))}`;
-}
+
 
 function approvalError(call: Pick<ResponseToolCallEvent, "tool_call_id" | "name">, message: string): BoundedToolExecutionOutcome {
   const content = [{ type: "text" as const, text: message }];

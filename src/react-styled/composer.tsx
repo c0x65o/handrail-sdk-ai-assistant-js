@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import type { ComposerApprovalMode } from "../composer-approval.js";
 import type { ConversationComposerResult } from "../react/use-conversation-composer.js";
 import { AttachmentList, Composer, ErrorList, FileInput, Form, Stop, Submit, Textarea } from "../react/primitives.js";
+import { ComposerTranscriptionControl } from "./transcription.js";
+import type { ComposerTranscriptionOptions } from "../react/composer-transcription.js";
 
 export function ComposerIcon({ name }: { readonly name: "plus" | "shield" | "microphone" | "send" | "stop" }) {
   return <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -134,6 +136,7 @@ export const HANDRAIL_CHAT_COMPOSER_CSS = `
 .hr-composer__approval-panel label{display:flex;align-items:center;justify-content:space-between;gap:12px;font-weight:600}.hr-composer__approval-panel input{accent-color:var(--hr-composer-send,#55b653);width:20px;height:20px}.hr-composer__approval-panel p{margin:10px 0 0;line-height:1.45;color:var(--hr-muted,#666)}
 .hr-composer__attachments{display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:0;list-style:none}.hr-composer__attachments:empty,.hr-composer__errors:empty{display:none}.hr-composer__attachments li{max-width:100%;overflow-wrap:anywhere}.hr-composer__errors{margin:0;padding-left:20px;color:var(--hr-danger,#b42318);font-size:13px}.hr-composer__notice{font-size:12px;max-width:220px}
 .hr-composer .hr-composer__toolbar svg{width:18px;height:18px}
+.hr-composer__action{border:1px solid var(--hr-border,#e9e9e9);border-radius:8px;padding:6px 10px;background:var(--hr-bg,#fff);color:inherit;font:inherit;white-space:normal}
 @media(pointer:coarse){.hr-composer button.hr-composer__icon,.hr-composer .hr-composer__voice>button{width:40px;height:40px;min-height:40px}}
 @media(max-width:520px){.hr-composer{padding:8px}.hr-composer .hr-composer__form{padding:8px;border-radius:16px}.hr-composer__toolbar{gap:4px}}
 `;
@@ -146,6 +149,9 @@ export interface StandardChatComposerProps extends ComposerApprovalControlProps 
   readonly placeholder?: string;
   readonly maxLength?: number;
   readonly voiceControls?: ReactNode;
+  readonly conversationId?: string;
+  /** Authenticated transcription configuration. Custom voiceControls take precedence. False hides dictation. */
+  readonly transcription?: false | ComposerTranscriptionOptions;
   readonly attachmentsEnabled?: boolean;
   readonly actions?: ReactNode;
   readonly labels?: Partial<{ attach: string; send: string; stop: string }>;
@@ -159,20 +165,35 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
     const node = textarea.current;
     if (node) { node.style.height = "auto"; node.style.height = `${Math.min(Math.max(26, node.scrollHeight), 120)}px`; }
   }, [props.composer?.draft]);
-  return <Composer {...(props.composer ? { composer: props.composer } : {})} className="hr-composer">
+  const guardDrop = (event: DragEvent<HTMLDivElement>) => {
+    if ((props.attachmentsEnabled === false || props.canStop || props.composer?.isSending) &&
+      (Array.from(event.dataTransfer.types).includes("Files") || event.dataTransfer.files.length > 0)) event.preventDefault();
+  };
+  return <Composer {...(props.composer ? { composer: props.composer } : {})} className="hr-composer"
+    onDragOver={guardDrop} onDrop={guardDrop}>
     {props.includeStyles === false ? null : <style>{HANDRAIL_CHAT_COMPOSER_CSS}</style>}
     <Form className="hr-composer__form">
       <AttachmentList showRetry={false} className="hr-composer__attachments"/>
-      <Textarea ref={textarea} className="hr-composer__draft" rows={1} maxLength={props.maxLength} placeholder={props.placeholder ?? "Message…"}/>
+      <Textarea ref={textarea} className="hr-composer__draft" rows={1} maxLength={props.maxLength} placeholder={props.placeholder ?? "Message…"}
+        onPaste={(event) => {
+          if ((props.composer?.isSending || props.canStop || props.attachmentsEnabled === false)
+            && Array.from(event.clipboardData.items).some((item) => item.kind === "file")) event.preventDefault();
+        }}/>
       <div className="hr-composer__toolbar">
         {props.attachmentsEnabled !== false && <><FileInput ref={input} hidden/>
           <button className="hr-composer__icon" type="button" aria-label={props.labels?.attach ?? "Add files and images"}
-            title={props.labels?.attach ?? "Add files and images"} disabled={props.composer?.isSending} onClick={() => input.current?.click()}><ComposerIcon name="plus"/></button></>}
+            title={props.labels?.attach ?? "Add files and images"} disabled={Boolean(props.composer?.isSending || props.canStop)} onClick={() => input.current?.click()}><ComposerIcon name="plus"/></button></>}
         {props.showApprovalControl !== false && <ComposerApprovalControl {...props} disabled={Boolean(props.composer?.isSending || props.canStop)}/>}
         <div className="hr-composer__spacer"/>
-        <div className="hr-composer__voice">{props.voiceControls === undefined && props.composer ? <BrowserDictationControl composer={props.composer}/> : props.voiceControls}</div>
+        <div className="hr-composer__voice">{props.voiceControls !== undefined ? props.voiceControls
+          : props.transcription === false ? null
+            : props.transcription ? props.composer && props.conversationId
+              ? <ComposerTranscriptionControl key={props.conversationId} {...props.transcription} conversationId={props.conversationId}
+                composer={props.composer} disabled={Boolean(props.canStop)}/> : null
+              : props.composer ? <BrowserDictationControl composer={props.composer}/> : null}</div>
         {props.canStop ? <Stop className="hr-composer__icon hr-composer__send" aria-label={!props.labels?.stop || props.labels.stop === "Stop" ? "Stop response" : props.labels.stop}><ComposerIcon name="stop"/></Stop>
-          : <Submit className="hr-composer__icon hr-composer__send" aria-label={!props.labels?.send || props.labels.send === "Send" ? "Send message" : props.labels.send}><ComposerIcon name="send"/></Submit>}
+          : <Submit className="hr-composer__icon hr-composer__send" aria-label={!props.labels?.send || props.labels.send === "Send" ? "Send message" : props.labels.send}
+            onClick={(event) => { if (!event.currentTarget.disabled) textarea.current?.focus(); }}><ComposerIcon name="send"/></Submit>}
       </div>
       {props.actions}
       <ErrorList className="hr-composer__errors"/>

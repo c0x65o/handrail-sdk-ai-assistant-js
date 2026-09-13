@@ -24,7 +24,7 @@ it("shows background voice activity in the collapsed picker without changing tex
     await waitFor(() => expect(view.container.querySelector("summary")?.textContent).toContain("1 voice call with unread results"));
     expect(view.container.querySelector("details")!.open).toBe(false);
     fireEvent.click(view.container.querySelector("summary")!);
-    const button = screen.getByRole("button", { name: /two idle 1 voice call with unread results/ });
+    const button = screen.getByRole("button", { name: /two 1 voice call with unread results/ });
     expect(button.getAttribute("data-turn-status")).toBe("idle");
     fireEvent.click(button);
     expect(workspace.select).toHaveBeenCalledWith("two");

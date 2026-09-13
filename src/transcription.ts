@@ -19,6 +19,7 @@ export const TRANSCRIPTION_UNSUPPORTED_REASONS = Object.freeze([
 export const TRANSCRIPTION_ERROR_CODES = Object.freeze([
   "invalid_request",
   "idempotency_conflict",
+  "outcome_unknown",
   "unsupported",
   "unsupported_audio",
   "content_unavailable",
@@ -213,6 +214,11 @@ const ERROR_DEFINITIONS: Readonly<Record<TranscriptionErrorCode, {
   },
   idempotency_conflict: {
     message: "The idempotency key conflicts with another transcription.",
+    retryable: false,
+    cancelled: false,
+  },
+  outcome_unknown: {
+    message: "The transcription outcome is unknown. This recording will not be sent again.",
     retryable: false,
     cancelled: false,
   },

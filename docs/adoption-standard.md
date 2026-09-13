@@ -108,6 +108,8 @@ store.
 
 ## Standard UI offering
 
+The current local consolidation candidate is tracked in [shared-assistant-consolidation.md](./shared-assistant-consolidation.md). It adds `HandrailAssistantWorkspace` for applications that already create an authenticated SDK client, and the endpoint launcher delegates to that same component. The complete sidebar, uncontrolled approval preference, authenticated dictation and per-conversation upload queues are SDK responsibilities. A host counter uses `renderComposerActions`, which leaves the standard microphone available. See [the minimal shared UI example](../examples/minimal-shared-assistant.tsx). These APIs require the candidate's eventual committed SDK revision; an older Git pin does not acquire them automatically.
+
 The default web experience is `HandrailAssistantLauncher` from
 `@handrail/ai-assistant/react/styled`. It is endpoint-driven and owns client
 negotiation, catalog hydration, multi-conversation runtimes, background turns,
@@ -149,6 +151,13 @@ provider hooks, durable failure semantics, and consumer migration.
 The standard is multi-conversation by default. Use the single-conversation
 `HandrailChat` composition only for a product requirement that prohibits thread
 creation or switching, and record that decision in the host integration file.
+Leave `conversationPicker` unset or set it to `true` for the standard New and
+Threads controls; `false` disables them. A failure opening a saved conversation
+keeps those controls available so the user can select another thread or
+explicitly create one. It never creates a replacement automatically. Endpoint
+negotiation and catalog-list failures still use the launcher's failure boundary.
+Validate the actual buttons and a failed saved-thread reopen, not just the
+presence of a picker container or a successful capabilities response.
 Use `@handrail/ai-assistant/react/headless` for React Native or a materially
 custom workflow. A headless host owns presentation but must preserve the same
 capabilities: background work independent of visibility, near-bottom transcript

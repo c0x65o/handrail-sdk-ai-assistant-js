@@ -36,6 +36,60 @@ class PagedEventStore extends InMemoryConversationEventStore {
 }
 
 describe("createHandrailAssistant", () => {
+  it("binds default confirmation policy to each durable request without bypassing permissions or mandatory review", async () => {
+    type Context = HandrailAssistantAuthorizationContext;
+    const context = { principalId: "alice", tenantId: "tenant", scopeId: "alice", attribution: {} } as Context;
+    const events = new PagedEventStore();
+    const catalog = new InMemoryConversationCatalog<Context>({ authorize: () => "allow",
+      createConversationId: () => "policy-conversation" as never });
+    await catalog.create({ authorizationContext: context, idempotencyKey: "policy-new" as never });
+    const modes: Record<string, unknown> = { automatic: "automatic", required: "required", invalid: "yes", missing: undefined };
+    const load = vi.fn(async (_conversation: string, turn: string) => ({ record: {
+      request: { metadata: { handrail_approval_mode: modes[turn] } },
+    } }));
+    const bundle = { events, catalog, durableTurns: { load },
+      approvals: new InMemoryApprovalProposalStore<Context>({ authorize: () => "allow" }),
+      toolLedger: new InMemoryToolExecutionLedger(),
+      activity: { list: async () => [], upsert: async (record: unknown) => record },
+    } as unknown as PostgresAssistantPersistenceBundle<Context>;
+    const persistence = { persistence: {}, attachmentLimits: { maximumBytes: 1000,
+      acceptedMediaTypes: ["text/plain"], ttlMilliseconds: 60_000 }, forScope: () => bundle } as unknown as PostgresAssistantPersistence;
+    const execute = vi.fn(async () => ({ done: true }));
+    const names = ["write_record", "mandatory_review", "forbidden_write"];
+    const plugin = createToolPlugin<ApplicationToolExecutor<Context>, Context, Context, Context>({
+      pluginId: "policy.test", version: "1.0.0", displayName: "Policy fixture",
+      registrations: names.map((name) => ({ definition: { name, description: name, input_schema: { type: "object" } },
+        discover: () => true, executor: execute })),
+      approvals: names.map((toolName) => ({ toolName, mode: toolName === "mandatory_review" ? "always" : "policy",
+        summarize: () => "Update a record" })),
+    });
+    let exposed!: Parameters<HandrailAssistantProvider<Context>["createTransport"]>[0]["tools"];
+    const assistant = await createHandrailAssistant<Context>({ id: "policy-test", authorize: () => context,
+      persistence, tools: [plugin], recoverPendingOnContext: false,
+      toolPolicy: ({ definition }) => ({ outcome: definition.name === "forbidden_write" ? "deny" : "allow" }),
+      provider: { metadata: { provider_id: "fixture", model_id: "fixture", capabilities: {
+        streaming: true, text: true, tool_calls: true, parallel_tool_calls: false, reasoning: false,
+        document_input: { supported: false }, provider_context: { supported: false, reason: "provider_not_supported" },
+        context_window_tokens: null, max_output_tokens: null } },
+        createTransport(input) { exposed = input.tools; return transport; } },
+    });
+    expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(200);
+    const run = (turnId: string, name = "write_record") => exposed.execute({ name, tool_call_id: `${turnId}-${name}`, arguments: {} },
+      new AbortController().signal, { conversationId: "policy-conversation", turnId });
+    const [automatic, required, missing] = await Promise.all([run("automatic"), run("required"), run("missing")]);
+    expect(automatic).toMatchObject({ status: "completed", result: { is_error: false } });
+    expect(required.status).toBe("external_approval_required");
+    expect(missing.status).toBe("external_approval_required");
+    expect((await run("automatic", "mandatory_review")).status).toBe("external_approval_required");
+    expect(await run("automatic", "forbidden_write")).toMatchObject({ status: "completed", result: { is_error: true } });
+    expect(await run("invalid")).toMatchObject({ status: "completed", result: { is_error: true } });
+    expect(execute).toHaveBeenCalledTimes(1);
+    for (const turn of ["automatic", "required", "missing", "invalid"]) {
+      expect(load).toHaveBeenCalledWith("policy-conversation", turn);
+    }
+    assistant.stopUsageWorker();
+  });
+
   it("derives isolated persistence and transports only from authenticated context", async () => {
     const scopes: string[] = [];
     const assistant = await createHandrailAssistant({

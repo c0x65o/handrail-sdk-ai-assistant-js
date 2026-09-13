@@ -53,7 +53,7 @@ import type {
   ConversationRuntimeError,
   ConversationRuntimeTurnResult,
 } from "../runtime.js";
-import { useConversationActions, useConversationSelector } from "./hooks.js";
+import { useConversationActions, useConversationSelector, useConversationStore } from "./hooks.js";
 
 export type ConversationComposerEnterBehavior = "newline" | "send";
 
@@ -454,6 +454,7 @@ export function useConversationComposer<TRequest = undefined>(
   options: UseConversationComposerOptions<TRequest>,
 ): ConversationComposerResult {
   const actions = useConversationActions<TRequest>();
+  const store = useConversationStore();
   const storeConversationId = useConversationSelector((state) => state.conversation_id);
   const activeTurnId = useConversationSelector((state) => state.active_turn_id);
   const reactId = useId();
@@ -521,11 +522,13 @@ export function useConversationComposer<TRequest = undefined>(
   }, []);
   const composing = useRef(false);
   const draftRef = useRef(draft);
+  const draftRevision = useRef(0);
   const ownedRef = useRef(owned);
   const uploaderRef = useRef(uploader);
   const presenceRef = useRef(presence);
   const lifecycleRef = useRef({
     conversationId,
+    store,
     uploader,
     presence,
     initialized: false,
@@ -570,6 +573,7 @@ export function useConversationComposer<TRequest = undefined>(
     }
     if (
       previous.conversationId === conversationId &&
+      previous.store === store &&
       previous.uploader === uploader &&
       previous.presence === presence
     ) {
@@ -581,19 +585,25 @@ export function useConversationComposer<TRequest = undefined>(
     ownedRef.current = [];
     setOwned([]);
     draftRef.current = "";
+    draftRevision.current += 1;
     setDraftState("");
+    sendingRef.current = false;
+    setIsSending(false);
     setOperationErrors([]);
     previous.presence?.stopTyping("conversation_switch");
     if (conversationId !== null) presence?.switchConversation(conversationId);
     lifecycleRef.current = {
       conversationId,
+      store,
       uploader,
       presence,
       initialized: true,
     };
-  }, [conversationId, presence, releaseOwned, uploader]);
+  }, [conversationId, presence, releaseOwned, store, uploader]);
 
   useEffect(() => () => {
+    // Late runtime notifications belong to the disposed composer, not a later mount.
+    lifecycleRef.current = { ...lifecycleRef.current };
     releaseOwned(ownedRef.current, uploaderRef.current);
     presenceRef.current?.stopTyping("destroy");
   }, [releaseOwned]);
@@ -674,6 +684,7 @@ export function useConversationComposer<TRequest = undefined>(
   const canSend = submissionBlockCount === 0 && !isSending && activeTurnId === null && hasContent && uploadsReady;
 
   const updateDraft = useCallback((nextDraft: string): void => {
+    draftRevision.current += 1;
     draftRef.current = nextDraft;
     setDraftState(nextDraft);
     // A send/cancel failure describes the previous attempt. Once the user
@@ -768,6 +779,10 @@ export function useConversationComposer<TRequest = undefined>(
   }, [conversationId, releaseOwned, scope, uploader]);
 
   const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    if (sendingRef.current || store.getSnapshot().active_turn_id !== null) {
+      if (Array.from(event.clipboardData.items).some((item) => item.kind === "file")) event.preventDefault();
+      return;
+    }
     // Native clipboard reads can return a new File wrapper each time. Snapshot
     // once so intake and combineIntake validate the same source objects.
     const sources = filesFromItems(event.clipboardData.items);
@@ -787,9 +802,11 @@ export function useConversationComposer<TRequest = undefined>(
     generalizedIntake,
     imageOptions,
     pdfOptions,
+    store,
   ]);
 
   const handleFileInputChange = useCallback((event: ChangeEvent<HTMLInputElement>): void => {
+    if (sendingRef.current || store.getSnapshot().active_turn_id !== null) return;
     if (event.currentTarget.files === null) return;
     const files = event.currentTarget.files;
     const sources = filesFromList(files);
@@ -807,6 +824,7 @@ export function useConversationComposer<TRequest = undefined>(
     generalizedIntake,
     imageOptions,
     pdfOptions,
+    store,
   ]);
 
   const handleDragOver = useCallback((event: DragEvent<HTMLElement>): void => {
@@ -821,6 +839,7 @@ export function useConversationComposer<TRequest = undefined>(
     if (sources.length === 0) return;
     // Even a rejected file must not navigate away from the conversation.
     event.preventDefault();
+    if (sendingRef.current || store.getSnapshot().active_turn_id !== null) return;
     const imageResult = acceptedImageMediaTypes.length === 0
       ? undefined
       : intakeFileInputImages(sources, imageOptions());
@@ -836,6 +855,7 @@ export function useConversationComposer<TRequest = undefined>(
     generalizedIntake,
     imageOptions,
     pdfOptions,
+    store,
   ]);
 
   const removeAttachment = useCallback((attachmentId: string): boolean => {
@@ -889,7 +909,11 @@ export function useConversationComposer<TRequest = undefined>(
       return item?.status === "ready" ? [item.reference] : [];
     });
     const currentDraft = draftRef.current;
-    const eligible = submissionBlocks.current.size === 0 && !sendingRef.current && activeTurnId === null &&
+    const submittedRevision = draftRevision.current;
+    const submissionScope = lifecycleRef.current;
+    const isCurrent = () => lifecycleRef.current === submissionScope;
+    let accepted = false;
+    const eligible = submissionBlocks.current.size === 0 && !sendingRef.current && store.getSnapshot().active_turn_id === null &&
       (currentDraft.trim().length > 0 || currentOwned.length > 0) &&
       readyReferences.length === currentOwned.length;
     if (!eligible) return null;
@@ -901,12 +925,30 @@ export function useConversationComposer<TRequest = undefined>(
       text: currentDraft,
       attachments: Object.freeze(readyReferences),
     });
+    const accept = () => {
+      if (accepted || !isCurrent()) return;
+      accepted = true;
+      releaseOwned(currentOwned, uploader);
+      const submittedIds = new Set(currentOwned.map((entry) => entry.id));
+      const nextOwned = ownedRef.current.filter((entry) => !submittedIds.has(entry.id));
+      ownedRef.current = nextOwned;
+      setOwned(nextOwned);
+      // Revision identity protects the next draft even when it has identical text.
+      if (draftRevision.current === submittedRevision) {
+        draftRevision.current += 1;
+        draftRef.current = "";
+        setDraftState("");
+        presence?.stopTyping("send");
+      }
+    };
     try {
       const outcome = await actions.sendMessage({
         content: currentDraft.trim().length === 0 ? [] : currentDraft,
         attachments: readyReferences.map(durableAttachment),
         request: createRequest === undefined ? request as TRequest : createRequest(submission),
+        onAccepted: accept,
       });
+      if (!isCurrent()) return outcome;
       if (outcome.status !== "completed") {
         setOperationErrors([outcome.error === undefined
           ? {
@@ -919,21 +961,11 @@ export function useConversationComposer<TRequest = undefined>(
         return outcome;
       }
 
-      releaseOwned(currentOwned);
-      setOwned((current) => {
-        const submittedIds = new Set(currentOwned.map((entry) => entry.id));
-        const next = current.filter((entry) => !submittedIds.has(entry.id));
-        ownedRef.current = next;
-        return next;
-      });
-      setDraftState((current) => {
-        const next = current === currentDraft ? "" : current;
-        draftRef.current = next;
-        return next;
-      });
-      presence?.stopTyping("send");
+      // Compatibility for external runtime adapters that do not emit acceptance yet.
+      accept();
       return outcome;
     } catch {
+      if (!isCurrent()) return null;
       setOperationErrors([{
         source: "send",
         code: "send_failed",
@@ -942,10 +974,12 @@ export function useConversationComposer<TRequest = undefined>(
       }]);
       return null;
     } finally {
-      sendingRef.current = false;
-      setIsSending(false);
+      if (isCurrent()) {
+        sendingRef.current = false;
+        setIsSending(false);
+      }
     }
-  }, [actions, activeTurnId, createRequest, presence, releaseOwned, request, uploader]);
+  }, [actions, createRequest, presence, releaseOwned, request, store, uploader]);
 
   const cancel = useCallback(async (): Promise<boolean> => {
     if (onCancel === undefined) return false;

@@ -8,6 +8,7 @@ import {
   InMemoryConversationEventStore,
   createRetryPolicy,
   createConversationRuntime,
+  replayConversation,
   parseConversationEvent,
   parseNormalizedUsageReceipt,
   type AppendConversationEventsInput,
@@ -547,6 +548,26 @@ function externalEvent(
 }
 
 describe("createConversationRuntime", () => {
+  it("admits file-only messages atomically without invented message text", async () => {
+    const eventStore = new InMemoryConversationEventStore();
+    const transport = new FakeTransport();
+    transport.startObservations.push(observation([], "disconnected"));
+    const runtime = await createConversationRuntime({ conversationId, clientId, transport, eventStore, retryPolicy: createRetryPolicy({ maximumAttempts: 1 }) });
+    const onAccepted = vi.fn();
+    try {
+      await runtime.sendMessage({ content: [], attachments: [{ attachment_id: "att_file_only" as never,
+        kind: "document", media_type: "application/pdf", size_bytes: 13, filename: "notes.pdf" }],
+        request: { prompt: "" }, onAccepted });
+      expect(onAccepted).toHaveBeenCalledOnce();
+      expect(transport.starts).toHaveLength(1);
+      expect(runtime.getSnapshot().messages[0]).toMatchObject({ role: "user", content: [{ type: "text", text: "" }],
+        attachments: [{ kind: "document", media_type: "application/pdf", filename: "notes.pdf" }] });
+      const replay = await replayConversation({ conversationId, eventStore });
+      expect(replay.state.messages[0]).toEqual(runtime.getSnapshot().messages[0]);
+      replay.store.destroy();
+    } finally { runtime.destroy(); }
+  });
+
   it("polls external tool activity without provider frames, retries failures, and stops on destroy", async () => {
     vi.useFakeTimers();
     const eventStore = new InMemoryConversationEventStore();
@@ -586,7 +607,12 @@ describe("createConversationRuntime", () => {
       const disconnected = vi.fn();
       transport.startObservations.push(pendingObservation(disconnected));
       const runtime = await createConversationRuntime({ conversationId, clientId, transport, eventStore });
-      const sending = runtime.sendMessage({ content: "Work", request: { prompt: "Work" } });
+      let acceptedState: ReturnType<typeof runtime.getSnapshot> | undefined;
+      const onAccepted = vi.fn(() => {
+        acceptedState = runtime.getSnapshot();
+        throw new Error("A host UI observer failed");
+      });
+      const sending = runtime.sendMessage({ content: "Work", request: { prompt: "Work" }, onAccepted });
       try {
         await vi.waitFor(() => expect(runtime.getSnapshot().turns.at(-1)?.status).toBe("running"));
         const turnId = runtime.getSnapshot().active_turn_id!;
@@ -600,6 +626,11 @@ describe("createConversationRuntime", () => {
         expect(disconnected).toHaveBeenCalled();
         expect(runtime.getSnapshot().active_turn_id).toBeNull();
         expect(transport.starts).toHaveLength(1);
+        expect(onAccepted).toHaveBeenCalledOnce();
+        expect(onAccepted).toHaveBeenCalledWith({ conversationId,
+          messageId: acceptedState?.messages.find((message) => message.role === "user")?.message_id,
+          turnId: acceptedState?.active_turn_id });
+        expect(acceptedState?.active_turn_id).toBe(turnId);
       } finally { runtime.destroy(); await sending.catch(() => undefined); }
     });
 

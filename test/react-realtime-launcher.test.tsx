@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 const bootstrap = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("../src/client/bootstrap.js", () => ({ createHandrailAiClient: bootstrap.create }));
@@ -65,5 +65,47 @@ it("disposes client resources when catalog bootstrap fails", async () => {
   await waitFor(() => expect(view.container.textContent).toBe("Assistant unavailable."));
   expect(dispose).toHaveBeenCalledOnce();
   view.unmount();
+  expect(dispose).toHaveBeenCalledOnce();
+});
+
+it.each([undefined, true])("keeps New and history navigation usable when a saved conversation cannot open (picker=%s)", async (conversationPicker) => {
+  const snapshot = { selectedConversationId: null, threads: [], runningCount: 0, errorCount: 0, unreadCount: 0 };
+  const open = vi.fn(async ({ conversationId }: { conversationId: string }) => {
+    if (conversationId === "unavailable") throw new Error("private history conflict");
+  });
+  const workspace = { getSnapshot: () => snapshot, subscribe: () => () => {}, open,
+    select: vi.fn(), markRead: vi.fn(), setVisible: vi.fn() };
+  const descriptor = { conversationId: "unavailable", lifecycle: "active", title: "Saved conversation", updatedAt: "2026-09-12T00:00:00.000Z" };
+  const list = vi.fn(async () => ({ items: [descriptor], hasMore: false, nextCursor: null }));
+  const create = vi.fn(async () => ({ descriptor: { conversationId: "new" } }));
+  const dispose = vi.fn();
+  bootstrap.create.mockResolvedValue({ workspace, catalog: { list, create,
+    capabilities: { archive: { supported: false }, restore: { supported: false } } },
+    activity: null, attachmentUpload: null, capabilities: { attachments: false, documentInput: false },
+    dispose, presenceControllerFor: () => null });
+  const view = render(<HandrailAssistantLauncher endpoint="/history-failure" presentation="page"
+    conversationPicker={conversationPicker} autoTitle={false} approvals={null} includeStyles={false}/>);
+  await view.findByRole("button", { name: "New" });
+  expect(create).not.toHaveBeenCalled();
+  expect(dispose).not.toHaveBeenCalled();
+  expect(view.container.textContent).not.toContain("private history conflict");
+  expect(view.getByRole("button", { name: "Archived" })).toBeTruthy();
+  expect(view.getByRole("button", { name: "Unread conversations (0)" })).toBeTruthy();
+  fireEvent.click(await view.findByRole("button", { name: /^Saved conversation/ }));
+  await waitFor(() => expect(view.getAllByRole("alert").some(node => node.textContent?.includes("Select another conversation"))).toBe(true));
+  fireEvent.click(view.getByRole("button", { name: "New" }));
+  await waitFor(() => expect(open).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "new" })));
+  expect(create).toHaveBeenCalledOnce();
+  view.unmount();
+  expect(dispose).toHaveBeenCalledOnce();
+});
+
+it("retains the failure boundary when thread creation and switching are disabled", async () => {
+  const dispose = vi.fn();
+  bootstrap.create.mockResolvedValue({ workspace: { setVisible: vi.fn(), open: vi.fn(async () => { throw new Error("private failure"); }) },
+    attachmentUpload: null, dispose,
+    catalog: { list: vi.fn(async () => ({ items: [{ conversationId: "one" }] })) } });
+  const view = render(<HandrailAssistantLauncher endpoint="/fixed" conversationPicker={false} includeStyles={false}/>);
+  await waitFor(() => expect(view.container.textContent).toBe("Assistant unavailable."));
   expect(dispose).toHaveBeenCalledOnce();
 });

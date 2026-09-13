@@ -1,4 +1,5 @@
 import { parseServerSentEvents } from "./sse.js";
+import type { TranscriptionHttpCapability } from "../transcription-http.js";
 import type { AttachmentReference } from "../protocol.js";
 import type { AttachmentUploadAdapter } from "../attachments/types.js";
 import type { LivePresenceEnvelope } from "../presence/live-delivery.js";
@@ -62,6 +63,8 @@ export interface ApplicationGatewayCapabilities {
   readonly presence: boolean;
   readonly synchronization: boolean;
   readonly activity?: boolean;
+  /** Omitted by older gateways; audio capture must not assume a server transcription route exists. */
+  readonly transcription?: false | TranscriptionHttpCapability;
   readonly resources?: {
     /** Detailed lifecycle capabilities are returned by v1 servers when available. */
     readonly conversations: boolean | ConversationCatalogCapabilities;
@@ -91,13 +94,14 @@ export interface ApplicationGatewayRequestAuthorizer<TContext extends Applicatio
 }
 
 export type ApplicationGatewayAction = "capabilities" | "start" | "resume" | "cancel" |
-  "conversations" | "approvals" | "attachments" | "presence" | "activity" | "synchronization" | "title_generation";
+  "conversations" | "approvals" | "attachments" | "presence" | "activity" | "synchronization" | "title_generation" | "transcription";
 
 export interface ApplicationGatewayTitleGeneration<TContext> {
   generate(input: { readonly conversationId: string; readonly idempotencyKey: string }, context: TContext, signal: AbortSignal): Promise<string>;
 }
 
 export interface ApplicationGatewayResourceHandlers<TContext> {
+  readonly transcription?: (request: Request, context: TContext) => Response | Promise<Response>;
   readonly attachments?: (request: Request, context: TContext) => Response | Promise<Response>;
   readonly presence?: (request: Request, context: TContext) => Response | Promise<Response>;
   readonly activity?: (request: Request, context: TContext) => Response | Promise<Response>;
@@ -344,6 +348,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
     attachments: options.capabilities?.attachments ?? false,
     presence: options.capabilities?.presence ?? false,
     activity: options.capabilities?.activity ?? false,
+    ...(options.capabilities?.transcription === undefined ? {} : { transcription: options.capabilities.transcription }),
     synchronization: options.capabilities?.synchronization ?? false,
     ...(options.capabilities?.documentInput === undefined ? {} : { documentInput: options.capabilities.documentInput }),
     ...(options.capabilities?.assistant === undefined ? {} : { assistant: options.capabilities.assistant }),
@@ -367,6 +372,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
           : pathname.includes("/conversations/") ? "conversations"
           : pathname.includes("/approvals/") ? "approvals"
           : pathname.endsWith("/attachments") ? "attachments"
+          : pathname.endsWith("/transcriptions") ? "transcription"
           : pathname.endsWith("/presence") ? "presence"
           : pathname.endsWith("/activity") ? "activity"
           : pathname.endsWith("/synchronization") ? "synchronization"
@@ -387,7 +393,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
         if (action === "capabilities") {
           return json({ ok: true, value: capabilitiesFor(await resolveTransport(authorizationContext)) });
         }
-        if (action === "attachments" || action === "presence" || action === "activity" || action === "synchronization") {
+        if (action === "attachments" || action === "presence" || action === "activity" || action === "synchronization" || action === "transcription") {
           const handler = options.handlers?.[action];
           return handler ? handler(request, authorizationContext) : new Response(null, { status: 501 });
         }

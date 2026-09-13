@@ -7,14 +7,14 @@ export type ConversationApprovalResources = Pick<HandrailAiClient<StreamEvent, C
   "listApprovalGroup" | "transitionApproval">;
 
 /** Shared approval polling and decisions for styled, custom web and native React views. */
-export function useConversationApprovals(resources: ConversationApprovalResources, conversationId: string | null) {
+export function useConversationApprovals(resources: ConversationApprovalResources | null, conversationId: string | null) {
   const [state, setState] = useState({ resources, conversationId,
     proposals: [] as readonly ConversationApprovalProposalRecord[], busy: null as string | null, error: null as "refresh" | "decision" | null });
   const lifecycle = useRef<{
     active: boolean; busy: boolean; revision: number; refresh: () => void; resources: ConversationApprovalResources; conversationId: string;
   } | null>(null);
   useEffect(() => {
-    if (conversationId === null) {
+    if (conversationId === null || resources === null) {
       lifecycle.current = null;
       setState({ resources, conversationId, proposals: [], busy: null, error: null });
       return;
@@ -30,7 +30,7 @@ export function useConversationApprovals(resources: ConversationApprovalResource
       loading = true;
       const revision = current.revision;
       try {
-        const proposals = await resources.listApprovalGroup({ groupId: conversationId as never });
+        const proposals = await current.resources.listApprovalGroup({ groupId: conversationId as never });
         if (current.active && revision === current.revision) {
           setState((previous) => ({ ...previous, resources, proposals, error: null as "refresh" | "decision" | null }));
         }
@@ -55,7 +55,7 @@ export function useConversationApprovals(resources: ConversationApprovalResource
     current.revision++;
     setState((previous) => ({ ...previous, busy: proposal.proposal_id, error: null as "refresh" | "decision" | null }));
     try {
-      const result = await resources.transitionApproval({ conversationId: current.conversationId, proposalId: proposal.proposal_id,
+      const result = await current.resources.transitionApproval({ conversationId: current.conversationId, proposalId: proposal.proposal_id,
         expectedVersion: proposal.proposal_version, status, idempotencyKey: identity,
         idempotencyFingerprint: identity });
       if (current.active) {

@@ -138,6 +138,10 @@ describe("styled React preset", () => {
   });
 
   it("derives file intake from protected gateway MIME and size limits", () => {
+    expect(gatewayAttachmentIntake({ protocolVersion: "handrail.application-gateway.v1",
+      authoritativeCancellation: false, presence: false, synchronization: false, documentInput: false,
+      attachments: { maximumFiles: 2, maximumBytesPerFile: 1000, acceptedMediaTypes: ["application/pdf"] },
+    })).toBeUndefined();
     expect(gatewayAttachmentIntake({
       protocolVersion: "handrail.application-gateway.v1",
       authoritativeCancellation: true,
@@ -417,7 +421,7 @@ describe("styled React preset", () => {
     const catalog = { list, archive, restore,
       capabilities: { archive: { supported: true }, restore: { supported: true } } } as never;
     const snapshot = { selectedConversationId: "active", runningCount: 0, errorCount: 0,
-      unreadCount: 0, threads: [{ conversationId: "active", runtime: {}, turnStatus: "idle",
+      unreadCount: 0, threads: [{ conversationId: "active", runtime: { getSnapshot: () => ({ messages: [] }) }, turnStatus: "idle",
         unread: false, revision: 0 }] } as never;
     const open = vi.fn(async () => ({} as never));
     const close = vi.fn(async () => true);
@@ -434,6 +438,7 @@ describe("styled React preset", () => {
       conversationId: "active", expectedVersion: "v1",
     })));
     expect(close).toHaveBeenCalledWith("active");
+    fireEvent.click(picker.getByRole("button", { name: "Archived" }));
     await waitFor(() => expect(picker.getByRole<HTMLButtonElement>("button", { name: "Restore Past case" }).disabled).toBe(false));
     fireEvent.click(picker.getByRole("button", { name: "Restore Past case" }));
     await waitFor(() => expect(restore).toHaveBeenCalledWith(expect.objectContaining({

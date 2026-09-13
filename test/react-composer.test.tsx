@@ -48,6 +48,50 @@ const completed = (status: ConversationRuntimeTurnResult["status"] = "completed"
   },
 }) as ConversationRuntimeTurnResult;
 
+it.each(["completed", "failed", "cancelled", "disconnected"] as const)(
+  "clears on admission and preserves an identical next draft after %s", async (status) => {
+    const { runtime, sendMessage } = fakeRuntime();
+    const uploader = immediateUploader();
+    let settle!: (value: ConversationRuntimeTurnResult) => void;
+    sendMessage.mockImplementation((input) => {
+      input.onAccepted?.({ conversationId: "conversation_composer" as never, messageId: "accepted" as never, turnId: "turn_composer" as never });
+      return new Promise((resolve) => { settle = resolve; });
+    });
+    const { result, unmount } = renderHook(() => useConversationComposer({ uploader, initialDraft: "Repeat" }), { wrapper: wrapper(runtime) });
+    let sending!: ReturnType<ConversationComposerResult["submit"]>;
+    act(() => { sending = result.current.submit(); });
+    expect(result.current.draft).toBe("");
+    expect(result.current.isSending).toBe(true);
+    act(() => { result.current.setDraft("Repeat"); });
+    expect(result.current.canSend).toBe(false);
+    await act(async () => { expect(await result.current.submit()).toBeNull(); });
+    expect(sendMessage).toHaveBeenCalledOnce();
+    await act(async () => { settle(completed(status)); await sending; });
+    expect(result.current.draft).toBe("Repeat");
+    expect(result.current.isSending).toBe(false);
+    unmount(); uploader.dispose();
+  });
+
+it("preserves edits made before admission even when changed back to submitted text", async () => {
+  const { runtime, sendMessage } = fakeRuntime();
+  const uploader = immediateUploader();
+  let accept!: () => void;
+  let settle!: (value: ConversationRuntimeTurnResult) => void;
+  sendMessage.mockImplementation((input) => {
+    accept = () => input.onAccepted?.({ conversationId: "conversation_composer" as never, messageId: "accepted" as never, turnId: "turn_composer" as never });
+    return new Promise((resolve) => { settle = resolve; });
+  });
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, initialDraft: "Repeat" }), { wrapper: wrapper(runtime) });
+  let sending!: ReturnType<ConversationComposerResult["submit"]>;
+  act(() => { sending = result.current.submit(); });
+  act(() => { result.current.setDraft("Edited"); result.current.setDraft("Repeat"); });
+  act(() => { accept(); });
+  expect(result.current.draft).toBe("Repeat");
+  await act(async () => { settle(completed()); await sending; });
+  expect(result.current.draft).toBe("Repeat");
+  unmount(); uploader.dispose();
+});
+
 function fakeRuntime<TRequest>(conversationId = "conversation_composer") {
   const store = createConversationStore(conversationId as ConversationId);
   const sendMessage = vi.fn<ConversationRuntime<TRequest>["sendMessage"]>();
@@ -65,6 +109,53 @@ function fakeRuntime<TRequest>(conversationId = "conversation_composer") {
   } as unknown as ConversationRuntime<TRequest>;
   return { runtime, sendMessage };
 }
+
+it("does not apply a previous conversation's late admission or failure to the current draft", async () => {
+  const { runtime, sendMessage } = fakeRuntime();
+  const uploader = immediateUploader();
+  let accept!: () => void;
+  let settle!: (value: ConversationRuntimeTurnResult) => void;
+  sendMessage.mockImplementation((input) => {
+    accept = () => input.onAccepted?.({ conversationId: "first" as never, messageId: "accepted" as never, turnId: "turn_composer" as never });
+    return new Promise((resolve) => { settle = resolve; });
+  });
+  const { result, rerender, unmount } = renderHook(({ conversationId }) => useConversationComposer({ uploader, conversationId, initialDraft: "First" }),
+    { wrapper: wrapper(runtime), initialProps: { conversationId: "first" as ConversationId } });
+  let sending!: ReturnType<ConversationComposerResult["submit"]>;
+  act(() => { sending = result.current.submit(); });
+  rerender({ conversationId: "second" as ConversationId });
+  act(() => { result.current.setDraft("Second"); accept(); });
+  await act(async () => { settle(completed("failed")); await sending; });
+  expect(result.current.draft).toBe("Second");
+  expect(result.current.errors).toEqual([]);
+  expect(result.current.isSending).toBe(false);
+  unmount(); uploader.dispose();
+});
+
+it("keeps text editable without accepting files during an active submission", async () => {
+  const { runtime, sendMessage } = fakeRuntime();
+  const uploader = immediateUploader();
+  let settle!: (value: ConversationRuntimeTurnResult) => void;
+  sendMessage.mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, initialDraft: "First" }), { wrapper: wrapper(runtime) });
+  let sending!: ReturnType<ConversationComposerResult["submit"]>;
+  const preventPaste = vi.fn(), preventDrop = vi.fn();
+  const source = file("during-turn.png");
+  act(() => {
+    sending = result.current.submit();
+    result.current.getTextareaProps().onChange({ currentTarget: { value: "Second" } } as never);
+    result.current.getTextareaProps().onPaste({ clipboardData: { items: itemList(fileItem(source)) }, preventDefault: preventPaste } as never);
+    result.current.getFileInputProps().onChange({ currentTarget: { files: fileList(source) } } as never);
+    result.current.getDropProps().onDrop({ dataTransfer: { files: fileList(source), items: itemList(fileItem(source)) }, preventDefault: preventDrop } as never);
+  });
+  expect(result.current.draft).toBe("Second");
+  expect(preventPaste).toHaveBeenCalled();
+  expect(preventDrop).toHaveBeenCalled();
+  expect(uploader.getSnapshot().items).toEqual([]);
+  await act(async () => { settle(completed()); await sending; });
+  expect(result.current.draft).toBe("Second");
+  unmount(); uploader.dispose();
+});
 
 function wrapper<TRequest>(runtime: ConversationRuntime<TRequest>) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -222,6 +313,7 @@ describe("useConversationComposer", () => {
     expect(sendMessage).toHaveBeenCalledWith({
       content: "hello",
       attachments: [],
+      onAccepted: expect.any(Function),
       request: { model: "test" },
     });
     expect(presence.stopTyping).toHaveBeenCalledWith("send");

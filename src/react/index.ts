@@ -310,3 +310,10 @@ export { useConversationApprovals, type ConversationApprovalResources } from "./
 
 export { useRealtimeWorkspaceActivity } from "./realtime-workspace.js";
 export { useConversationTitles, type UseConversationTitlesOptions } from "./use-conversation-titles.js";
+export { useComposerTranscription, type ComposerTranscriptionOptions } from "./composer-transcription.js";
+export { useConversationHistory, type UseConversationHistoryOptions, type ConversationHistoryController, type ConversationHistoryWorkspace } from "./conversation-history.js";
+
+export { useWorkspaceUploaders } from "./workspace-uploaders.js";
+
+export { ConversationTranscript, type ConversationTranscriptProps } from "./conversation-transcript.js";
+export { useComposerApprovalPreference } from "./composer-approval-preference.js";
