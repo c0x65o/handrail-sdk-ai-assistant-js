@@ -28,7 +28,8 @@ it("presents every reviewed field, nested list and exact value without interpret
 });
 
 it("formats typed JSON tool results and preserves ordinary text and custom business renderers", () => {
-  const result: ConversationToolResultRecord = { is_error: false, recorded_at: "2026-09-14T12:00:00.000Z" as never, attribution: null,
+  const result: ConversationToolResultRecord = { is_error: false, recorded_at: "2026-09-14T12:00:00.000Z" as never,
+    attribution: { actor: { type: "tool" }, source: { type: "runtime" } },
     content: [{ type: "text", text: "Saved successfully." },
     { type: "json", value: { task_title: "Verify backups", status: "todo" } }],
   };

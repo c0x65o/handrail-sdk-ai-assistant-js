@@ -172,6 +172,11 @@ revision is adopted and retested.
 
 ## Standard UI offering
 
+Approval details and typed tool results use the shared readable field/list
+formatter, including in custom business review cards. Do not render raw JSON as
+the user-facing fallback. See [structured details](structured-details.md) for the
+JS/Flutter components, styling contract, verified public baselines and tests.
+
 `HandrailAssistantWorkspace` serves applications that already create an
 authenticated SDK client; the endpoint launcher delegates to the same component.
 The complete sidebar, uncontrolled approval preference, authenticated dictation

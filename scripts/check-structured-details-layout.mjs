@@ -42,8 +42,8 @@ try {
     await page.keyboard.press("Enter");
     assert.equal(await page.locator("details").evaluate(node => node.open), true);
     const measure = async () => page.evaluate(() => ({
-      viewport: globalThis.innerWidth, page: document.documentElement.scrollWidth,
-      overflowing: Array.from(document.querySelectorAll(".hr-details, .hr-details dd, article"))
+      viewport: globalThis.innerWidth, page: globalThis.document.documentElement.scrollWidth,
+      overflowing: Array.from(globalThis.document.querySelectorAll(".hr-details, .hr-details dd, article"))
         .filter(node => node.scrollWidth > node.clientWidth + 1).length,
     }));
     const geometry = await measure();
