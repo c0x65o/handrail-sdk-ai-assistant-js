@@ -41,6 +41,10 @@ function identity(value: string): string {
   }
   return value;
 }
+/** The existing call-owned activity partition, shared with retention checks. */
+export function postgresRealtimeToolActivityScope(callScopeId: string, callId: string): string {
+  return createHash("sha256").update(JSON.stringify([identity(callScopeId), identity(callId)])).digest("hex");
+}
 function validate(value: RealtimeToolActivityRecord, toolCallId: string): RealtimeToolActivityRecord {
   if (!value || value.schemaVersion !== 1 || value.toolCallId !== toolCallId ||
       !["running", "completed", "failed"].includes(value.status) ||
@@ -62,10 +66,15 @@ export class PostgresRealtimeToolActivityStore {
   constructor(readonly calls: PostgresRealtimeCallStore, readonly callId: string,
     readonly clock: () => number = Date.now) {
     identity(callId);
-    this.#scope = createHash("sha256").update(JSON.stringify([calls.scopeId, callId])).digest("hex");
+    this.#scope = postgresRealtimeToolActivityScope(calls.scopeId, callId);
     this.#readBinding = createHash("sha256").update(JSON.stringify([calls.tenantId, calls.scopeId, callId])).digest("hex");
   }
   async record(input: { readonly workerId: string; readonly toolCallId: string; readonly name: string;
+    readonly status: RealtimeToolActivityStatus }): Promise<RealtimeToolActivityRecord> {
+    return this.calls.withConversationLock(this.callId, calls =>
+      new PostgresRealtimeToolActivityStore(calls, this.callId, this.clock).#record(input));
+  }
+  async #record(input: { readonly workerId: string; readonly toolCallId: string; readonly name: string;
     readonly status: RealtimeToolActivityStatus }): Promise<RealtimeToolActivityRecord> {
     identity(input.workerId); identity(input.toolCallId); identity(input.name);
     if (!["running", "completed", "failed"].includes(input.status)) throw new TypeError("Realtime tool activity status is invalid.");
@@ -121,6 +130,10 @@ export class PostgresRealtimeToolActivityStore {
   }
   /** Call only after host authorization. Replaying an older view cannot read newer outcomes. */
   async markRead(input: RealtimeActivityReadToken) {
+    return this.calls.withConversationLock(this.callId, calls =>
+      new PostgresRealtimeToolActivityStore(calls, this.callId, this.clock).#markRead(input));
+  }
+  async #markRead(input: RealtimeActivityReadToken) {
     const token = readToken(input, this.callId, this.#readBinding);
     for (let attempt = 0; attempt < 4; attempt++) {
       const state = await this.readState();

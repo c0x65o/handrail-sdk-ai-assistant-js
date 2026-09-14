@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { PostgresPersistenceConflictError, type PostgresAiPersistence } from "./index.js";
+import { PostgresPersistenceConflictError, PostgresAiPersistence } from "./index.js";
+import { assertPostgresConversationWritable } from "./conversation-deletion.js";
 
 export type DurableRealtimeCallStatus = "admitted" | "starting" | "active" | "ending" | "ended" | "uncertain";
 export interface DurableRealtimeCallRecord {
@@ -72,6 +73,20 @@ export class PostgresRealtimeCallStore {
     const row = await this.persistence.getDocument<DurableRealtimeCallRecord>(this.tenantId, "realtime_call", this.scopeId, identity(callId));
     if (!row) return null;
     return this.#snapshot(row.value, row.version, callId);
+  }
+  /** Storage-only call mutation boundary. Host authorization remains required.
+   * Re-read under the conversation fence; never dispatch external work here. */
+  async withConversationLock<T>(callId: string, operation: (calls: PostgresRealtimeCallStore) => Promise<T>): Promise<T> {
+    const initial = await this.get(callId);
+    if (!initial) throw new DurableRealtimeCallConflictError();
+    return this.persistence.client.transaction(async client => {
+      await assertPostgresConversationWritable(client, this.tenantId, initial.conversationId);
+      const calls = new PostgresRealtimeCallStore(new PostgresAiPersistence(client), this.tenantId, this.scopeId,
+        { clock: this.#clock, leaseMs: this.#leaseMs });
+      const current = await calls.get(callId);
+      if (!current || current.conversationId !== initial.conversationId) throw new DurableRealtimeCallConflictError();
+      return operation(calls);
+    });
   }
   #snapshot(record: DurableRealtimeCallRecord, recordVersion: number, callId: string): DurableRealtimeCallSnapshot {
     if (!Number.isSafeInteger(recordVersion) || recordVersion < 1) throw new TypeError("Stored realtime call version is invalid.");

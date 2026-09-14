@@ -66,6 +66,22 @@ async function fixture(title?: string, deltas = false) {
 }
 
 describe("SDK-owned conversation titles", () => {
+  it("removes the generated title from provider retention when its conversation is deleted", async () => {
+    const f = await fixture(); await f.complete();
+    await createAssistantConversationTitles(f.options).generate(f.conversationId, f.context);
+    const found = await f.bundle.catalog.get({ authorizationContext: f.context, conversationId: f.conversationId });
+    await f.bundle.catalog.permanentlyDelete({ authorizationContext: f.context, conversationId: f.conversationId,
+      expectedVersion: found.descriptor.version, idempotencyKey: "delete-generated-title" as never });
+    const receipts = await database.query<{ payload: Record<string, unknown> }>(`SELECT payload FROM handrail_ai_documents
+      WHERE tenant_id=$1 AND kind='provider_operation' AND scope_id=$2`, [f.context.tenantId, f.context.scopeId]);
+    expect(receipts.rows).toHaveLength(1);
+    expect(receipts.rows[0]!.payload).toMatchObject({ conversationId: f.conversationId, status: "purged" });
+    expect(receipts.rows[0]!.payload).not.toHaveProperty("result");
+    expect(JSON.stringify(receipts.rows)).not.toContain("Quarterly Cash Planning");
+    await createAssistantConversationTitles(f.options).afterCompletion(f.conversationId, f.context);
+    expect(f.request).toHaveBeenCalledOnce();
+  });
+
   it("does not replace reported usage after a failed durable capture or repeat the provider across restarts", async () => {
     const f = await fixture(); await f.complete();
     let rejectCapture!: (error: Error) => void;

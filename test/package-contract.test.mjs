@@ -80,7 +80,7 @@ test("ships the supported Spartan Aegis adapter as an isolated server boundary",
   ).href);
   assert.equal(adapter.SPARTAN_AEGIS_ADAPTER_VERSION, "handrail.spartan-aegis.v1");
   assert.equal(typeof adapter.createSpartanAegisPlugin, "function");
-  assert.equal(adapter.SPARTAN_AEGIS_TOOL_LOOP_LIMITS.maxTotalToolCalls, 75);
+  assert.equal(adapter.SPARTAN_AEGIS_TOOL_LOOP_LIMITS.maxTotalToolCalls, 150);
   assert.equal(adapter.SPARTAN_AEGIS_MAXIMUM_INPUT_MESSAGES, 30);
 });
 
@@ -470,8 +470,22 @@ test("dry pack contains only intended package assets", () => {
     "dist/providers/xai.js",
     "dist/providers/xai.d.ts",
     "scripts/adopt.mjs",
-    "templates/standard-react-node/server.ts",
-    "templates/standard-react-node/client.tsx",
+    "templates/standard-react-node/src/assistant/server.ts",
+    "templates/standard-react-node/src/assistant/client.tsx",
+    "templates/standard-react-node/src/assistant/host/identity.ts",
+    "templates/standard-react-node/src/assistant/host/database.ts",
+    "templates/standard-react-node/src/assistant/host/tools.ts",
+    "templates/standard-react-node/src/assistant/host/browser-auth.ts",
+    "templates/standard-react-node/src/server.ts",
+    "templates/standard-react-node/src/migrate.ts",
+    "templates/standard-react-node/src/doctor.ts",
+    "templates/standard-react-node/package.json",
+    "templates/standard-react-node/npmrc.template",
+    "templates/standard-react-node/gitignore.template",
+    "templates/standard-react-node/.env.example",
+    "templates/standard-react-node/tsconfig.json",
+    "templates/standard-react-node/tsconfig.server.json",
+    "templates/standard-react-node/index.html",
     "templates/standard-react-node/README.md",
   ]) {
     assert.ok(packedFiles.has(expected), `missing packed file ${expected}`);

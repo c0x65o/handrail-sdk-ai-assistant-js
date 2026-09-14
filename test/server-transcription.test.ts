@@ -255,3 +255,29 @@ it("preserves a compatibility text limit without replacing usage, and does no wo
   await expect(runTranscriptionAttempt({ signal: controller.signal, admit, transcribe, usage: recorder })).rejects.toThrow("caller left");
   expect(admit).not.toHaveBeenCalled(); expect(transcribe).not.toHaveBeenCalled(); expect(recorder).not.toHaveBeenCalled();
 });
+
+it("deletes retained dictated text, keeps usage evidence, and refuses a replay racing deletion", async () => {
+  const request = vi.fn<OpenAITranscriptionRequestFunction>(async () => ({ text: "Disposable dictated text",
+    usage: { type: "duration", seconds: 2 } }));
+  const f = await fixture(request);
+  expect((await createAssistantTranscription(f.options)(f.httpRequest(), f.context)).status).toBe(200);
+  const found = await f.bundle.catalog.get({ authorizationContext: f.context, conversationId: f.conversationId });
+  await f.bundle.catalog.permanentlyDelete({ authorizationContext: f.context, conversationId: f.conversationId,
+    expectedVersion: found.descriptor.version, idempotencyKey: "delete-transcription" as never });
+  const rows = await database.query<{ payload: Record<string, unknown> }>(`SELECT payload FROM handrail_ai_documents
+    WHERE tenant_id=$1 AND kind='provider_operation'`, [f.context.tenantId]);
+  expect(rows.rows).toHaveLength(1);
+  expect(rows.rows[0]!.payload).toMatchObject({ status: "purged", conversationId: f.conversationId });
+  expect(rows.rows[0]!.payload).not.toHaveProperty("result");
+  expect(JSON.stringify(rows.rows)).not.toContain("Disposable dictated text");
+  expect(await f.evidence.list()).toHaveLength(1);
+  expect(f.capture).toHaveBeenCalledOnce();
+  // Simulate an authorization lookup that finished before deletion committed.
+  const catalogRead = vi.spyOn(f.bundle.catalog, "get").mockResolvedValue(found);
+  try {
+    const replay = await createAssistantTranscription(f.options)(f.httpRequest(), f.context);
+    expect(replay.status).toBe(404);
+    expect(await replay.json()).toEqual({ ok: false, error: { code: "forbidden", message: "This conversation is unavailable." } });
+    expect(request).toHaveBeenCalledOnce();
+  } finally { catalogRead.mockRestore(); }
+});

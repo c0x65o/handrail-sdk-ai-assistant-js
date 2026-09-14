@@ -30,7 +30,14 @@ async function setup(options: Partial<HandrailOpenAIResponsesOptions> = {}, medi
   const provider = openaiResponses({ model: 'test-model', request: providerRequest, supportsToolSearch: false,
     document_input: { supported_mime_types: ['application/pdf', 'text/csv', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
       max_document_count: 2, max_document_bytes: 1_000, requires_host_resolution: true }, ...options });
-  const persistence = { continuation: new InMemoryOpenAIResponsesContinuationStore(), usageAdmissions: null, usageReceiptSink: null,
+  const continuations = new Map<string, InMemoryOpenAIResponsesContinuationStore>();
+  const continuation = Object.assign(new InMemoryOpenAIResponsesContinuationStore(), {
+    forConversation(conversationId: string) {
+      if (!continuations.has(conversationId)) continuations.set(conversationId, new InMemoryOpenAIResponsesContinuationStore());
+      return continuations.get(conversationId)!;
+    },
+  });
+  const persistence = { continuation, usageAdmissions: null, usageReceiptSink: null,
     attachments: { resolve } } as unknown as PostgresAssistantPersistenceBundle<HandrailAssistantAuthorizationContext>;
   const input = { context, persistence, instructions: [], tools: { definitions: [], execute: vi.fn(), awaitApproval: vi.fn() },
     limits: { maxIterations: 4, maxTotalToolCalls: 4, maxElapsedMs, parallelism: 1 },

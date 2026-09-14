@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { ConversationCatalogError, type ConversationCatalog } from "../conversation/catalog.js";
 import { PostgresProviderOperationStore, PostgresProviderOperationConflictError, PostgresProviderOperationUncertainError,
-  PostgresOpenAIAudioUsageEvidenceStore, type PostgresAssistantPersistenceBundle } from "../postgres/index.js";
+  PostgresProviderOperationDeletedError, PostgresConversationDeletedError, PostgresOpenAIAudioUsageEvidenceStore, type PostgresAssistantPersistenceBundle } from "../postgres/index.js";
 import { parseNormalizedUsageReceipt, projectProviderUsageToReceipt, type ProviderUsageReceiptContext, type NormalizedUsageReceipt } from "../usage.js";
 import type { ProviderUsage } from "../providers/index.js";
 import type { OpenAIReportedAudioUsage } from "../providers/openai-audio-usage.js";
@@ -149,6 +149,9 @@ export function createTranscriptionHttpHandler<TContext>(options: {
     } catch (error) {
       emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "transcription", phase: "failed",
         code: "transcription_failed", cause: error });
+      if (error instanceof PostgresProviderOperationDeletedError || error instanceof PostgresConversationDeletedError) {
+        return response(404, { ok: false, error: { code: "forbidden", message: "This conversation is unavailable." } });
+      }
       if (error instanceof ConversationCatalogError) return response(error.code === "not_found" ? 404 : 403,
         { ok: false, error: { code: "forbidden", message: "This conversation is unavailable." } });
       const code = request.signal.aborted ? "cancelled" : deadline.signal.aborted ? "deadline_exceeded"
@@ -316,7 +319,7 @@ export function createAssistantTranscription<TContext extends HandrailAssistantA
       const operationId = "transcription-" + hash(JSON.stringify([options.assistantId, context.tenantId, context.scopeId,
         context.principalId, input.conversationId, input.idempotencyKey]));
       const provider = options.provider;
-      const operations = new PostgresProviderOperationStore(bundle.persistence, context.tenantId, context.scopeId);
+      const operations = new PostgresProviderOperationStore(bundle.persistence, context.tenantId, context.scopeId).forConversation(input.conversationId);
       return runRetainedTranscription({ operations, operationId,
         requestFingerprint: hash(JSON.stringify([input.mediaType, hash(input.bytes), provider.providerId, provider.modelId])),
         signal: input.signal,

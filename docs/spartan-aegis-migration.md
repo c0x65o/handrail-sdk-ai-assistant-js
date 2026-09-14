@@ -1,3 +1,5 @@
+> Historical qualification record. The September 13 owner decision discards old chats. Current Spartan code uses the shared workspace and SDK stores, with no history importer, legacy UI fallback, or old chat schema models. See the host `docs/aegis-handrail-ai-integration.md` and the disposable-history path in `docs/adoption-standard.md`; the earlier requirements below do not apply to that cutover.
+
 # Spartan Aegis 0.2 migration and qualification record
 
 Spartan consumes the same supported integration as Mills: the high-level

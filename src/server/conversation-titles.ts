@@ -114,7 +114,7 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
         // Keep completed results across catalog-write failures and process restarts.
         // An uncertain external dispatch is never repeated under the same identity.
         const generated = options.provider.generateTitle
-          ? await new PostgresProviderOperationStore(bundle.persistence, context.tenantId, context.scopeId).run({
+          ? await new PostgresProviderOperationStore(bundle.persistence, context.tenantId, context.scopeId).forConversation(conversationId).run({
             operationId, requestFingerprint: hash(JSON.stringify(titleContext)), execute: invoke,
             parseResult: (value) => parseConversationCatalogTitle(value, "rename"),
           }) : await invoke();

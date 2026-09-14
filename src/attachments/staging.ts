@@ -102,7 +102,14 @@ export function createAttachmentStagingService(options: AttachmentStagingOptions
         }
         emitAiDiagnostic(options.diagnostics, { domain: "attachment", operation: "stage", phase: "succeeded", conversationId });
         return reference(record);
-      } catch (error) { if (error instanceof AttachmentStagingError) throw error;
+      } catch (error) {
+        // A committed deletion fence is definitive refusal of metadata admission,
+        // not an uncertain write. Remove only this upload's freshly allocated blob.
+        if (error && typeof error === "object" && "code" in error && error.code === "conversation_deleted") {
+          await options.blobs.delete(blobKey);
+          throw new AttachmentStagingError("not_found");
+        }
+        if (error instanceof AttachmentStagingError) throw error;
         emitAiDiagnostic(options.diagnostics, { domain: "attachment", operation: "stage", phase: "failed",
           conversationId, code: "unavailable", retryable: true }); throw new AttachmentStagingError("unavailable"); }
     },

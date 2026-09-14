@@ -127,10 +127,18 @@ describe("assistant host catalog negotiation", () => {
     } finally { await reader.dispose(); await editor.dispose(); f.assistant.stopUsageWorker(); }
   });
 
-  it("preserves supported default Postgres catalog negotiation", async () => {
+  it("negotiates default Postgres actions without promising an unconfigured clear", async () => {
     const f = await fixture(false);
     const client = await f.client("editor");
-    try { expect(client.catalog.capabilities).toEqual(supported); }
+    try {
+      const expected = { ...supported, clear: { supported: false, reason: "not_implemented" } };
+      expect(client.capabilities.resources?.conversations).toEqual(expected);
+      expect(client.catalog.capabilities).toEqual(expected);
+      const buttons = renderToString(<Actions catalog={client.catalog} descriptor={f.descriptor} />).match(/<button\b[^>]*>/gu)!;
+      expect(buttons).toHaveLength(4);
+      expect(buttons[0]).toContain('disabled=""');
+      for (const button of buttons.slice(1)) expect(button).not.toContain('disabled=""');
+    }
     finally { await client.dispose(); f.assistant.stopUsageWorker(); }
   });
 });

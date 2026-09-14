@@ -111,8 +111,9 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
       return title.trim().replace(/^["'“‘]+|["'”’]+$/gu, "").replace(/\s+/gu, " ").slice(0, 80);
     },
     createTransport(input: Parameters<HandrailAssistantProvider<TContext>["createTransport"]>[0]) {
-      const createAdapter = (network: OpenAIResponsesProviderOptions["request"]) => createOpenAIResponsesProviderAdapter({
-        ...adapterOptions, request: network, continuationStore: input.persistence.continuation,
+      const createAdapter = (network: OpenAIResponsesProviderOptions["request"], conversationId?: string) => createOpenAIResponsesProviderAdapter({
+        ...adapterOptions, request: network, continuationStore: conversationId === undefined
+          ? input.persistence.continuation : input.persistence.continuation.forConversation(conversationId),
         ...(input.instructions.length === 0 ? {} : { instructions: input.instructions.join("\n\n") }),
       });
       const adapter = createAdapter(request);
@@ -120,14 +121,14 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
         adapter,
         invokeProvider: ({ invocation, ...execution }) => {
           // The lower-level transport also supports ephemeral callers. The authenticated assistant always supplies a durable claim.
-          if (!execution.durableExecution) return adapter.invoke(invocation);
+          if (!execution.durableExecution) return createAdapter(request, execution.conversationId).invoke(invocation);
           const network = createTrackedOpenAIResponsesRequest({ request,
             context: { ...execution, tenantId: input.context.tenantId, scopeId: input.context.scopeId, attribution: input.context.attribution },
             retryPolicy: createRetryPolicy({ maximumAttempts: 2, maximumElapsedMs: input.limits.maxElapsedMs, ...retry }),
             ...(input.persistence.usageReceiptSink ? { capture: input.persistence.usageReceiptSink.capture } : {}),
             ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}) });
           const store = new PostgresProviderOperationStore(input.persistence.persistence, input.context.tenantId,
-            `handrail-openai-provider:${input.context.scopeId}`);
+            `handrail-openai-provider:${input.context.scopeId}`).forConversation(execution.conversationId);
           const toolChoice = typeof options.toolChoice === "function" ? options.toolChoice(invocation) : options.toolChoice;
           return retainProviderInvocation({ store: { run: operation => store.run({ ...operation,
             // A recovery without an initial receipt may predate this adapter. Never redispatch it blindly.
@@ -142,7 +143,7 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
               maximumInputMessages: options.maximumInputMessages, documentInput: options.document_input,
               reasoningEffort: options.reasoningEffort, includeReasoningEncryptedContent: options.includeReasoningEncryptedContent }),
             invocation, invoke: () => createOpenAIResponsesProviderAdapter({ ...adapterOptions, request: network,
-              continuationStore: input.persistence.continuation,
+              continuationStore: input.persistence.continuation.forConversation(execution.conversationId),
               ...(input.instructions.length ? { instructions: input.instructions.join("\n\n") } : {}),
               ...(toolChoice ? { toolChoice } : {}) }).invoke(invocation) });
         },

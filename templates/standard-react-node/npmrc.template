@@ -1,0 +1,2 @@
+# The SDK is a declared root Git dependency pinned to a public HTTPS commit.
+allow-git=root

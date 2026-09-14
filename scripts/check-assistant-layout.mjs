@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { chromium } from "playwright";
-import { createInitialConversationState } from "../dist/index.js";
+import { createInitialConversationState, parseConversationEvent, reduceConversationEvent } from "../dist/index.js";
 import { ConversationHistoryPanel, StyledChatPreset, StyledChatPresetStyles } from "../dist/react-styled/index.js";
 
 // Synthetic component geometry only. This does not contact an app or a provider.
@@ -29,6 +29,19 @@ const markup = renderToStaticMarkup(h("div", { className: "hr-chat-workspace", "
     transcription: { transcribe: async () => "unused" }, composerActions: h("small", null, "0 / 2,000 characters"),
     emptyState: "Ask about company resources.", theme: { colors: { accent: "#bd451d" } },
   })));
+const state = reduceConversationEvent(createInitialConversationState("conversation-0"), parseConversationEvent({
+  version: 1, event_id: "compact-message", conversation_id: "conversation-0", revision: 1,
+  occurred_at: "2026-09-13T00:00:00.000Z", actor: { type: "assistant" }, source: { type: "import" },
+  payload: { type: "message.created", message_id: "compact-message", role: "assistant",
+    content: [{ type: "text", text: "Here are the saved details. The shared assistant keeps messages readable while leaving room for the composer." }] },
+}));
+const compact = renderToStaticMarkup(h(StyledChatPreset, { state, composer,
+  title: "A long conversation title that must leave room for the Threads menu",
+  layout: "page", theme: { fontFamily: "inherit" },
+  conversationPicker: h("details", { className: "hr-history", "data-presentation": "compact" },
+    h("summary", null, "Threads"), h("div", { className: "hr-history__panel" },
+      h(ConversationHistoryPanel, { controller: history, includeStyles: false }))),
+}));
 const browser = await chromium.launch({ headless: true,
   ...(process.env.HANDRAIL_TEST_CHROMIUM ? { executablePath: process.env.HANDRAIL_TEST_CHROMIUM } : {}) });
 try {
@@ -55,5 +68,37 @@ try {
     assert.equal(await page.getByText("0 / 2,000 characters").count(), 1);
     if (screenshots) await page.screenshot({ path: `${screenshots}/assistant-${width}.png` });
     console.log(`Assistant layout ${width}px: contained history, composer and microphone/counter verified`);
+  }
+  // A wide host viewport must not force a sidebar or viewport-sized controls into
+  // a narrow embedded panel. "inherit" must preserve family without dropping size.
+  for (const [width, height, touch] of [[300, 520, true], [390, 700, true], [560, 600, false], [760, 640, false], [980, 800, false]]) {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, hasTouch: touch });
+    const embedded = await context.newPage();
+    await embedded.setContent(`<style>html,body{margin:0;font:22px Georgia,serif}*{box-sizing:border-box}.host{margin:16px;width:${width}px;height:${height}px}</style>${renderToStaticMarkup(h(StyledChatPresetStyles))}<div class="host">${compact}</div>`);
+    const geometry = await embedded.evaluate(() => {
+      const node = (selector) => globalThis.document.querySelector(selector);
+      const box = (selector) => { const r = node(selector).getBoundingClientRect(); return { x: r.x, right: r.right, bottom: r.bottom, width: r.width }; };
+      return { host: box(".host"), chat: box(".hr-chat"), composer: box(".hr-composer"), send: box(".hr-composer__send"),
+        chatSize: globalThis.getComputedStyle(node(".hr-chat")).fontSize, family: globalThis.getComputedStyle(node(".hr-chat")).fontFamily,
+        historyFamily: globalThis.getComputedStyle(node(".hr-history")).fontFamily, composerFamily: globalThis.getComputedStyle(node(".hr-composer")).fontFamily, historySize: globalThis.getComputedStyle(node(".hr-history")).fontSize, draftSize: globalThis.getComputedStyle(node("textarea")).fontSize,
+        sendHeight: node(".hr-composer__send").getBoundingClientRect().height };
+    });
+    assert.equal(geometry.chatSize, "13px", JSON.stringify(geometry));
+    assert.equal(geometry.historySize, "12px", JSON.stringify(geometry));
+    assert.match(geometry.family, /Georgia/u);
+    assert.match(geometry.historyFamily, /Georgia/u);
+    assert.match(geometry.composerFamily, /Georgia/u);
+    assert.equal(geometry.draftSize, touch ? "16px" : "14px");
+    if (touch) assert.ok(geometry.sendHeight >= 44);
+    assert.ok(geometry.chat.width <= width && geometry.composer.bottom <= geometry.host.bottom && geometry.send.right <= geometry.host.right, JSON.stringify(geometry));
+    assert.equal(await embedded.getByRole("button", { name: "New", exact: true }).isVisible(), false);
+    await embedded.getByText("Threads", { exact: true }).click();
+    const menu = await embedded.locator(".hr-history__panel").boundingBox();
+    assert.ok(menu.x >= geometry.host.x && menu.x + menu.width <= geometry.host.right && menu.y + menu.height <= geometry.host.bottom, JSON.stringify({ menu, geometry }));
+    assert.ok(await embedded.getByRole("button", { name: "New", exact: true }).isVisible());
+    assert.ok(await embedded.getByRole("button", { name: "Archived", exact: true }).isVisible());
+    if (screenshots) await embedded.screenshot({ path: `${screenshots}/compact-${width}.png` });
+    await context.close();
+    console.log(`Compact embedded layout ${width}px: inherited family, compact fonts, contained menu and touch controls verified`);
   }
 } finally { await browser.close(); }

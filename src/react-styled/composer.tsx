@@ -122,14 +122,14 @@ export function BrowserDictationControl({ composer }: { readonly composer: Conve
 }
 
 export const HANDRAIL_CHAT_COMPOSER_CSS = `
-.hr-composer{padding:8px;min-width:0;color:var(--hr-text,#202124);background:var(--hr-bg,#fff)}
+.hr-composer{padding:6px 12px;min-width:0;font-family:var(--hr-font,inherit);font-size:13px;font-weight:400;line-height:1.45;color:var(--hr-text,#202124);background:var(--hr-bg,#fff)}
 .hr-composer .hr-composer[data-dragging] .hr-composer__form{outline:2px dashed var(--hr-accent,currentColor);outline-offset:-3px}
-.hr-composer__form{position:relative;display:flex;flex-direction:column;gap:4px;border:1px solid var(--hr-border,#e9e9e9);border-radius:18px;padding:10px;background:var(--hr-bg,#fff);box-shadow:0 4px 18px #00000006}
-.hr-composer .hr-composer__draft{box-sizing:border-box;display:block;inline-size:100%;min-inline-size:0;min-block-size:26px;max-block-size:120px;resize:none;border:0;border-radius:0;outline:none;background:transparent;color:inherit;font:inherit;font-size:15px;line-height:1.4;padding:2px 2px;margin:0}
+.hr-composer__form{position:relative;display:flex;flex-direction:column;gap:4px;border:1px solid var(--hr-border,#e9e9e9);border-radius:12px;padding:8px;background:var(--hr-bg,#fff);box-shadow:0 4px 18px #00000006}
+.hr-composer .hr-composer__draft{box-sizing:border-box;display:block;inline-size:100%;min-inline-size:0;min-block-size:26px;max-block-size:120px;resize:none;border:0;border-radius:0;outline:none;background:transparent;color:inherit;font:inherit;font-size:14px;line-height:1.4;padding:2px 2px;margin:0}
 .hr-composer .hr-composer__draft:focus-visible{outline:none}.hr-composer .hr-composer__form:focus-within{border-color:var(--hr-muted,#999)}
-.hr-composer__toolbar{display:flex;align-items:center;gap:4px;min-width:0}.hr-composer__spacer{flex:1}.hr-composer__voice{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;min-width:0}
+.hr-composer__toolbar{display:flex;align-items:center;gap:4px;min-width:0}.hr-composer__spacer{flex:1}.hr-composer__voice{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-wrap:wrap;min-width:0}
 .hr-composer button.hr-composer__icon,.hr-composer .hr-composer__voice>button{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:32px;height:32px;min-height:32px;border:0;border-radius:50%;padding:7px;background:transparent;color:inherit;font:inherit;cursor:pointer}
-.hr-composer .hr-composer__voice>button:not(:has(svg)){width:auto;border-radius:12px;font-size:13px}
+.hr-composer .hr-composer__voice>button:not(:has(svg)){width:auto;border-radius:8px;font-size:12px}
 .hr-composer button.hr-composer__send{width:34px;height:34px;color:#fff;background:var(--hr-composer-send,#55b653)}
 .hr-composer button:disabled{opacity:.45;cursor:not-allowed}.hr-composer button:focus-visible,.hr-composer input:focus-visible{outline:3px solid var(--hr-accent,#55b653);outline-offset:2px}
 .hr-composer button.hr-composer__shield{color:var(--hr-muted,#999)}.hr-composer button.hr-composer__shield[data-mode=automatic]{color:var(--hr-text,#202124);background:var(--hr-panel,#f1f3f2)}
@@ -138,8 +138,8 @@ export const HANDRAIL_CHAT_COMPOSER_CSS = `
 .hr-composer__attachments{display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:0;list-style:none}.hr-composer__attachments:empty,.hr-composer__errors:empty{display:none}.hr-composer__attachments li{max-width:100%;overflow-wrap:anywhere}.hr-composer__errors{margin:0;padding-left:20px;color:var(--hr-danger,#b42318);font-size:13px}.hr-composer__notice{font-size:12px;max-width:220px}
 .hr-composer .hr-composer__toolbar svg{width:18px;height:18px}
 .hr-composer__action{border:1px solid var(--hr-border,#e9e9e9);border-radius:8px;padding:6px 10px;background:var(--hr-bg,#fff);color:inherit;font:inherit;white-space:normal}
-@media(pointer:coarse){.hr-composer button.hr-composer__icon,.hr-composer .hr-composer__voice>button{width:40px;height:40px;min-height:40px}}
-@media(max-width:520px){.hr-composer{padding:8px}.hr-composer .hr-composer__form{padding:8px;border-radius:16px}.hr-composer__toolbar{gap:4px}}
+@media(pointer:coarse){.hr-composer button.hr-composer__icon,.hr-composer .hr-composer__voice>button{min-width:44px;min-height:44px;width:44px;height:44px}.hr-composer .hr-composer__voice>button:not(:has(svg)){width:auto}.hr-composer .hr-composer__draft{font-size:16px}}
+
 `;
 
 export interface StandardChatComposerProps extends ComposerApprovalControlProps {

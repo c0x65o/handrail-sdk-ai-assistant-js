@@ -40,7 +40,7 @@ describe("supported Spartan Aegis adapter", () => {
       expect.objectContaining({ toolName: "get_invoices", rendererKey: "spartan.get_invoices" }),
       expect.objectContaining({ toolName: "create_invoice", rendererKey: "spartan.create_invoice" }),
     ]));
-    expect(SPARTAN_AEGIS_TOOL_LOOP_LIMITS.maxTotalToolCalls).toBe(75);
+    expect(SPARTAN_AEGIS_TOOL_LOOP_LIMITS.maxTotalToolCalls).toBe(150);
     expect(SPARTAN_AEGIS_MAXIMUM_INPUT_MESSAGES).toBe(30);
   });
 

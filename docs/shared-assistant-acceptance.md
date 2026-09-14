@@ -1,5 +1,11 @@
 # Shared assistant local acceptance
 
+> Historical consolidation qualification. The later disposable-history decision
+> removed Mills' legacy recovery guard and adapters from current source. Retained
+> history requirements below no longer describe the current cleanup objective.
+> See [current cleanup progress](assistant-cleanup-goal-progress.md) and
+> [deletion/retention](conversation-deletion.md) for the remaining work.
+
 Goal `6f19391a-7545-4926-85bb-13761e8a404c`, reviewed September 13, 2026.
 Scope: AI Chatbot group — Handrail AI Assistant SDK, Spartan Cyber ERP,
 Hitcents ERP/Cents and Mills Family Office, including their registered mobile

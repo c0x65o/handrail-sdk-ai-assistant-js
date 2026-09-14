@@ -37,16 +37,30 @@ rename and then run the adoption gate:
 ```sh
 node scripts/adopt.mjs migrate-package /path/to/host
 node scripts/adopt.mjs migrate-package /path/to/host --write
-npm install --package-lock-only
+npm install --include=dev
 node /path/to/sdk/scripts/adopt.mjs check /path/to/host
 ```
 
 The migration command does not invent an SDK source, change a lockfile, or
 convert application architecture. Review its JSON plan before `--write`.
-For a new integration, `handrail-ai-assistant scaffold <empty-directory>`
-copies the standard React + Node composition templates without overwriting any
-existing file. Implement the marked host seams and move the reviewed files into
-the application source tree.
+For a new integration, `handrail-ai-assistant scaffold <empty-directory>` creates
+a compilable React/Express project with dependency/build configuration, an
+explicit SDK migration command, server diagnostics, the standard launcher and
+fail-closed authentication seams. It resolves public Git HEAD once to a full SHA;
+`--sdk-revision <full-sha>` honors a frozen revision. It never overwrites a
+nonempty directory, installs dependencies or writes a database. Existing hosts
+can integrate the generated `src/assistant` with their own framework and driver.
+
+Use the scaffold's declared Node/npm toolchain. It selects npm 12.0.2 or newer
+to preserve GitHub HTTPS resolution in both manifest and lockfile, declares the
+root Git dependency allowance and permits the SDK's normal build hook. Run
+`npm install --include=dev`, `npm run check`, and an actual `npm ci --include=dev`;
+retain the matching lock. The adoption checker verifies the resolved Git SHA,
+dependency-group consistency and absence of duplicate/legacy/linked SDK lock
+nodes. Its output is explicitly **static-source-and-lockfile-only**, not runtime
+conformance. [Scaffold qualification](./scaffold-qualification.md) separates
+installation/build evidence from the pending published history fix and live
+host/provider/audio qualification.
 
 ## One supported architecture
 
@@ -81,6 +95,10 @@ and `stopUsageWorker()` during graceful shutdown.
 Applications using `pg.Pool` call `postgres(pool)`. Applications that already
 own a conforming transactional `PostgresSqlClient` call
 `postgresFromClient(client)`; they must not copy the SDK store bundle.
+The local PostgreSQL candidate casts serialized JSON parameters through text
+before `jsonb`, so postgres.js does not encode them a second time. Adapters must
+return decoded JSON values. Existing double-encoded rows are a separate approved
+cutover concern; this parameter fix does not rewrite stored data.
 
 The host remains authoritative for:
 
@@ -94,9 +112,10 @@ The host remains authoritative for:
 
 Do not maintain a second generic gateway, synchronization implementation,
 usage receipt queue, cancellation protocol, or browser conversation runtime in
-a host. A legacy adapter may dual-write during a bounded migration window, but
-it stays outside the reusable server boundary and is removed after parity and
-rollback gates pass.
+a host. Mills, Spartan/Aegis and Hitcents/Cents do not require old-chat imports or
+dual-writing; their disposable-history cutover must remove that compatibility
+work. Retain domain authorization and business integrations until their supported
+replacements preserve those behaviors.
 
 `conversationCatalogFor` and `approvalStoreFor` are migration seams for a host
 whose existing catalog or confirmation authority must remain canonical (as in
@@ -105,6 +124,17 @@ generic store. Document the retained authority, test it through the high-level
 gateway, and remove the seam only when the domain data itself is deliberately
 migrated. The default for a new project is the SDK Postgres catalog and approval
 store.
+
+When business foreign keys require the ownership table to remain, use the local
+[PostgreSQL catalog mapping candidate](postgres-catalog-mapping.md). The SDK can
+own catalog lifecycle and deletion while the host supplies ownership columns,
+title redaction and transactional audit. This requires its eventual public
+committed SDK revision; it does not update an existing consumer pin.
+Mills' local source now uses that mapping through the standard gateway and
+queues exclusive external-file deletion in the shared transaction. The SDK
+supplies the durable cleanup worker; Mills supplies canonical tenant/bucket/key
+validation and storage access. See [deletion/retention](conversation-deletion.md)
+for immutable-key retries, active upload protection and cutover limits.
 
 ## Standard UI offering
 
@@ -136,7 +166,8 @@ Every standard host supplies only:
 Automatic title generation and persistence belong to `createHandrailAssistant`.
 `openaiResponses` supplies the title provider by default; a custom provider
 supplies only `generateTitle`. The server starts generation after canonical
-completion and repairs eligible imported history when its catalog is read.
+completion and recovers eligible untitled SDK conversations when their catalog
+is read. This does not import or reconcile a host's retired transcript tables.
 It uses optimistic catalog writes, durable dispatch claims, and separate usage
 receipts. Title failures never fail the conversational answer.
 
@@ -212,7 +243,33 @@ selection and package pin; it does not delete forward-compatible data. During
 dual-write, compare canonical messages, citations, proposals, terminal state,
 and usage receipts without repairing divergence by overwriting either source.
 
-Migration order for an existing assistant:
+### Replacement when old conversations are disposable
+
+If the owner explicitly discards old chats, use the SDK gateway and stores
+directly. Do not add history-import readers, import-receipt startup gates,
+dual-write, legacy routes, or legacy UI fallbacks. Apply the SDK schema through
+the host's normal migration boundary and test against a database with only SDK
+chat tables. New conversation history, approval and usage safety still apply.
+
+Remove old runtime code and models from web/server and inspect registered mobile
+clients for old routes. Shut down the old runtime before physical data cleanup.
+Existing production data/schema deletion uses the platform's explicit database
+write approval; discarding old chats does not authorize release or bypass that
+access control. Retain business/audit records and pending usage settlement that
+are independent of the discarded transcript. Do not turn cleanup into a startup
+side effect. Old applied migration files remain the historical ledger.
+
+Mills Family Office, Spartan Aegis and Hitcents Cents use this replacement
+decision as of September 13, 2026, including their registered mobile consumers.
+`HandrailAssistantWorkspace` is a standard UI path accepted by the adoption
+checker, alongside the endpoint-driven launcher. See
+[conversation deletion and retention](conversation-deletion.md) for the local
+SDK deletion contract and its remaining adoption/cutover requirements. Source
+removal does not remove imported SDK histories or chat-only files in production.
+
+### Replacement when old conversations must be retained
+
+Migration order for an existing assistant whose old chats must be preserved:
 
 1. inventory host-owned identity, tools, approvals, provider behavior, data,
    attachments, and UI requirements;

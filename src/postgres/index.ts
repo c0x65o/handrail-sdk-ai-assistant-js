@@ -1,3 +1,9 @@
+import { assertPostgresConversationWritable, postgresDocumentConversation, deletePostgresConversationHistory,
+  deletePostgresConversationAttachments, lockPostgresAttachmentBlob } from "./conversation-deletion.js";
+import { PostgresConversationCatalogTable, PostgresCatalogIdentityError, type PostgresCatalogRow, type PostgresConversationCatalogTableOptions } from "./catalog-table.js";
+export type { PostgresConversationCatalogTableOptions } from "./catalog-table.js";
+export { enqueuePostgresConversationFileCleanup, drainPostgresConversationFileCleanup,
+  startPostgresConversationFileCleanupWorker, type PostgresConversationFileCleanupOptions } from "./conversation-file-cleanup.js";
 import { createHash } from "node:crypto";
 import { parseConversationEvent, type ConversationEvent, type ConversationId, type ConversationRevision } from "../conversation/events.js";
 import {
@@ -36,10 +42,10 @@ import {
   ConversationCatalogError, createConversationCatalogCursor,
   parseArchiveConversationInput, parseClearConversationInput, parseCreateConversationInput,
   parseGetConversationInput, parseListConversationsInput, parsePermanentlyDeleteConversationInput,
-  parseRenameConversationInput, parseRestoreConversationInput, parseConversationCatalogDescriptor,
+  parseRenameConversationInput, parseRestoreConversationInput, parseConversationCatalogDescriptor, parseConversationCatalogTitle,
   type ActiveConversationCatalogDescriptor, type ArchiveConversationResult,
   type ClearConversationResult,
-  type ConversationCatalog, type ConversationCatalogAuthorizer, type ConversationCatalogDescriptor,
+  type ConversationCatalog, type ConversationCatalogAuthorizer, type ConversationCatalogDescriptor, type ConversationCatalogCapabilities,
   type ConversationCatalogVersion, type CreateConversationResult, type GetConversationResult,
   type ListConversationsResult, type PermanentlyDeleteConversationResult,
   type RenameConversationResult, type RestoreConversationResult,
@@ -83,6 +89,8 @@ import {
 
 export * from "./live-pubsub.js";
 export * from "./tool-incidents.js";
+export { PostgresConversationDeletedError, PostgresConversationDeletionBlockedError,
+  deletePostgresConversationHistory, type DeletePostgresConversationHistoryInput } from "./conversation-deletion.js";
 
 export const POSTGRES_PERSISTENCE_SCHEMA_VERSION = 1 as const;
 
@@ -92,6 +100,9 @@ export interface PostgresQueryResult<TRow extends Record<string, unknown> = Reco
 }
 
 /** Compatible with pg and other drivers through a tiny application-owned wrapper. */
+/** SQL parameters carrying JSON are serialized strings cast through text to jsonb.
+ * This keeps both node-postgres and postgres.js from encoding payloads twice.
+ * The adapter must return PostgreSQL JSON columns as decoded JavaScript values. */
 export interface PostgresSqlClient {
   query<TRow extends Record<string, unknown> = Record<string, unknown>>(text: string, values?: readonly unknown[]): Promise<PostgresQueryResult<TRow>>;
   transaction<T>(operation: (client: PostgresSqlClient) => Promise<T>): Promise<T>;
@@ -199,6 +210,7 @@ export const handrailPostgresSchemaV1 = Object.freeze([
   `CREATE UNIQUE INDEX IF NOT EXISTS handrail_ai_events_mutation ON handrail_ai_events (tenant_id, mutation_id) WHERE mutation_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS handrail_ai_documents (tenant_id text NOT NULL, kind text NOT NULL, scope_id text NOT NULL, record_id text NOT NULL, version bigint NOT NULL, payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, kind, scope_id, record_id))`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_documents_scope ON handrail_ai_documents (tenant_id, kind, scope_id, updated_at DESC, record_id)`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_conversation_file_cleanup_pending ON handrail_ai_documents (scope_id, updated_at, tenant_id, record_id) WHERE kind='conversation_file_cleanup' AND payload->>'status'='pending'`,
   `CREATE TABLE IF NOT EXISTS handrail_ai_tool_ledger (tenant_id text NOT NULL, tool_call_id text NOT NULL, status text NOT NULL CHECK (status IN ('completed')), result jsonb NOT NULL, completed_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, tool_call_id))`,
   `CREATE TABLE IF NOT EXISTS handrail_ai_idempotency (tenant_id text NOT NULL, domain text NOT NULL, scope_id text NOT NULL, idempotency_key text NOT NULL, fingerprint text NOT NULL, result jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, domain, scope_id, idempotency_key))`,
   `CREATE TABLE IF NOT EXISTS handrail_ai_conversations (tenant_id text NOT NULL, scope_id text NOT NULL, conversation_id text NOT NULL, lifecycle text NOT NULL CHECK (lifecycle IN ('active','archived')), title text, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL, archived_at timestamptz, version bigint NOT NULL, metadata jsonb NOT NULL, PRIMARY KEY (tenant_id, scope_id, conversation_id))`,
@@ -209,7 +221,7 @@ export const handrailPostgresSchemaV1 = Object.freeze([
   `CREATE INDEX IF NOT EXISTS handrail_ai_attachment_blobs_expiry ON handrail_ai_attachment_blobs (tenant_id, expires_at)`,
 ] as const);
 
-export type PostgresDocumentKind = "checkpoint" | "catalog" | "approval" | "turn_state" | "durable_turn" | "activity" | "sync_state" | "openai_continuation" | "attachment" | "usage_outbox" | "audio_usage_evidence" | "tool_execution" | "provider_operation" | "realtime_call" | "realtime_tool_activity" | "realtime_activity_read";
+export type PostgresDocumentKind = "catalog_identity" | "conversation_deleted" | "checkpoint" | "catalog" | "approval" | "turn_state" | "durable_turn" | "activity" | "sync_state" | "openai_continuation" | "attachment" | "usage_outbox" | "audio_usage_evidence" | "tool_execution" | "provider_operation" | "realtime_call" | "realtime_tool_activity" | "realtime_activity_read";
 export * from "./realtime-calls.js";
 export * from "./realtime-tool-activity.js";
 
@@ -273,14 +285,14 @@ export class PostgresAiPersistence {
     const tenant = id(input.tenantId, "tenantId"), conversation = id(input.conversationId, "conversationId");
     const expected = version(input.expectedRevision, "expectedRevision");
     return this.client.transaction(async (tx) => {
-      await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [advisoryLockKey(tenant, conversation)]);
+      await assertPostgresConversationWritable(tx, tenant, conversation);
       const latest = await tx.query<{ revision: string }>("SELECT revision::text AS revision FROM handrail_ai_events WHERE tenant_id=$1 AND conversation_id=$2 ORDER BY handrail_ai_events.revision DESC LIMIT 1", [tenant, conversation]);
       const actual = latest.rows[0] ? Number(latest.rows[0].revision) : null;
       if (actual !== expected) throw new PostgresPersistenceConflictError();
       let next = (expected ?? 0) + 1;
       for (const event of input.events) {
         if (event.revision !== next++) throw new TypeError("event revisions must be contiguous");
-        await tx.query("INSERT INTO handrail_ai_events (tenant_id,conversation_id,revision,event_id,payload) VALUES ($1,$2,$3,$4,$5::jsonb)", [tenant, conversation, event.revision, id(event.event_id, "event_id"), JSON.stringify(event)]);
+        await tx.query("INSERT INTO handrail_ai_events (tenant_id,conversation_id,revision,event_id,payload) VALUES ($1,$2,$3,$4,$5::text::jsonb)", [tenant, conversation, event.revision, id(event.event_id, "event_id"), JSON.stringify(event)]);
       }
       return Object.freeze(input.events.map(jsonClone));
     });
@@ -342,12 +354,21 @@ export class PostgresAiPersistence {
     const tenant = id(input.tenantId, "tenantId"), scope = id(input.scopeId, "scopeId"), record = id(input.recordId, "recordId");
     const expected = version(input.expectedVersion, "expectedVersion");
     return this.client.transaction(async (tx) => {
+      const conversationId = postgresDocumentConversation(input.kind, scope, record, input.value);
+      if (conversationId) await assertPostgresConversationWritable(tx, tenant, conversationId);
+      if (input.kind === "attachment" && input.value && typeof input.value === "object" &&
+        "blobKey" in input.value && typeof input.value.blobKey === "string") {
+        await lockPostgresAttachmentBlob(tx, tenant, input.value.blobKey);
+        const blob = await tx.query("SELECT 1 FROM handrail_ai_attachment_blobs WHERE tenant_id=$1 AND blob_key=$2",
+          [tenant, input.value.blobKey]);
+        if (!blob.rows.length) throw new PostgresPersistenceConflictError();
+      }
       await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [advisoryLockKey(tenant, input.kind, scope, record)]);
       const current = await tx.query<{ version: string }>("SELECT version::text AS version FROM handrail_ai_documents WHERE tenant_id=$1 AND kind=$2 AND scope_id=$3 AND record_id=$4", [tenant, input.kind, scope, record]);
       const actual = current.rows[0] ? Number(current.rows[0].version) : null;
       if (actual !== expected) throw new PostgresPersistenceConflictError();
       const next = (actual ?? 0) + 1;
-      await tx.query("INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (tenant_id,kind,scope_id,record_id) DO UPDATE SET version=EXCLUDED.version,payload=EXCLUDED.payload,updated_at=now()", [tenant, input.kind, scope, record, next, JSON.stringify(input.value)]);
+      await tx.query("INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,$2,$3,$4,$5,$6::text::jsonb) ON CONFLICT (tenant_id,kind,scope_id,record_id) DO UPDATE SET version=EXCLUDED.version,payload=EXCLUDED.payload,updated_at=now()", [tenant, input.kind, scope, record, next, JSON.stringify(input.value)]);
       return Object.freeze({ tenantId: tenant, kind: input.kind, scopeId: scope, recordId: record, version: next, value: jsonClone(input.value) });
     });
   }
@@ -382,7 +403,7 @@ export class PostgresAiPersistence {
       if (existing.rows[0]) return { completed: true as const, result: jsonClone(existing.rows[0].result) };
       if (claim.rows.length > 0) throw new PostgresToolExecutionUncertainError();
       await tx.query(
-        "INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,'tool_execution','tool',$2,1,$3::jsonb)",
+        "INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,'tool_execution','tool',$2,1,$3::text::jsonb)",
         [tenant, call, JSON.stringify({ version: 1, status: "admitted", fingerprint })],
       );
       return { completed: false as const };
@@ -392,7 +413,7 @@ export class PostgresAiPersistence {
     // side effect must never erase the only durable evidence that it was started.
     const result = await execute();
     await this.client.transaction(async (tx) => {
-      await tx.query("INSERT INTO handrail_ai_tool_ledger (tenant_id,tool_call_id,status,result) VALUES ($1,$2,'completed',$3::jsonb)",
+      await tx.query("INSERT INTO handrail_ai_tool_ledger (tenant_id,tool_call_id,status,result) VALUES ($1,$2,'completed',$3::text::jsonb)",
         [tenant, call, JSON.stringify(result)]);
     });
     return jsonClone(result);
@@ -414,7 +435,7 @@ export class PostgresAiPersistence {
     const calls = [...new Set(toolCallIds.map((call) => id(call, "toolCallId")))];
     if (calls.length === 0) return Object.freeze([]);
     const rows = await this.client.query<{ tool_call_id: string; result: T }>(
-      "SELECT tool_call_id,result FROM handrail_ai_tool_ledger WHERE tenant_id=$1 AND tool_call_id IN (SELECT jsonb_array_elements_text($2::jsonb)) ORDER BY tool_call_id",
+      "SELECT tool_call_id,result FROM handrail_ai_tool_ledger WHERE tenant_id=$1 AND tool_call_id IN (SELECT jsonb_array_elements_text($2::text::jsonb)) ORDER BY tool_call_id",
       [tenant, JSON.stringify(calls)]);
     return Object.freeze(rows.rows.map((row) => Object.freeze({ toolCallId: row.tool_call_id, result: jsonClone(row.result) })));
   }
@@ -434,7 +455,7 @@ export class PostgresAiPersistence {
         return { status: "idempotent" as const, value: jsonClone(existing.rows[0].result) };
       }
       const value = await input.execute(tx);
-      await tx.query("INSERT INTO handrail_ai_idempotency (tenant_id,domain,scope_id,idempotency_key,fingerprint,result) VALUES ($1,$2,$3,$4,$5,$6::jsonb)",
+      await tx.query("INSERT INTO handrail_ai_idempotency (tenant_id,domain,scope_id,idempotency_key,fingerprint,result) VALUES ($1,$2,$3,$4,$5,$6::text::jsonb)",
         [tenant, domain, scope, key, fingerprint, JSON.stringify(value)]);
       return { status: "created" as const, value: jsonClone(value) };
     });
@@ -455,6 +476,8 @@ export interface PostgresOpenAIResponsesContinuationStoreOptions {
   readonly tenantId: string;
   /** Separates provider/model/application continuation domains for one tenant. */
   readonly scopeId: string;
+  /** Explicit binding enables scoped deletion and prevents late transcript retention. */
+  readonly conversationId?: string;
 }
 
 function openAIContinuationRecord(value: OpenAIResponsesContinuationRecord): OpenAIResponsesContinuationRecord {
@@ -472,17 +495,29 @@ export class PostgresOpenAIResponsesContinuationStore implements OpenAIResponses
   readonly persistence: PostgresAiPersistence;
   readonly tenantId: string;
   readonly scopeId: string;
+  readonly conversationId: string | undefined;
 
   constructor(options: PostgresOpenAIResponsesContinuationStoreOptions) {
     this.persistence = options.persistence;
     this.tenantId = id(options.tenantId, "tenantId");
     this.scopeId = id(options.scopeId, "scopeId");
+    this.conversationId = options.conversationId === undefined ? undefined : id(options.conversationId, "conversationId");
+  }
+
+  forConversation(conversationId: string): PostgresOpenAIResponsesContinuationStore {
+    return new PostgresOpenAIResponsesContinuationStore({ persistence: this.persistence, tenantId: this.tenantId,
+      scopeId: this.scopeId, conversationId });
+  }
+
+  private checkBinding(value: OpenAIResponsesContinuationRecord & { conversationId?: string }) {
+    if (this.conversationId !== undefined && value.conversationId !== this.conversationId) throw new PostgresPersistenceConflictError();
   }
 
   async load(requestId: string): Promise<OpenAIResponsesContinuationRecord | null> {
     const document = await this.persistence.getDocument<OpenAIResponsesContinuationRecord>(
       this.tenantId, "openai_continuation", this.scopeId, id(requestId, "requestId"),
     );
+    if (document) this.checkBinding(document.value);
     return document ? openAIContinuationRecord(document.value) : null;
   }
 
@@ -492,13 +527,15 @@ export class PostgresOpenAIResponsesContinuationStore implements OpenAIResponses
       this.tenantId, "openai_continuation", this.scopeId, record.requestId,
     );
     if (existing) {
+      this.checkBinding(existing.value);
       if (jsonValuesEqual(openAIContinuationRecord(existing.value), record)) return;
       throw new PostgresPersistenceConflictError();
     }
     try {
       await this.persistence.compareAndSetDocument({ tenantId: this.tenantId,
         kind: "openai_continuation", scopeId: this.scopeId, recordId: record.requestId,
-        expectedVersion: null, value: record });
+        expectedVersion: null, value: { ...record,
+          ...(this.conversationId === undefined ? {} : { conversationId: this.conversationId }) } });
     } catch (error) {
       if (!(error instanceof PostgresPersistenceConflictError)) throw error;
       const winner = await this.load(record.requestId);
@@ -999,6 +1036,11 @@ export class PostgresAttachmentStagingMetadataStore implements AttachmentStaging
   }
   async create(record: StagedAttachmentRecord): Promise<"created" | "conflict"> {
     return this.persistence.client.transaction(async (tx) => {
+      await assertPostgresConversationWritable(tx, this.tenantId, record.conversationId);
+      await lockPostgresAttachmentBlob(tx, this.tenantId, record.blobKey);
+      const blob = await tx.query("SELECT 1 FROM handrail_ai_attachment_blobs WHERE tenant_id=$1 AND blob_key=$2",
+        [this.tenantId, record.blobKey]);
+      if (!blob.rows.length) return "conflict";
       await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
         [advisoryLockKey(this.tenantId, "attachment", this.scopeId, record.conversationId, record.idempotencyKey)]);
       const existing = await tx.query(
@@ -1006,7 +1048,7 @@ export class PostgresAttachmentStagingMetadataStore implements AttachmentStaging
         [this.tenantId, this.scopeId, record.contentRef, record.conversationId, record.idempotencyKey],
       );
       if (existing.rowCount > 0) return "conflict";
-      await tx.query("INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,'attachment',$2,$3,1,$4::jsonb)",
+      await tx.query("INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,'attachment',$2,$3,1,$4::text::jsonb)",
         [this.tenantId, this.scopeId, record.contentRef, JSON.stringify(record)]);
       return "created";
     });
@@ -1087,10 +1129,21 @@ export class PostgresProviderOperationConflictError extends Error {
   }
 }
 
+/** The operation completed, but its disposable response was removed with the conversation. */
+export class PostgresProviderOperationDeletedError extends Error {
+  readonly code = "provider_operation_deleted" as const;
+  constructor() {
+    super("The provider result was removed with its conversation.");
+    this.name = "PostgresProviderOperationDeletedError";
+  }
+}
+
 interface ProviderOperationRecord {
   readonly version: 1;
   readonly fingerprint: string;
-  readonly status: "started" | "completed";
+  readonly status: "started" | "completed" | "purged";
+  readonly conversationId?: string;
+  readonly completedAt?: string;
   readonly result?: unknown;
 }
 
@@ -1101,8 +1154,15 @@ interface ProviderOperationRecord {
  * expire automatically: deleting one can duplicate provider work or charges.
  */
 export class PostgresProviderOperationStore {
-  constructor(readonly persistence: PostgresAiPersistence, readonly tenantId: string, readonly scopeId: string) {
+  constructor(readonly persistence: PostgresAiPersistence, readonly tenantId: string, readonly scopeId: string,
+    readonly conversationId?: string) {
     id(tenantId, "tenantId"); id(scopeId, "scopeId");
+    if (conversationId !== undefined) id(conversationId, "conversationId");
+  }
+
+  /** Bind response retention and deletion admission to a server-authorized conversation. */
+  forConversation(conversationId: string): PostgresProviderOperationStore {
+    return new PostgresProviderOperationStore(this.persistence, this.tenantId, this.scopeId, conversationId);
   }
 
   async run<T>(input: {
@@ -1123,11 +1183,17 @@ export class PostgresProviderOperationStore {
       if (record === null) return { found: false };
       const value = record.value;
       if (!value || value.version !== 1 || typeof value.fingerprint !== "string" ||
-        (value.status !== "started" && value.status !== "completed") ||
-        record.version !== (value.status === "started" ? 1 : 2)) {
+        !["started", "completed", "purged"].includes(value.status) ||
+        record.version !== (value.status === "started" ? 1 : value.status === "completed" ? 2 : 3) ||
+        (value.status === "purged" && (typeof value.completedAt !== "string" ||
+          !Number.isFinite(Date.parse(value.completedAt)) || "result" in value))) {
         throw new TypeError("The stored provider operation is invalid.");
       }
-      if (value.fingerprint !== fingerprint) throw new PostgresProviderOperationConflictError();
+      if (value.fingerprint !== fingerprint ||
+        (this.conversationId !== undefined && value.conversationId !== this.conversationId)) {
+        throw new PostgresProviderOperationConflictError();
+      }
+      if (value.status === "purged") throw new PostgresProviderOperationDeletedError();
       if (value.status !== "completed") throw new PostgresProviderOperationUncertainError();
       return { found: true, result: input.parseResult(jsonClone(value.result)) };
     };
@@ -1138,7 +1204,8 @@ export class PostgresProviderOperationStore {
       await this.persistence.compareAndSetDocument<ProviderOperationRecord>({
         tenantId: this.tenantId, kind: "provider_operation", scopeId: this.scopeId,
         recordId: operationId, expectedVersion: null,
-        value: { version: 1, fingerprint, status: "started" },
+        value: { version: 1, fingerprint, status: "started",
+          ...(this.conversationId === undefined ? {} : { conversationId: this.conversationId }) },
       });
     } catch (error) {
       // A known competing claim may already have completed. An ambiguous commit
@@ -1154,7 +1221,8 @@ export class PostgresProviderOperationStore {
       await this.persistence.compareAndSetDocument<ProviderOperationRecord>({
         tenantId: this.tenantId, kind: "provider_operation", scopeId: this.scopeId,
         recordId: operationId, expectedVersion: 1,
-        value: { version: 1, fingerprint, status: "completed", result },
+        value: { version: 1, fingerprint, status: "completed", result,
+          ...(this.conversationId === undefined ? {} : { conversationId: this.conversationId }) },
       });
     } catch (error) {
       // Repair a lost completion acknowledgement without another provider call.
@@ -1262,7 +1330,7 @@ export class PostgresConversationEventStore implements ConversationEventStore {
       }
       if (actual !== input.expectedRevision) return this.appendConflict("revision_conflict", input, actual, null);
       for (const event of events) await tx.query(
-        "INSERT INTO handrail_ai_events (tenant_id,conversation_id,revision,event_id,mutation_id,payload) VALUES ($1,$2,$3,$4,$5,$6::jsonb)",
+        "INSERT INTO handrail_ai_events (tenant_id,conversation_id,revision,event_id,mutation_id,payload) VALUES ($1,$2,$3,$4,$5,$6::text::jsonb)",
         [this.tenantId, input.conversationId, event.revision, event.event_id, event.mutation_id ?? null, JSON.stringify(event)],
       );
       return Object.freeze({ status: "appended" as const, entries: Object.freeze(events.map(storedEvent)),
@@ -1275,23 +1343,30 @@ export class PostgresConversationEventStore implements ConversationEventStore {
       : input.after?.revision ?? 0;
     const limit = input.limit ?? 1_000;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) throw new TypeError("Event read limit is invalid");
-    try { return await this.persistence.client.transaction(async (tx) => {
-      const result = await tx.query<{ payload: ConversationEvent }>(
-        "SELECT payload FROM handrail_ai_events WHERE tenant_id=$1 AND conversation_id=$2 AND revision>$3 ORDER BY revision LIMIT $4",
+    try {
+      // One statement owns the page and its head. A READ COMMITTED transaction
+      // around separate queries can see a concurrent append only in the head,
+      // falsely reporting missing history and rejecting a just-admitted turn.
+      const result = await this.persistence.client.query<{ payload: ConversationEvent | null; latest_revision: string | null }>(
+        `WITH head AS (
+           SELECT (SELECT revision::text FROM handrail_ai_events WHERE tenant_id=$1 AND conversation_id=$2
+             ORDER BY handrail_ai_events.revision DESC LIMIT 1) AS latest_revision
+         ), page AS (
+           SELECT revision,payload FROM handrail_ai_events WHERE tenant_id=$1 AND conversation_id=$2 AND revision>$3
+             ORDER BY revision LIMIT $4
+         ) SELECT page.payload,head.latest_revision FROM head LEFT JOIN page ON true ORDER BY page.revision`,
         [this.tenantId, input.conversationId, after, limit + 1],
       );
-      const entries = Object.freeze(result.rows.slice(0, limit).map((row) => storedEvent(parseConversationEvent(row.payload))));
-      const queriedLatest = await this.latest(tx, input.conversationId);
-      // A routed/read-replica client can transiently report an older aggregate
-      // revision than the rows returned by the same logical read. Never publish
-      // a latest revision behind evidence already included in this page.
-      const pageLatest = entries.at(-1)?.event.revision ?? null;
-      const latestRevision = queriedLatest === null || pageLatest !== null && queriedLatest < pageLatest
-        ? pageLatest
-        : queriedLatest;
+      const rows = result.rows.filter((row) => row.payload !== null);
+      const entries = Object.freeze(rows.slice(0, limit).map((row) => storedEvent(parseConversationEvent(row.payload))));
+      const head = result.rows[0]?.latest_revision;
+      const latestRevision = head === null ? null : Number(head) as ConversationRevision;
+      if (latestRevision !== null && (!Number.isSafeInteger(latestRevision) || latestRevision < 1)) {
+        throw new TypeError("The event page did not return a valid head revision");
+      }
       return Object.freeze({ entries, nextCursor: entries.at(-1)?.cursor ?? null,
-        latestRevision, hasMore: result.rows.length > limit });
-    }); } catch (error) { throw this.storeError(error, "read"); }
+        latestRevision, hasMore: rows.length > limit });
+    } catch (error) { throw this.storeError(error, "read"); }
   }
 
   async getLatestRevision(conversationId: ConversationId): Promise<ConversationRevision | null> {
@@ -1346,28 +1421,38 @@ export class PostgresConversationEventStore implements ConversationEventStore {
 export interface PostgresConversationCatalogOptions<TAuthorizationContext> {
   readonly persistence: PostgresAiPersistence;
   readonly tenantId: string;
+  /** Optional physical ownership-table mapping. Generic behavior remains SDK-owned. */
+  readonly table?: PostgresConversationCatalogTableOptions;
   /** Stable company/user ownership scope derived only after authentication. */
   readonly scopeId: (context: TAuthorizationContext) => string;
   readonly authorize: ConversationCatalogAuthorizer<TAuthorizationContext>;
   readonly createId: () => ConversationId;
   readonly now?: () => ConversationTimestamp;
-  /** Runs in the same SQL transaction before the catalog clear is committed. */
+  /** Domain redaction/branding policy, applied before the durable request fingerprint. */
+  readonly prepareTitle?: (title: string | null, context: TAuthorizationContext, action: "create" | "rename") => string | null;
+  /** Domain read audit, after a successful lookup/page and before returning it.
+   * Persist only deliberate audit fields, never credentials or transcript content. */
+  readonly onRead?: (input: { readonly client: PostgresSqlClient; readonly authorizationContext: TAuthorizationContext;
+    readonly tenantId: string; readonly scopeId: string; readonly action: "list" | "get";
+    readonly conversationId?: ConversationId }) => Promise<void>;
+  /** Domain audit hook in the same transaction, once per committed mutation.
+   * Never persist authentication context or perform remote effects in this hook. */
+  readonly onMutation?: (input: {
+    readonly client: PostgresSqlClient; readonly authorizationContext: TAuthorizationContext;
+    readonly tenantId: string; readonly scopeId: string; readonly conversationId: ConversationId;
+    readonly action: "create" | "rename" | "clear" | "archive" | "restore" | "permanent_delete";
+    readonly idempotencyKey: string; readonly previousVersion: number | null; readonly version: number | null;
+  }) => Promise<void>;
+  /** Runs in the same SQL transaction before the catalog clear is committed.
+   * Required to advertise clear. The host must implement a safe reusable-content
+   * reset; permanent deletion seals the identity and is not a clear implementation. */
   readonly clearContents?: (input: { readonly client: PostgresSqlClient; readonly tenantId: string;
     readonly scopeId: string; readonly conversationId: ConversationId }) => Promise<void>;
-  /** Runs in the same SQL transaction before permanent catalog deletion. */
+  /** Host-only cleanup in the same SQL transaction, after SDK history/file removal.
+   * External file deletion should be queued durably here, not performed before commit.
+   * Authorization context may contain credentials; never persist or log it. */
   readonly permanentlyDeleteContents?: (input: { readonly client: PostgresSqlClient; readonly tenantId: string;
-    readonly scopeId: string; readonly conversationId: ConversationId }) => Promise<void>;
-}
-
-interface PostgresCatalogRow extends Record<string, unknown> {
-  readonly conversation_id: string;
-  readonly lifecycle: "active" | "archived";
-  readonly title: string | null;
-  readonly created_at: string | Date;
-  readonly updated_at: string | Date;
-  readonly archived_at: string | Date | null;
-  readonly version: string;
-  readonly metadata: Record<string, unknown>;
+    readonly scopeId: string; readonly conversationId: ConversationId; readonly authorizationContext: TAuthorizationContext }) => Promise<void>;
 }
 
 function timestamp(value: string | Date): ConversationTimestamp {
@@ -1387,6 +1472,11 @@ function catalogFingerprint(operation: string, value: unknown): string {
   return `${operation}:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
+function isDeletedCatalogReceipt(value: unknown): boolean {
+  return !!value && typeof value === "object" && "schemaVersion" in value && value.schemaVersion === 1 &&
+    "status" in value && value.status === "conversation_deleted";
+}
+
 function cursorValues(cursor: string): { readonly primary: string; readonly conversationId: string } {
   const parts = cursor.split("|");
   return { primary: decodeURIComponent(parts[3]!), conversationId: decodeURIComponent(parts[4]!) };
@@ -1394,35 +1484,29 @@ function cursorValues(cursor: string): { readonly primary: string; readonly conv
 
 /** Production catalog with authorization-before-lookup, keyset pages, CAS, and durable idempotency. */
 export class PostgresConversationCatalog<TAuthorizationContext> implements ConversationCatalog<TAuthorizationContext> {
-  readonly capabilities = Object.freeze({ rename: { supported: true as const }, clear: { supported: true as const },
-    archive: { supported: true as const }, restore: { supported: true as const }, permanentDelete: { supported: true as const } });
+  readonly capabilities: ConversationCatalogCapabilities;
   readonly #now: () => ConversationTimestamp;
+  readonly #table: PostgresConversationCatalogTable;
   constructor(readonly options: PostgresConversationCatalogOptions<TAuthorizationContext>) {
     id(options.tenantId, "tenantId"); this.#now = options.now ?? (() => new Date().toISOString() as ConversationTimestamp);
+    this.#table = new PostgresConversationCatalogTable(options.table);
+    this.capabilities = Object.freeze({ rename: { supported: true as const },
+      clear: options.clearContents ? { supported: true as const } : { supported: false as const, reason: "not_implemented" as const },
+      archive: { supported: true as const }, restore: { supported: true as const }, permanentDelete: { supported: true as const } });
   }
 
   async list(value: Parameters<ConversationCatalog<TAuthorizationContext>["list"]>[0]): Promise<ListConversationsResult> {
     const input = parseListConversationsInput<TAuthorizationContext>(value); await this.allowed({ action: "list", authorizationContext: input.authorizationContext });
     const scope = id(this.options.scopeId(input.authorizationContext), "scopeId");
     const cursor = input.cursor ? cursorValues(input.cursor) : null;
-    const primary = input.order.field === "updated_at" ? "updated_at" : "created_at";
-    const comparison = input.order.direction === "asc" ? ">" : "<";
-    const order = input.order.direction === "asc" ? "ASC" : "DESC";
-    const values: unknown[] = [this.options.tenantId, scope, input.pageSize + 1];
-    let lifecycleSql = "", cursorSql = "";
-    if (input.lifecycle !== "all") { values.push(input.lifecycle); lifecycleSql = ` AND lifecycle=$${values.length}`; }
-    if (cursor) {
-      const primaryIndex = values.length + 1, idIndex = values.length + 2;
-      values.push(cursor.primary, cursor.conversationId);
-      cursorSql = ` AND (${primary}${comparison}$${primaryIndex} OR (${primary}=$${primaryIndex} AND conversation_id>$${idIndex}))`;
-    }
     try {
-      const rows = await this.options.persistence.client.query<PostgresCatalogRow>(
-        `SELECT conversation_id,lifecycle,title,created_at,updated_at,archived_at,version::text AS version,metadata FROM handrail_ai_conversations WHERE tenant_id=$1 AND scope_id=$2${lifecycleSql}${cursorSql} ORDER BY ${primary} ${order},conversation_id ASC LIMIT $3`,
-        values,
-      );
+      const rows = await this.#table.list(this.options.persistence.client, { tenantId: this.options.tenantId,
+        scopeId: scope, pageSize: input.pageSize, lifecycle: input.lifecycle, order: input.order, cursor });
       const items = Object.freeze(rows.rows.slice(0, input.pageSize).map(catalogDescriptor));
       const hasMore = rows.rows.length > input.pageSize, final = items.at(-1);
+      await this.options.onRead?.({ client: this.options.persistence.client, authorizationContext: input.authorizationContext,
+        tenantId: this.options.tenantId, scopeId: scope, action: "list" });
+      await this.allowed({ action: "list", authorizationContext: input.authorizationContext });
       return Object.freeze({ items, hasMore, nextCursor: hasMore && final ? createConversationCatalogCursor(final, input.order) : null,
         order: input.order });
     } catch (error) { throw this.storageError(error, "list"); }
@@ -1432,17 +1516,42 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
     const input = parseCreateConversationInput<TAuthorizationContext>(value); await this.allowed({ action: "create", authorizationContext: input.authorizationContext,
       ...(input.conversationId ? { conversationId: input.conversationId } : {}) });
     const scope = id(this.options.scopeId(input.authorizationContext), "scopeId");
-    const fingerprint = catalogFingerprint("create", { conversationId: input.conversationId ?? null, title: input.title ?? null, metadata: input.metadata ?? {} });
+    const preparedTitle = this.options.prepareTitle ? this.options.prepareTitle(input.title ?? null, input.authorizationContext, "create") : input.title ?? null;
+    const title = preparedTitle === null ? null : parseConversationCatalogTitle(preparedTitle, "create");
+    const fingerprint = this.fingerprint("create", { conversationId: input.conversationId ?? null, title, metadata: input.metadata ?? {} });
     try {
       const retained = await this.options.persistence.getOrCreateIdempotent({ tenantId: this.options.tenantId, domain: "catalog.create", scopeId: scope,
         idempotencyKey: input.idempotencyKey, fingerprint, execute: async (tx) => {
           const conversationId = input.conversationId ?? this.options.createId(); const now = this.#now();
-          const descriptor: ActiveConversationCatalogDescriptor = Object.freeze({ conversationId, title: input.title ?? null,
+          this.#table.validateIdentity(this.options.tenantId, scope, conversationId);
+          await assertPostgresConversationWritable(tx, this.options.tenantId, conversationId);
+          const claimed = await tx.query("SELECT record_id FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='catalog_identity' AND scope_id=$2 AND record_id='owner'",
+            [this.options.tenantId, conversationId]);
+          if (claimed.rows.length) throw new ConversationCatalogError("idempotency_conflict", "create");
+          const existingIdentity = await this.#table.existingIdentity(tx, this.options.tenantId, conversationId);
+          if (existingIdentity.rows.length) throw new ConversationCatalogError("idempotency_conflict", "create");
+          if (this.#table.custom) {
+            const native = await new PostgresConversationCatalogTable().existingIdentity(tx, this.options.tenantId, conversationId);
+            if (native.rows.length) throw new ConversationCatalogError("idempotency_conflict", "create");
+          }
+          const descriptor: ActiveConversationCatalogDescriptor = Object.freeze({ conversationId, title,
             createdAt: now, updatedAt: now, version: 1 as ConversationCatalogVersion, metadata: input.metadata ?? {}, lifecycle: "active", archivedAt: null });
-          await tx.query("INSERT INTO handrail_ai_conversations (tenant_id,scope_id,conversation_id,lifecycle,title,created_at,updated_at,archived_at,version,metadata) VALUES ($1,$2,$3,'active',$4,$5,$5,NULL,1,$6::jsonb)",
-            [this.options.tenantId, scope, conversationId, descriptor.title, now, JSON.stringify(descriptor.metadata)]);
+          await this.#table.insert(tx, { tenantId: this.options.tenantId, scopeId: scope, conversationId,
+            title: descriptor.title, now, metadata: descriptor.metadata });
+          // Event keys are tenant/conversation-wide, independent of physical table.
+          // Keep a minimal claim so two configured catalogs cannot acquire one ID.
+          await tx.query(`INSERT INTO handrail_ai_documents(tenant_id,kind,scope_id,record_id,version,payload)
+            VALUES ($1,'catalog_identity',$2,'owner',1,$3::text::jsonb)`, [this.options.tenantId, conversationId,
+            JSON.stringify({ schemaVersion: 1, ownerScopeId: scope, storageIdentity: this.#table.identity })]);
+          await this.options.onMutation?.({ client: tx, authorizationContext: input.authorizationContext,
+            tenantId: this.options.tenantId, scopeId: scope, conversationId, action: "create", idempotencyKey: input.idempotencyKey,
+            previousVersion: null, version: 1 });
+          await this.allowed({ action: "create", authorizationContext: input.authorizationContext, conversationId });
           return descriptor;
         } });
+      await this.allowed({ action: "create", authorizationContext: input.authorizationContext,
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}) });
+      if (isDeletedCatalogReceipt(retained.value)) throw new ConversationCatalogError("not_found", "create");
       return Object.freeze({ operation: "create", status: retained.status === "created" ? "created" : "idempotent", descriptor: retained.value });
     } catch (error) { throw this.idempotencyError(error, "create"); }
   }
@@ -1454,12 +1563,21 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
     try { descriptor = await this.lookup(this.options.persistence.client, this.options.scopeId(input.authorizationContext), input.conversationId); }
     catch (error) { throw this.storageError(error, "get"); }
     if (!descriptor) throw new ConversationCatalogError("not_found", "get");
+    try {
+      await this.options.onRead?.({ client: this.options.persistence.client, authorizationContext: input.authorizationContext,
+        tenantId: this.options.tenantId, scopeId: this.options.scopeId(input.authorizationContext), action: "get", conversationId: input.conversationId });
+      await this.allowed({ action: "get", authorizationContext: input.authorizationContext, conversationId: input.conversationId });
+    } catch (error) { throw this.storageError(error, "get"); }
     return Object.freeze({ operation: "get", status: "found", descriptor });
   }
 
-  rename(value: Parameters<ConversationCatalog<TAuthorizationContext>["rename"]>[0]): Promise<RenameConversationResult> {
+  async rename(value: Parameters<ConversationCatalog<TAuthorizationContext>["rename"]>[0]): Promise<RenameConversationResult> {
     const input = parseRenameConversationInput<TAuthorizationContext>(value);
-    return this.mutate("rename", input, (current, now) => ({ ...current, title: input.title, updatedAt: now }), "updated");
+    await this.allowed({ action: "rename", authorizationContext: input.authorizationContext, conversationId: input.conversationId });
+    const title = parseConversationCatalogTitle(this.options.prepareTitle
+      ? this.options.prepareTitle(input.title, input.authorizationContext, "rename") : input.title, "rename");
+    const prepared = { ...input, title };
+    return this.mutate("rename", prepared, (current, now) => ({ ...current, title, updatedAt: now }), "updated");
   }
   clear(value: Parameters<ConversationCatalog<TAuthorizationContext>["clear"]>[0]): Promise<ClearConversationResult> {
     const input = parseClearConversationInput<TAuthorizationContext>(value);
@@ -1478,7 +1596,7 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
     const input = parsePermanentlyDeleteConversationInput<TAuthorizationContext>(value); await this.allowed({ action: "permanent_delete",
       authorizationContext: input.authorizationContext, conversationId: input.conversationId });
     const scope = id(this.options.scopeId(input.authorizationContext), "scopeId");
-    const deleteFingerprint = catalogFingerprint("permanent_delete", {
+    const deleteFingerprint = this.fingerprint("permanent_delete", {
       conversationId: input.conversationId, expectedVersion: input.expectedVersion,
     });
     try {
@@ -1487,10 +1605,21 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
           const current = await this.lookup(tx, scope, input.conversationId, true);
           if (!current) throw new ConversationCatalogError("not_found", "permanent_delete");
           if (current.version !== input.expectedVersion) throw new ConversationCatalogError("version_conflict", "permanent_delete");
-          await this.options.permanentlyDeleteContents?.({ client: tx, tenantId: this.options.tenantId, scopeId: scope, conversationId: input.conversationId });
-          const deleted = await tx.query("DELETE FROM handrail_ai_conversations WHERE tenant_id=$1 AND scope_id=$2 AND conversation_id=$3 AND version=$4",
-            [this.options.tenantId, scope, input.conversationId, input.expectedVersion]);
+          const ambiguous = await this.#table.ambiguousIdentity(tx, this.options.tenantId, input.conversationId, scope);
+          if (ambiguous.rows.length) throw new ConversationCatalogError("unavailable", "permanent_delete");
+          await deletePostgresConversationHistory({ client: tx, tenantId: this.options.tenantId, conversationId: input.conversationId,
+            authorize: () => this.allowed({ action: "permanent_delete", authorizationContext: input.authorizationContext,
+              conversationId: input.conversationId }) });
+          await deletePostgresConversationAttachments(tx, this.options.tenantId, input.conversationId);
+          await this.options.permanentlyDeleteContents?.({ client: tx, tenantId: this.options.tenantId, scopeId: scope,
+            conversationId: input.conversationId, authorizationContext: input.authorizationContext });
+          const deleted = await this.#table.delete(tx, this.options.tenantId, scope, input.conversationId, input.expectedVersion);
           if (deleted.rowCount !== 1) throw new ConversationCatalogError("version_conflict", "permanent_delete");
+          await this.options.onMutation?.({ client: tx, authorizationContext: input.authorizationContext,
+            tenantId: this.options.tenantId, scopeId: scope, conversationId: input.conversationId, action: "permanent_delete",
+            idempotencyKey: input.idempotencyKey, previousVersion: current.version, version: null });
+          await this.allowed({ action: "permanent_delete", authorizationContext: input.authorizationContext,
+            conversationId: input.conversationId });
           return { conversationId: input.conversationId, deletedVersion: input.expectedVersion };
         } });
       return Object.freeze({ operation: "permanent_delete", status: retained.status === "created" ? "deleted" : "idempotent", ...retained.value });
@@ -1505,12 +1634,13 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
     contents?: PostgresConversationCatalogOptions<TAuthorizationContext>["clearContents"],
   ): Promise<{ readonly operation: TOperation; readonly status: TSuccess | "idempotent"; readonly descriptor: ConversationCatalogDescriptor }> {
     await this.allowed({ action: operation, authorizationContext: input.authorizationContext, conversationId: input.conversationId });
+    if (operation === "clear" && !this.options.clearContents) throw new ConversationCatalogError("unsupported", "clear");
     const scope = id(this.options.scopeId(input.authorizationContext), "scopeId");
     const logicalInput = { ...input } as Record<string, unknown>;
     delete logicalInput.authorizationContext;
     try {
       const retained = await this.options.persistence.getOrCreateIdempotent({ tenantId: this.options.tenantId, domain: `catalog.${operation}`,
-        scopeId: scope, idempotencyKey: input.idempotencyKey, fingerprint: catalogFingerprint(operation, logicalInput), execute: async (tx) => {
+        scopeId: scope, idempotencyKey: input.idempotencyKey, fingerprint: this.fingerprint(operation, logicalInput), execute: async (tx) => {
           const current = await this.lookup(tx, scope, input.conversationId, true);
           if (!current) throw new ConversationCatalogError("not_found", operation);
           if (current.version !== input.expectedVersion) throw new ConversationCatalogError("version_conflict", operation);
@@ -1519,32 +1649,46 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
           }
           await contents?.({ client: tx, tenantId: this.options.tenantId, scopeId: scope, conversationId: input.conversationId });
           const next = { ...update(current, this.#now()), version: (current.version + 1) as ConversationCatalogVersion } as ConversationCatalogDescriptor;
-          const changed = await tx.query("UPDATE handrail_ai_conversations SET lifecycle=$5,title=$6,updated_at=$7,archived_at=$8,version=$9,metadata=$10::jsonb WHERE tenant_id=$1 AND scope_id=$2 AND conversation_id=$3 AND version=$4",
-            [this.options.tenantId, scope, input.conversationId, input.expectedVersion, next.lifecycle, next.title, next.updatedAt, next.archivedAt, next.version, JSON.stringify(next.metadata)]);
+          const changed = await this.#table.update(tx, { tenantId: this.options.tenantId, scopeId: scope,
+            conversationId: input.conversationId, expectedVersion: input.expectedVersion, lifecycle: next.lifecycle,
+            title: next.title, updatedAt: next.updatedAt, archivedAt: next.archivedAt, version: next.version, metadata: next.metadata });
           if (changed.rowCount !== 1) throw new ConversationCatalogError("version_conflict", operation);
+          await this.options.onMutation?.({ client: tx, authorizationContext: input.authorizationContext,
+            tenantId: this.options.tenantId, scopeId: scope, conversationId: input.conversationId, action: operation,
+            idempotencyKey: input.idempotencyKey, previousVersion: current.version, version: next.version });
+          await this.allowed({ action: operation, authorizationContext: input.authorizationContext, conversationId: input.conversationId });
           return next;
         } });
+      await this.allowed({ action: operation, authorizationContext: input.authorizationContext, conversationId: input.conversationId });
+      if (isDeletedCatalogReceipt(retained.value)) throw new ConversationCatalogError("not_found", operation);
       return Object.freeze({ operation, status: retained.status === "created" ? success : "idempotent", descriptor: retained.value });
     } catch (error) { throw this.idempotencyError(error, operation); }
   }
 
   private async lookup(client: PostgresSqlClient, scope: string, conversationId: ConversationId, lock = false): Promise<ConversationCatalogDescriptor | null> {
-    const result = await client.query<PostgresCatalogRow>(
-      `SELECT conversation_id,lifecycle,title,created_at,updated_at,archived_at,version::text AS version,metadata FROM handrail_ai_conversations WHERE tenant_id=$1 AND scope_id=$2 AND conversation_id=$3${lock ? " FOR UPDATE" : ""}`,
-      [this.options.tenantId, id(scope, "scopeId"), conversationId],
-    );
+    const result = await this.#table.lookup(client, this.options.tenantId, id(scope, "scopeId"), conversationId, lock);
+    if (result.rows[0]) {
+      const claim = await new PostgresAiPersistence(client).getDocument<{ schemaVersion: number; ownerScopeId: string; storageIdentity: string }>(
+        this.options.tenantId, "catalog_identity", conversationId, "owner");
+      if (claim && (!claim.value || claim.value.schemaVersion !== 1 || claim.value.ownerScopeId !== scope || claim.value.storageIdentity !== this.#table.identity)) return null;
+    }
     return result.rows[0] ? catalogDescriptor(result.rows[0]) : null;
+  }
+  private fingerprint(operation: string, input: Record<string, unknown>): string {
+    return catalogFingerprint(operation, this.#table.custom ? { ...input, storageIdentity: this.#table.identity } : input);
   }
   private async allowed(request: Parameters<ConversationCatalogAuthorizer<TAuthorizationContext>>[0]): Promise<void> {
     if (await this.options.authorize(request) !== "allow") throw new ConversationCatalogError("forbidden", request.action);
   }
   private idempotencyError(error: unknown, operation: Parameters<ConversationCatalogAuthorizer<TAuthorizationContext>>[0]["action"]): unknown {
     if (error instanceof ConversationCatalogError) return error;
+    if (error instanceof PostgresCatalogIdentityError) return new ConversationCatalogError("invalid_input", operation);
     if (error instanceof PostgresPersistenceConflictError) return new ConversationCatalogError("idempotency_conflict", operation);
     return new ConversationCatalogError("unavailable", operation);
   }
   private storageError(error: unknown, operation: Parameters<ConversationCatalogAuthorizer<TAuthorizationContext>>[0]["action"]): Error {
-    return error instanceof ConversationCatalogError ? error : new ConversationCatalogError("unavailable", operation);
+    return error instanceof ConversationCatalogError ? error : new ConversationCatalogError(
+      error instanceof PostgresCatalogIdentityError ? "invalid_input" : "unavailable", operation);
   }
 }
 
@@ -1608,13 +1752,14 @@ export class PostgresApprovalProposalStore<TPermissionContext> implements Approv
       const retained = await this.options.persistence.getOrCreateIdempotent({ tenantId: this.options.tenantId,
         domain: "approval.create", scopeId: scope, idempotencyKey: input.idempotencyKey,
         fingerprint: catalogFingerprint(input.idempotencyFingerprint, logical), execute: async (tx) => {
+          if (input.groupId) await assertPostgresConversationWritable(tx, this.options.tenantId, input.groupId);
           const record = approvalRecord({ proposal_id: input.proposalId, group_id: input.groupId ?? null,
             turn_id: input.turnId, tool_call_id: input.toolCallId, tool_name: input.toolName,
             reviewed_arguments: input.reviewedArguments, status: "pending", proposal_version: 1,
             expires_at: input.expiresAt, created_at: now, updated_at: now,
             created_attribution: input.attribution, latest_attribution: input.attribution,
             decision_at: null, decision_attribution: null, decision_reason: null, failure_reason: null }, "create");
-          await tx.query("INSERT INTO handrail_ai_approvals (tenant_id,scope_id,proposal_id,group_id,version,payload,updated_at) VALUES ($1,$2,$3,$4,1,$5::jsonb,$6)",
+          await tx.query("INSERT INTO handrail_ai_approvals (tenant_id,scope_id,proposal_id,group_id,version,payload,updated_at) VALUES ($1,$2,$3,$4,1,$5::text::jsonb,$6)",
             [this.options.tenantId, scope, input.proposalId, input.groupId ?? null, JSON.stringify(record), now]);
           return record;
         } });
@@ -1675,7 +1820,7 @@ export class PostgresApprovalProposalStore<TPermissionContext> implements Approv
             throw new ApprovalProposalStoreError("invalid_input", "transition");
           }
           const next = approvalTransition(current, input as TransitionApprovalProposalInput<unknown>, now);
-          const updated = await tx.query("UPDATE handrail_ai_approvals SET version=$4,payload=$5::jsonb,updated_at=$6 WHERE tenant_id=$1 AND scope_id=$2 AND proposal_id=$3 AND version=$7",
+          const updated = await tx.query("UPDATE handrail_ai_approvals SET version=$4,payload=$5::text::jsonb,updated_at=$6 WHERE tenant_id=$1 AND scope_id=$2 AND proposal_id=$3 AND version=$7",
             [this.options.tenantId, scope, input.proposalId, next.proposal_version, JSON.stringify(next), now, input.expectedVersion]);
           if (updated.rowCount !== 1) throw new ApprovalProposalStoreError("version_conflict", "transition");
           return next;
@@ -1693,7 +1838,7 @@ export class PostgresApprovalProposalStore<TPermissionContext> implements Approv
     const now = this.#now();
     if (current.status !== "pending" || Date.parse(now) < Date.parse(current.expires_at)) return current;
     const next = approvalTransition(current, { status: "expired", attribution: this.#expiryAttribution } as TransitionApprovalProposalInput<unknown>, now);
-    await tx.query("UPDATE handrail_ai_approvals SET version=$4,payload=$5::jsonb,updated_at=$6 WHERE tenant_id=$1 AND scope_id=$2 AND proposal_id=$3 AND version=$7",
+    await tx.query("UPDATE handrail_ai_approvals SET version=$4,payload=$5::text::jsonb,updated_at=$6 WHERE tenant_id=$1 AND scope_id=$2 AND proposal_id=$3 AND version=$7",
       [this.options.tenantId, scope, current.proposal_id, next.proposal_version, JSON.stringify(next), now, current.proposal_version]);
     return next;
   }

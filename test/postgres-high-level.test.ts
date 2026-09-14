@@ -74,6 +74,8 @@ describe("Postgres high-level adapters", () => {
       if (sql.startsWith("SELECT fingerprint,result")) {
         const row = idempotency.get(String(values[3])); return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
       }
+      if (sql.includes("kind='conversation_deleted'") || sql.includes("kind='catalog_identity'") || sql.startsWith("SELECT conversation_id FROM handrail_ai_conversations")) return { rows: [], rowCount: 0 };
+      if (sql.startsWith("INSERT INTO handrail_ai_documents")) return { rows: [], rowCount: 1 };
       if (sql.startsWith("INSERT INTO handrail_ai_conversations")) {
         conversations.push(values); return { rows: [], rowCount: 1 };
       }
@@ -111,7 +113,9 @@ describe("Postgres high-level adapters", () => {
         }
         if (sql.includes("revision>$3")) {
           const after = Number(values[2]), limit = Number(values[3]);
-          const rows = events.filter((event) => event.revision > after).slice(0, limit).map((payload) => ({ payload }));
+          const latest_revision = events.at(-1)?.revision.toString() ?? null;
+          const page = events.filter((event) => event.revision > after).slice(0, limit).map((payload) => ({ payload, latest_revision }));
+          const rows = page.length ? page : [{ payload: null, latest_revision }];
           return { rows, rowCount: rows.length };
         }
         if (sql.includes("revision >= $3")) {

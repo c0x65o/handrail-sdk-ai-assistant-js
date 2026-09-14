@@ -22,7 +22,7 @@ export class PostgresToolIncidentStore implements ToolIncidentStore {
     return result.rows[0]?.payload ?? null;
   }
   private async write(client: PostgresSqlClient, value: ToolIncidentRecord) {
-    await client.query("INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,'tool_incident',$2,$3,1,$4::jsonb) ON CONFLICT (tenant_id,kind,scope_id,record_id) DO UPDATE SET version=handrail_ai_documents.version+1,payload=EXCLUDED.payload,updated_at=now()",
+    await client.query("INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,'tool_incident',$2,$3,1,$4::text::jsonb) ON CONFLICT (tenant_id,kind,scope_id,record_id) DO UPDATE SET version=handrail_ai_documents.version+1,payload=EXCLUDED.payload,updated_at=now()",
       [this.options.tenantId, this.options.scopeId, value.incidentId, JSON.stringify(value)]);
   }
   async record(input: ToolIncidentOccurrence): Promise<ToolIncidentRecord> {
@@ -43,7 +43,7 @@ export class PostgresToolIncidentStore implements ToolIncidentStore {
       }
       const next = accumulateToolIncident(current, occurrence, scope);
       await this.write(client, next);
-      await client.query("INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,'tool_incident_event',$2,$3,1,$4::jsonb)",
+      await client.query("INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload) VALUES ($1,'tool_incident_event',$2,$3,1,$4::text::jsonb)",
         [this.options.tenantId, this.options.scopeId, eventId, JSON.stringify({ incidentId })]);
       return next;
     });
