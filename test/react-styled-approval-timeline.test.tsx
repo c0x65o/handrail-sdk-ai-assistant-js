@@ -29,9 +29,11 @@ it("shows bound action details in chronological context before a versioned decis
   const f = fixture();
   render(<StyledChatPreset state={f.state} approvalResources={f.resources} includeStyles={false} transcription={false}/>);
   const card = await screen.findByRole("listitem", { name: "Assistant action" });
-  expect(card.textContent).toContain('"amount": 212');
+  expect(card.querySelector('dt')?.textContent).toBe('Amount');
+  expect(card.querySelector('dd')?.textContent).toBe('212');
+  expect(card.querySelector('pre')).toBeNull();
   const transcript = screen.getByRole("region", { name: "Conversation transcript" });
-  expect(transcript.textContent?.indexOf("Correct this expense")).toBeLessThan(transcript.textContent!.indexOf("reclassify expense"));
+  expect(transcript.textContent?.indexOf("Correct this expense")).toBeLessThan(transcript.textContent!.indexOf("Reclassify expense"));
   fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
   await waitFor(() => expect(f.resources.transitionApproval).toHaveBeenCalledWith(expect.objectContaining({
     conversationId: "conversation", proposalId: "proposal", expectedVersion: 1, status: "confirmed",
@@ -41,7 +43,7 @@ it("disables confirmation for mismatched arguments while retaining rejection", a
   const f = fixture(false);
   render(<StyledChatPreset state={f.state} approvalResources={f.resources} includeStyles={false} transcription={false}/>);
   expect((await screen.findByRole("button", { name: "Confirm" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.queryByText(/"amount": 300/u)).toBeNull();
+  expect(screen.queryByText("300")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Reject" }));
   await waitFor(() => expect(f.resources.transitionApproval).toHaveBeenCalledWith(expect.objectContaining({ status: "rejected" })));
 });
@@ -49,7 +51,7 @@ it("retains saved decided cards and failures and prevents decisions for archived
   const f = fixture();
   f.resources.listApprovalGroup.mockResolvedValue([{ ...f.proposal, status: "rejected" }]);
   const view = render(<StyledChatPreset state={f.state} approvalResources={f.resources} readOnly includeStyles={false} transcription={false}/>);
-  expect(await screen.findByText("rejected")).toBeTruthy();
+  expect(await screen.findByText("Rejected")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
   expect(screen.queryByRole("textbox")).toBeNull();
   view.rerender(<StyledChatPreset state={f.state} proposals={[f.proposal]} approvalResources={f.resources} readOnly includeStyles={false} transcription={false}/>);

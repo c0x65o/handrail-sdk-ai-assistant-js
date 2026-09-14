@@ -194,7 +194,7 @@ describe("ApprovalReview primitives", () => {
       .getAllByRole("listitem").map((item) =>
         item.getAttribute("data-approval-proposal-id"))).toEqual(["a-item", "c-item"]);
     expect(screen.getByLabelText("Reviewed arguments for tool_b-item").textContent)
-      .toBe('{"visible":"[redacted-b-item]"}');
+      .toBe('Visible[redacted-b-item]');
     expect(screen.getByText("opaque:arguments:z")).toBeTruthy();
     expect(document.body.textContent).not.toContain("DO-NOT-RENDER");
     expect(document.body.textContent).not.toContain("PROVIDER-INTERNAL");
@@ -414,10 +414,10 @@ describe("ApprovalReview primitives", () => {
       loadProposals: load,
       subscribe,
     })} />);
-    expect(screen.getByText("tool_restart")).toBeTruthy();
+    expect(screen.getByText("Tool restart")).toBeTruthy();
     await waitFor(() => expect(load).toHaveBeenCalledOnce());
     act(() => notify?.());
-    await screen.findByText("tool_subscription");
+    await screen.findByText("Tool subscription");
     expect(load).toHaveBeenCalledTimes(2);
     expect(handler).not.toHaveBeenCalled();
     view.unmount();

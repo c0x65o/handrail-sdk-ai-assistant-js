@@ -34,6 +34,7 @@ import type {
   ConversationEventAttribution,
 } from "../conversation/state.js";
 import type { PrimitiveRender } from "./primitives.js";
+import { StructuredDetails, structuredDetailLabel } from "./structured-details.js";
 
 export interface ApprovalReviewLoadInput<TPermissionContext> {
   readonly conversationId: ConversationId;
@@ -733,9 +734,7 @@ export interface ApprovalReviewItemProps
 function defaultReviewedArguments(proposal: ConversationApprovalProposalRecord): ReactNode {
   const reviewed = proposal.reviewed_arguments;
   return reviewed.type === "redacted_json"
-    ? <pre aria-label={`Reviewed arguments for ${proposal.tool_name}`}>
-      {JSON.stringify(reviewed.value)}
-    </pre>
+    ? <StructuredDetails aria-label={`Reviewed arguments for ${proposal.tool_name}`} value={reviewed.value}/>
     : <p>
       <span>Opaque argument reference: </span>
       <code>{reviewed.argument_ref}</code>
@@ -752,7 +751,7 @@ export const ApprovalReviewItem = forwardRef<HTMLLIElement, ApprovalReviewItemPr
       proposal,
     ) ?? defaultReviewedArguments(proposal);
     const content = children ?? <>
-      <h4>{proposal.tool_name}</h4>
+      <h4>{structuredDetailLabel(proposal.tool_name)}</h4>
       <dl>
         <dt>Proposal</dt><dd>{proposal.proposal_id}</dd>
         {proposal.group_id === null ? null : <><dt>Group</dt><dd>{proposal.group_id}</dd></>}

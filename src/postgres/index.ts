@@ -1661,7 +1661,13 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
             throw new ConversationCatalogError("invalid_input", operation);
           }
           await contents?.({ client: tx, tenantId: this.options.tenantId, scopeId: scope, conversationId: input.conversationId });
-          const next = { ...update(current, this.#now()), version: (current.version + 1) as ConversationCatalogVersion } as ConversationCatalogDescriptor;
+          // Another worker's clock may lag the last accepted mutation or event.
+          // Never persist a descriptor that the next history read would reject.
+          const now = timestamp(this.#now());
+          const next = parseConversationCatalogDescriptor({
+            ...update(current, now < current.updatedAt ? current.updatedAt : now),
+            version: current.version + 1,
+          });
           const changed = await this.#table.update(tx, { tenantId: this.options.tenantId, scopeId: scope,
             conversationId: input.conversationId, expectedVersion: input.expectedVersion, lifecycle: next.lifecycle,
             title: next.title, updatedAt: next.updatedAt, archivedAt: next.archivedAt, version: next.version, metadata: next.metadata });

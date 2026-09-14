@@ -121,6 +121,40 @@ it("uses stable keyset pages with ties, lifecycle filters and soft-deleted owner
     .rejects.toMatchObject({ code: "idempotency_conflict" });
 });
 
+it.each(["default", "host"] as const)("keeps %s catalog timestamps valid when a mutation clock moves backwards", async storage => {
+  const owner = nextId(), context = { ...actor, userId: owner };
+  await client.query("INSERT INTO household_users VALUES ($1,$2)", [tenantId, owner]);
+  let now = "2026-09-14T12:00:00.000Z";
+  const catalog = new PostgresConversationCatalog<Actor>({ persistence, tenantId,
+    ...(storage === "host" ? { table } : {}), scopeId: context => context.userId,
+    authorize: ({ authorizationContext }) => authorizationContext.permitted ? "allow" : "deny",
+    createId: nextId, now: () => now as never, prepareTitle: title => title ?? "Fixture",
+    clearContents: async () => undefined });
+  const conversationId = nextId();
+  let current: ConversationCatalogDescriptor = (await catalog.create({ authorizationContext: context, conversationId,
+    idempotencyKey: `${conversationId}-create` as never })).descriptor;
+  now = "2026-09-14T12:01:00.000Z";
+  current = (await catalog.archive({ authorizationContext: context, conversationId,
+    expectedVersion: current.version, idempotencyKey: `${conversationId}-archive` as never })).descriptor;
+  const archivedAt = now;
+  now = "2026-09-14T11:59:00.000Z";
+  for (const operation of ["rename", "restore", "clear", "archive"] as const) {
+    const input: Parameters<typeof catalog.archive>[0] = { authorizationContext: context, conversationId, expectedVersion: current.version,
+      idempotencyKey: `${conversationId}-backwards-${operation}` as never };
+    const mutate = () => operation === "rename" ? catalog.rename({ ...input, title: "Renamed archive" }) : catalog[operation](input);
+    const result = await mutate();
+    expect(result.descriptor.updatedAt).toBe(archivedAt);
+    expect(result.descriptor.version).toBe(current.version + 1);
+    current = result.descriptor;
+    expect((await mutate()).descriptor).toEqual(current);
+    expect((await catalog.get({ authorizationContext: context, conversationId })).descriptor).toEqual(current);
+    const page = await catalog.list({ authorizationContext: context, lifecycle: "all", pageSize: 1,
+      order: { field: "updated_at", direction: "desc" } });
+    expect(page.items).toEqual([current]);
+    await expect(catalog.get({ authorizationContext: actor, conversationId })).rejects.toMatchObject({ code: "not_found" });
+  }
+});
+
 it.each([
   { field: "created_at", direction: "asc" }, { field: "created_at", direction: "desc" },
   { field: "updated_at", direction: "asc" }, { field: "updated_at", direction: "desc" },

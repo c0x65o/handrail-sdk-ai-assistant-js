@@ -11,7 +11,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 function proposal(id: string): ConversationApprovalProposalRecord {
-  return { proposal_id: id, group_id: "a", tool_name: id, status: "pending", proposal_version: 1 } as never;
+  return { proposal_id: id, group_id: "a", tool_name: id, status: "pending", proposal_version: 1,
+    reviewed_arguments: { type: "redacted_json", value: {} }, expires_at: "2099-01-01T00:00:00.000Z" } as never;
 }
 function setup(resources: {
   listApprovalGroup: (input: { groupId: string }) => Promise<readonly ConversationApprovalProposalRecord[]>;
@@ -38,14 +39,14 @@ describe("standard approval navigation and polling", () => {
     render(<StandardGatewayApprovals client={client as never}/>);
     select("b");
     await act(async () => { second.resolve([proposal("new action")]); });
-    expect(screen.getByText("new action")).toBeTruthy();
+    expect(screen.getByText("New action")).toBeTruthy();
     await act(async () => {
       if (outcome === "success") first.resolve([proposal("old action")]);
       else first.reject(new Error("Old thread unavailable"));
     });
-    expect(screen.queryByText("old action")).toBeNull();
+    expect(screen.queryByText("Old action")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByText("new action")).toBeTruthy();
+    expect(screen.getByText("New action")).toBeTruthy();
     select(null);
     expect(screen.queryByRole("region", { name: "Assistant approvals" })).toBeNull();
   });
@@ -61,14 +62,14 @@ describe("standard approval navigation and polling", () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     select("b");
-    expect(screen.queryByText("old action")).toBeNull();
+    expect(screen.queryByText("Old action")).toBeNull();
     await act(async () => {});
     expect((screen.getByRole("button", { name: "Confirm" }) as HTMLButtonElement).disabled).toBe(false);
     await act(async () => {
       if (outcome === "success") decision.resolve({}); else decision.reject(new Error("Old decision failed"));
     });
-    expect(screen.getByText("new action")).toBeTruthy();
-    expect(screen.queryByText("old action")).toBeNull();
+    expect(screen.getByText("New action")).toBeTruthy();
+    expect(screen.queryByText("Old action")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(transitionApproval).toHaveBeenCalledOnce();
     expect(transitionApproval).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "a", proposalId: "old action" }));
@@ -94,10 +95,10 @@ describe("standard approval navigation and polling", () => {
     fireEvent.click(confirm);
     expect(transitionApproval).toHaveBeenCalledOnce();
     await act(async () => { decision.resolve({}); });
-    expect(screen.queryByText("update account")).toBeNull();
+    expect(screen.queryByText("Update account")).toBeNull();
     expect(listApprovalGroup).toHaveBeenCalledTimes(2);
     await act(async () => { stale.resolve([proposal("update account")]); });
-    expect(screen.queryByText("update account")).toBeNull();
+    expect(screen.queryByText("Update account")).toBeNull();
     expect(listApprovalGroup).toHaveBeenCalledTimes(3);
     await act(async () => { refreshed.resolve([]); });
     view.unmount();
@@ -114,7 +115,7 @@ describe("standard approval navigation and polling", () => {
       resources: { listApprovalGroup: () => nextRead.promise } } as never}/>);
     await act(async () => { nextRead.resolve([proposal("authorized action")]); });
     await act(async () => { oldRead.resolve([proposal("previous account action")]); });
-    expect(screen.getByText("authorized action")).toBeTruthy();
-    expect(screen.queryByText("previous account action")).toBeNull();
+    expect(screen.getByText("Authorized action")).toBeTruthy();
+    expect(screen.queryByText("Previous account action")).toBeNull();
   });
 });

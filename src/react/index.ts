@@ -1,4 +1,5 @@
 /** Optional React entry point for @handrail/ai-assistant. */
+export { StructuredDetails, structuredDetailLabel, HANDRAIL_STRUCTURED_DETAILS_CSS, type StructuredDetailsProps } from "./structured-details.js";
 export { BadResponseButton, type BadResponseButtonProps } from "./bad-response-button.js";
 export {
   ConversationProvider,

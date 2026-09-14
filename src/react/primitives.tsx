@@ -41,6 +41,7 @@ import type {
 } from "../presence/controller.js";
 import type { AssistantActivity, PresenceParticipantSummary } from "../presence/types.js";
 import { ConversationContext } from "./context.js";
+import { StructuredDetails } from "./structured-details.js";
 import {
   PrimitiveContext,
   type PrimitiveContextValue,
@@ -526,9 +527,8 @@ export const ToolResult = forwardRef<HTMLDivElement, ToolResultProps>(
     return (
       <div {...props} ref={forwardedRef}>
         {children ?? result.content.map((part, index) => (
-          <span key={index}>
-            {part.type === "text" ? part.text : JSON.stringify(part.value)}
-          </span>
+          part.type === "text" ? <span key={index}>{part.text}</span>
+            : <StructuredDetails key={index} value={part.value}/>
         ))}
       </div>
     );
