@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { AttachmentStagingError, createAttachmentStagingService, type StagedAttachmentRecord } from "../attachments/staging.js";
-import { assertPostgresConversationWritable, lockPostgresAttachmentBlob } from "../postgres/conversation-deletion.js";
+import { assertPostgresConversationWritable, lockPostgresAttachmentBlob, lockPostgresConversation } from "../postgres/conversation-deletion.js";
+import { assertPostgresAttachmentUploadNotExpired } from "../postgres/attachment-expiry-receipts.js";
 import type { AiDiagnosticSink } from "../diagnostics.js";
 import type { AttachmentReference } from "../protocol.js";
 import { PostgresAiPersistence, PostgresAttachmentBlobStore, PostgresAttachmentStagingMetadataStore } from "../postgres/index.js";
@@ -156,20 +157,24 @@ export function createConversationFileStorage(options: ConversationFileStorageOp
   return Object.freeze({
     async stage(input: ConversationFileInput & { readonly idempotencyKey: string }): Promise<AttachmentReference> {
       if (!/^[A-Za-z0-9._:-]{1,128}$/u.test(input.idempotencyKey)) throw invalid();
-      const file = validate(input);
+      const file = validate(input), idempotencyKey = input.idempotencyKey;
+      const fingerprint = digest(JSON.stringify([file.fileName, file.mediaType, file.data.byteLength, digest(file.data)]));
       // Blob allocation and metadata claim share one transaction: a failed or
       // lost stage cannot leave an undiscoverable new binary orphan.
-      return persistence.client.transaction(client => stagingFor(new PostgresAiPersistence(client)).stage({
-        ownerScopeId: uploadScope, conversationId: uploadScope, idempotencyKey: input.idempotencyKey,
-        fingerprint: digest(JSON.stringify([file.fileName, file.mediaType, file.data.byteLength, digest(file.data)])),
-        mediaType: file.mediaType, filename: file.fileName, bytes: file.data }));
+      return persistence.client.transaction(async client => {
+        await lockPostgresConversation(client, tenantId, uploadScope);
+        await assertPostgresAttachmentUploadNotExpired(client, tenantId, uploadScope, uploadScope, idempotencyKey, fingerprint);
+        return stagingFor(new PostgresAiPersistence(client)).stage({
+          ownerScopeId: uploadScope, conversationId: uploadScope, idempotencyKey, fingerprint,
+          mediaType: file.mediaType, filename: file.fileName, bytes: file.data });
+      });
     },
     async materialize(conversationId: string, references: readonly AttachmentReference[]): Promise<readonly ConversationFileInput[]> {
       await options.authorizeConversation(conversationId);
       if (references.length > limits.maximumFiles) throw invalid();
       const parsed = references.map(reference => {
         if (!/^att_[A-Za-z0-9][A-Za-z0-9._-]{0,251}$/u.test(reference.attachment_id) ||
-          !/^(?:ref|blob)_[A-Za-z0-9][A-Za-z0-9._-]{0,251}$/u.test(reference.content_ref) ||
+          !/^ref_[A-Za-z0-9][A-Za-z0-9._-]{0,251}$/u.test(reference.content_ref) ||
           !validFileMetadata(reference.filename, reference.media_type, reference.byte_size) ||
           Object.keys(reference).some(key => !["attachment_id", "content_ref", "media_type", "byte_size", "filename"].includes(key))) throw invalid();
         return { ...reference };

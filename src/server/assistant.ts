@@ -119,6 +119,9 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   readonly createConversationId?: () => string;
   /** Disable SDK byte intake while a migrating host retains its authorized upload route. Defaults to true. */
   readonly attachmentUpload?: boolean;
+  /** Idle expiry for new SDK-managed uploads. Defaults to one bounded service
+   * worker; false is for hosts that schedule the SDK cleanup explicitly. */
+  readonly attachmentCleanup?: false | { readonly intervalMs?: number; readonly batchSize?: number };
   /** Protected reads of retained saved files. Defaults true, independent of upload controls. */
   readonly attachmentDownloads?: boolean;
   /** Defaults to the provider's configured speech service; false disables authenticated dictation. */
@@ -165,8 +168,11 @@ export interface HandrailAssistant {
   ) => Promise<void>;
   recoverPending(limit?: number): Promise<number>;
   flushUsage(limit?: number): Promise<{ readonly delivered: number; readonly pending: number }>;
-  /** Stops the process-local usage retry worker without closing host-owned persistence. */
-  stopUsageWorker(): void;
+  /** Stops and joins SDK background maintenance before host-owned persistence closes. */
+  stopBackgroundWorkers(): Promise<void>;
+  /** @deprecated Use stopBackgroundWorkers. This compatible alias now also
+   * joins file maintenance when awaited; it does not cancel admitted turns. */
+  stopUsageWorker(): Promise<void>;
 }
 
 const DEFAULT_LIMITS: Readonly<ToolLoopLimits> = Object.freeze({
@@ -538,6 +544,15 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         signal: new AbortController().signal });
       if (result.outcome === "accepted" || result.outcome === "already_decided") {
         if (decisionReceipt !== undefined) return decisionReceipt;
+        // A later, different decision against terminal work does not produce a
+        // transition receipt. Return the authorized terminal state, as before,
+        // without replacing the immutable receipt of an exact decision replay.
+        if (result.outcome === "already_decided") {
+          const current = await proposalStore.get({ permissionContext: input.permissionContext,
+            proposalId: input.proposalId });
+          if (current !== null && current.status !== "pending") return current;
+          throw new ApprovalProposalStoreError("unavailable", "transition");
+        }
       }
       const code = result.outcome === "forbidden" ? "permission_denied"
         : result.outcome === "not_found" ? "not_found"
@@ -689,6 +704,14 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       phase: "failed", code: "usage_delivery_failed", retryable: true, cause }),
   });
   await usageDelivery.ready;
+  let attachmentCleanup: ReturnType<NonNullable<PostgresAssistantPersistence["startAttachmentCleanupWorker"]>> | undefined;
+  try {
+    if (options.attachmentCleanup !== false) attachmentCleanup = options.persistence.startAttachmentCleanupWorker?.({
+      ...options.attachmentCleanup,
+      ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+    });
+  } catch (error) { usageDelivery.stop(); throw error; }
+  const stopBackgroundWorkers = async () => { usageDelivery.stop(); await attachmentCleanup?.stop(); };
   return Object.freeze({
     version: HANDRAIL_ASSISTANT_VERSION,
     id: assistantId,
@@ -703,6 +726,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       return recovered;
     },
     flushUsage,
-    stopUsageWorker: usageDelivery.stop,
+    stopBackgroundWorkers,
+    stopUsageWorker: stopBackgroundWorkers,
   });
 }

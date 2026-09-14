@@ -37,9 +37,11 @@ function fixture(overrides: Partial<ConversationFileStorageOptions> = {}) {
 
 it("freezes submitted bytes and retains authorized files across expiry, service recreation and access revocation", async () => {
   const f = fixture(); const input = upload();
-  const uploading = f.files.stage(input); input.data.fill(9);
+  const uploading = f.files.stage(input); input.data.fill(9); input.idempotencyKey = "mutated";
   const reference = await uploading;
   expect(await f.files.stage(upload())).toEqual(reference);
+  await expect(f.files.materialize("conversation", [{ ...reference, content_ref: reference.content_ref.replace(/^ref_/u, "blob_") }]))
+    .rejects.toMatchObject({ code: "invalid_input" });
   await expect(f.files.materialize("conversation", [reference])).resolves.toEqual([
     { fileName: "report.pdf", mediaType: "application/pdf", data: original },
   ]);
@@ -240,4 +242,48 @@ it("reports malformed managed rows instead of deleting an unverified blob target
   expect(await cleanupPostgresConversationFileStaging({ persistence, tenantId: f.options.tenantId,
     maintenanceScopeId: "conversation-files", now: () => clock })).toEqual({ removed: 0, blocked: 1 });
   expect(await rows(f.options.tenantId)).toEqual(before);
+});
+
+it("lets the retained-file worker pass a blocked first batch and expire healthy uploads", async () => {
+  let clock = Date.now();
+  const f = fixture({ now: () => clock });
+  const bad = await f.files.stage(upload());
+  await f.files.stage({ ...upload(), idempotencyKey: "healthy" });
+  await database.query("UPDATE handrail_ai_documents SET record_id=$3 WHERE tenant_id=$1 AND record_id=$2",
+    [f.options.tenantId, bad.content_ref, "\u0001invalid-row"]);
+  clock += 16 * 60_000;
+  const onResult = vi.fn(), onError = vi.fn();
+  const worker = startPostgresConversationFileStagingCleanupWorker({ persistence, tenantId: f.options.tenantId,
+    maintenanceScopeId: "conversation-files", now: () => clock, batchSize: 1, onResult, onError });
+  try {
+    await worker.flush();
+    expect(onResult).toHaveBeenLastCalledWith({ removed: 0, blocked: 1 });
+    await worker.flush();
+    expect(onResult).toHaveBeenLastCalledWith({ removed: 1, blocked: 0 });
+    expect((await rows(f.options.tenantId)).documents).toHaveLength(1);
+    expect((await rows(f.options.tenantId)).blobs).toEqual([{ blob_key: `attachments/${bad.content_ref}` }]);
+    expect(onError).not.toHaveBeenCalled();
+  } finally { await worker.stop(); }
+});
+
+it("keeps expired upload retry identity after staging removal while saved files remain available", async () => {
+  let clock = Date.now();
+  const f = fixture({ now: () => clock });
+  const ref = await f.files.stage(upload());
+  await f.files.materialize("conversation", [ref]);
+  clock += 16 * 60_000;
+  expect(await cleanupPostgresConversationFileStaging({ persistence, tenantId: f.options.tenantId,
+    maintenanceScopeId: "conversation-files", now: () => clock })).toEqual({ removed: 1, blocked: 0 });
+  const restarted = createConversationFileStorage(f.options);
+  await expect(restarted.stage(upload())).rejects.toMatchObject({ code: "expired" });
+  await expect(restarted.stage({ ...upload(), fileName: "changed.pdf" })).rejects.toMatchObject({ code: "conflict" });
+  expect(await restarted.materialize("conversation", [ref])).toEqual([
+    { fileName: "report.pdf", mediaType: "application/pdf", data: original },
+  ]);
+  expect((await rows(f.options.tenantId)).documents).toHaveLength(1);
+  expect((await rows(f.options.tenantId)).blobs).toHaveLength(1);
+  const receipts = await client.query<{ result: unknown }>(
+    "SELECT result FROM handrail_ai_idempotency WHERE tenant_id=$1 AND domain='attachment.expired'", [f.options.tenantId]);
+  expect(receipts.rows).toEqual([{ result: { version: 1, status: "expired" } }]);
+  await expect(restarted.stage({ ...upload(), idempotencyKey: "new-upload" })).resolves.toMatchObject({ byte_size: 4 });
 });

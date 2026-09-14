@@ -40,12 +40,6 @@ describe("conversation timeline", () => {
     expect(labels(conversationTimeline(state(), { proposals: [proposal("late", 20), proposal("early", 0)] })))
       .toEqual(["question", "early", "answer", "late", "next-question", "next-answer"]);
   });
-  it("supports imported message identities through a host migration adapter", () => {
-    const legacy = { ...proposal(), turn_id: "legacy:question" as never };
-    const imported = { ...state(), messages: state().messages.map(item => ({ ...item, turn_id: null })) } as ConversationState;
-    expect(labels(conversationTimeline(imported, { proposals: [legacy], resolveLegacyTurnMessageId: id => id.slice(7) })))
-      .toEqual(["question", "proposal", "answer", "next-question", "next-answer"]);
-  });
   it("shows opted-in automatic results without duplicating approval cards", () => {
     const value = { ...state(), tool_calls: [result()] };
     expect(labels(conversationTimeline(value))).not.toContain("call");

@@ -322,7 +322,6 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
     <main className="hr-chat__body">
       {resolvedState && <ConversationTranscript state={resolvedState} className="hr-chat__transcript" role="region"
         {...(proposals ? { proposals } : {})} emptyState={props.emptyState}
-        {...(props.resolveLegacyTurnMessageId ? { resolveLegacyTurnMessageId: props.resolveLegacyTurnMessageId } : {})}
         includeToolResult={props.includeToolResult ?? (call => !!props.toolRendererKeys?.[call.name ?? ""])}
         renderToolResult={call => props.renderCompletedTool ? props.renderCompletedTool(call, resolvedState)
           : call.result && renderToolResult ? renderToolResult(call.result, call, undefined) : null}

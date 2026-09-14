@@ -77,7 +77,9 @@ For an endpoint-driven assistant that should show only the current conversation,
 set `conversationPicker={false}` on `HandrailAssistantLauncher` (or
 `HandrailChatWorkspace`). This removes both New and Threads, including their
 catalog controls, while keeping conversation restoration, messages, uploads,
-and voice controls active. Omit the prop to use the default thread picker.
+and voice controls active. Authorized catalog hydration still runs so saved
+selection, archive state and recovery remain correct; hiding the controls does
+not disable history access. Omit the prop to use the default thread picker.
 
 ## Theme contract
 

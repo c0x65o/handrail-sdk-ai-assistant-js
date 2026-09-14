@@ -309,6 +309,79 @@ it("cleans newly staged bytes when conversation deletion wins before metadata ad
   expect(await count()).toBe(before);
 });
 
+it("rolls back ordinary upload bytes with failed metadata admission, then replays one retained upload", async () => {
+  const { postgresFromClient } = await import("../src/postgres/index.js");
+  let fail = true;
+  const faulty: PostgresSqlClient = { query: client.query, transaction: operation => client.transaction(tx => {
+    const wrapped: PostgresSqlClient = { query: async (sql, values) => {
+      if (fail && sql.startsWith("INSERT INTO handrail_ai_documents") && sql.includes("'attachment'")) {
+        fail = false; throw new Error("fixture metadata failure");
+      }
+      return tx.query(sql, values);
+    }, transaction: nested => nested(wrapped) };
+    return operation(wrapped);
+  }) };
+  const bundle = postgresFromClient(faulty).forScope({ tenantId: "atomic-upload", scopeId: "owner" }, {
+    createConversationId: () => "unused" as ConversationId,
+  });
+  const input = { ownerScopeId: "owner", conversationId: "conversation", idempotencyKey: "same-upload",
+    fingerprint: "same-content", bytes: new Uint8Array([1, 2, 3]), mediaType: "text/plain" };
+  await expect(bundle.attachments.stage(input)).rejects.toMatchObject({ code: "unavailable" });
+  expect((await client.query("SELECT 1 FROM handrail_ai_attachment_blobs WHERE tenant_id='atomic-upload'")).rows).toHaveLength(0);
+  expect(await bundle.attachmentMetadata.getByIdempotency("owner", "conversation", "same-upload")).toBeNull();
+  const reference = await bundle.attachments.stage(input);
+  expect(await bundle.attachments.stage(input)).toEqual(reference);
+  expect((await client.query("SELECT 1 FROM handrail_ai_attachment_blobs WHERE tenant_id='atomic-upload'")).rows).toHaveLength(1);
+  expect((await bundle.attachments.resolve({ ...input, contentRef: reference.content_ref })).bytes).toEqual(input.bytes);
+});
+
+it("captures an ordinary upload before waiting for a database transaction", async () => {
+  const { postgresFromClient } = await import("../src/postgres/index.js");
+  let enter!: () => void;
+  const admission = new Promise<void>(resolve => { enter = resolve; });
+  const delayed: PostgresSqlClient = { query: client.query, transaction: async operation => {
+    await admission; return client.transaction(operation);
+  } };
+  const bundle = postgresFromClient(delayed).forScope({ tenantId: "frozen-upload", scopeId: "owner" }, {
+    createConversationId: () => "unused" as ConversationId,
+  });
+  const input = { ownerScopeId: "owner", conversationId: "conversation", idempotencyKey: "frozen-upload",
+    fingerprint: "original", bytes: new Uint8Array([4, 5]), mediaType: "text/plain" };
+  const staging = bundle.attachments.stage(input);
+  input.bytes.fill(9); input.fingerprint = "changed";
+  enter();
+  const reference = await staging;
+  const resolved = await bundle.attachments.resolve({ ownerScopeId: "owner", conversationId: "conversation",
+    contentRef: reference.content_ref });
+  expect(resolved.bytes).toEqual(new Uint8Array([4, 5]));
+  expect(resolved.record.fingerprint).toBe("original");
+});
+
+it("retains an upload after a lost commit acknowledgement and safely replays its original identity", async () => {
+  const { postgresFromClient } = await import("../src/postgres/index.js");
+  let loseReply = true;
+  const uncertain: PostgresSqlClient = { query: client.query, transaction: async operation => {
+    const result = await client.transaction(operation);
+    if (loseReply) { loseReply = false; throw new Error("fixture connection ended after commit"); }
+    return result;
+  } };
+  const diagnostics = vi.fn();
+  const bundle = postgresFromClient(uncertain, { diagnostics }).forScope({ tenantId: "uncertain-upload", scopeId: "owner" }, {
+    createConversationId: () => "unused" as ConversationId,
+  });
+  const input = { ownerScopeId: "owner", conversationId: "conversation", idempotencyKey: "same-upload",
+    fingerprint: "same-content", bytes: new Uint8Array([6, 7]), mediaType: "text/plain" };
+  await expect(bundle.attachments.stage(input)).rejects.toMatchObject({ code: "unavailable" });
+  expect(diagnostics.mock.calls.some(([value]) => value.domain === "attachment" && value.phase === "succeeded")).toBe(false);
+  const committed = await bundle.attachmentMetadata.getByIdempotency("owner", "conversation", "same-upload");
+  expect(committed).not.toBeNull();
+  const reference = await bundle.attachments.stage(input);
+  expect(reference.content_ref).toBe(committed!.contentRef);
+  expect((await bundle.attachments.resolve({ ...input, contentRef: reference.content_ref })).bytes).toEqual(input.bytes);
+  expect((await client.query("SELECT 1 FROM handrail_ai_attachment_blobs WHERE tenant_id='uncertain-upload'")).rows).toHaveLength(1);
+  expect(diagnostics.mock.calls.filter(([value]) => value.domain === "attachment" && value.phase === "succeeded")).toHaveLength(1);
+});
+
 it("purges provider response content while preserving completion identity and refusing redispatch", async () => {
   const { PostgresProviderOperationStore } = await import("../src/postgres/index.js");
   await seed("provider-finished");

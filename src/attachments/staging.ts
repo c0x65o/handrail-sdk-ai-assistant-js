@@ -1,4 +1,4 @@
-import type { AttachmentReference } from "../protocol.js";
+import { AI_RUNTIME_CONTENT_REFERENCE_GRAMMAR, type AttachmentReference } from "../protocol.js";
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 
 export interface AttachmentBlobStore {
@@ -45,10 +45,10 @@ function acceptable(mediaType: string, accepted: readonly string[]): boolean {
 function safeId(value: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/u.test(value)) throw new AttachmentStagingError("invalid_input"); return value;
 }
+const contentReferenceGrammar = new RegExp(AI_RUNTIME_CONTENT_REFERENCE_GRAMMAR, "u");
 function reference(record: StagedAttachmentRecord): AttachmentReference {
-  // Older staging returned a blob_ key that the public wire grammar rejects.
-  // Keep its stored identity and expose a compatible alias without restaging bytes.
-  return { attachment_id: record.attachmentId, content_ref: record.contentRef.replace(/^blob_/u, "ref_"),
+  if (!contentReferenceGrammar.test(record.contentRef)) throw new AttachmentStagingError("not_found");
+  return { attachment_id: record.attachmentId, content_ref: record.contentRef,
     media_type: record.mediaType as AttachmentReference["media_type"], byte_size: record.byteSize,
     ...(record.filename ? { filename: record.filename } : {}) };
 }
@@ -65,6 +65,7 @@ export function createAttachmentStagingService(options: AttachmentStagingOptions
   const read = async (record: StagedAttachmentRecord | null, ownerScopeId: string, conversationId: string) => {
     if (!record) throw new AttachmentStagingError("not_found");
     if (!owns(record, ownerScopeId, conversationId)) throw new AttachmentStagingError("forbidden");
+    if (!contentReferenceGrammar.test(record.contentRef)) throw new AttachmentStagingError("not_found");
     if (!Number.isFinite(Date.parse(record.expiresAt)) || Date.parse(record.expiresAt) <= now()) throw new AttachmentStagingError("expired");
     if (record.consumedAt) throw new AttachmentStagingError("not_found");
     if (!Number.isSafeInteger(record.byteSize) || record.byteSize < 1 || record.byteSize > maximumBytes ||
@@ -81,6 +82,9 @@ export function createAttachmentStagingService(options: AttachmentStagingOptions
       safeId(input.idempotencyKey); safeId(input.fingerprint);
       if (!(input.bytes instanceof Uint8Array) || input.bytes.byteLength < 1 || input.bytes.byteLength > maximumBytes ||
         !acceptable(input.mediaType, acceptedMediaTypes)) throw new AttachmentStagingError("invalid_input");
+      // Capture caller-owned data before any asynchronous lookup or storage.
+      // Mutating an upload buffer must not change its retained fingerprint.
+      input = { ...input, bytes: new Uint8Array(input.bytes) };
       const existing = await options.metadata.getByIdempotency(ownerScopeId, conversationId, input.idempotencyKey);
       if (existing) {
         if (existing.fingerprint !== input.fingerprint) throw new AttachmentStagingError("conflict");
@@ -88,6 +92,7 @@ export function createAttachmentStagingService(options: AttachmentStagingOptions
         return reference(existing);
       }
       const attachmentId = safeId(`att_${createId()}`), contentRef = safeId(`ref_${createId()}`), blobKey = safeId(`attachments/${contentRef}`);
+      if (!contentReferenceGrammar.test(contentRef)) throw new AttachmentStagingError("invalid_input");
       const createdAt = new Date(now()).toISOString(), expiresAt = new Date(now() + ttlMilliseconds).toISOString();
       const record: StagedAttachmentRecord = { attachmentId, contentRef, blobKey, ownerScopeId, conversationId,
         idempotencyKey: input.idempotencyKey, fingerprint: input.fingerprint, mediaType: input.mediaType,
@@ -115,8 +120,8 @@ export function createAttachmentStagingService(options: AttachmentStagingOptions
     },
     async resolve(input: { readonly ownerScopeId: string; readonly conversationId: string; readonly contentRef: string }) {
       const contentRef = safeId(input.contentRef);
-      const record = await options.metadata.getByContentRef(contentRef) ?? (contentRef.startsWith("ref_")
-        ? await options.metadata.getByContentRef(contentRef.replace(/^ref_/u, "blob_")) : null);
+      if (!contentReferenceGrammar.test(contentRef)) throw new AttachmentStagingError("invalid_input");
+      const record = await options.metadata.getByContentRef(contentRef);
       return read(record, safeId(input.ownerScopeId), safeId(input.conversationId));
     },
     /** Reads existing bytes without changing expiry or reviving consumed content. */

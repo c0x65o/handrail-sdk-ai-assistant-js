@@ -1,5 +1,10 @@
 # Shared assistant consolidation
 
+> Historical consolidation ledger. The current disposable-chat cleanup objective
+> and its source/installed/production boundaries are recorded in
+> [assistant cleanup progress](assistant-cleanup-goal-progress.md). Saved-data
+> migration adapters described below are not current integration requirements.
+
 Goal: `6f19391a-7545-4926-85bb-13761e8a404c`. This is the chronological implementation and evidence ledger for making the optional SDK UI suitable for 35 projects. The [final local acceptance review](./shared-assistant-acceptance.md) supersedes historical remaining-work notes below; neither document establishes deployment or production parity.
 
 The target ownership is SDK-managed assistant behavior with host formatting, business logic, and explicit feature settings. Cents must receive Spartan's sending experience by consuming the SDK, not by copying Spartan components.
@@ -77,7 +82,7 @@ Shared client workspace and Cents candidate work:
 Spartan/shared transcript stage:
 
 - Spartan now uses `HandrailAssistantWorkspace` directly. Its remaining UI code is launcher branding/account binding, ERP message and action formatting, business request construction and resource refresh. The bespoke composer, draft hook, upload lifetime hook, attachment runtime wrapper, drop target, codec wrapper, voice component, transcript ordering module and global compact stylesheet are removed. Generic speech-hint parsing is an SDK re-export.
-- `conversationTimeline` and `ConversationTranscript` preserve original-question ordering across delayed decisions, imported identities, automatic completions and saved failures. The styled default consumes them. `renderApproval`, `renderConversationMessage`, `renderCompletedTool` and the legacy identity callback are supported formatting/business extension points.
+- `conversationTimeline` and `ConversationTranscript` preserve original-question ordering across delayed decisions, imported identities, automatic completions and saved failures. The styled default consumes them. At this historical milestone `renderApproval`, `renderConversationMessage`, `renderCompletedTool` and the legacy identity callback were supported extension points. The turn 36 cleanup removes the unused legacy identity callback; canonical ordering and domain renderers remain.
 - `assistantToolArgumentReference` is a shared portable canonical digest, verified against Node SHA-256. The default confirmation card shows authorized arguments only when they match the proposal binding; missing/mismatched review disables confirmation. Archived cards cannot submit decisions. The server still reauthorizes every decision/execution.
 - Archive integration exposed a store-destruction race. SDK history now flushes React detachment before successful runtime release. Rejected archive still preserves the runtime and draft. View changes can select a healthy saved thread without creating a replacement.
 - Full-workspace integration exposed an unwired default Stop. `useConversationActions` now exports runtime cancellation and the composer uses it when no custom callback is supplied. New drag feedback and busy drop suppression also live in the shared composer.
@@ -919,7 +924,9 @@ without deleting receipts or abandoning an in-flight acknowledgement.
 
 The attachment audit reproduced three failing Spartan tests against the new SDK:
 the host rewrote a current `ref_` as though it were an older `blob_` reference.
-SDK staging now owns both formats without host rewrites. The further extraction
+At that historical milestone SDK staging owned both formats without host rewrites.
+The turn 36 unpublished cleanup removes its retired staging alias/fallback; see
+[the current upload contract](trusted-history-and-attachments.md). The further extraction
 adds `createConversationFileStorage` and removes Spartan's separate retention
 transaction, metadata decoder, checksum reader and materialization loop. Spartan
 supplies company/principal access policy, file content/type/size settings and its

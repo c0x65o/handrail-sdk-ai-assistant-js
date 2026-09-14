@@ -1,6 +1,7 @@
 import type { StagedAttachmentRecord } from "../attachments/staging.js";
 import { lockPostgresAttachmentBlob, lockPostgresConversation } from "./conversation-deletion.js";
 import type { PostgresAiPersistence } from "./index.js";
+import { recordPostgresAttachmentUploadExpiry } from "./attachment-expiry-receipts.js";
 
 interface ManagedStaging extends StagedAttachmentRecord {
   readonly retention: { readonly version: 1; readonly scopeId: string };
@@ -43,21 +44,30 @@ function valid(row: Candidate, scope: string, before: string): boolean {
 export async function cleanupPostgresConversationFileStaging(
   options: PostgresConversationFileStagingCleanupOptions, limit = 100,
 ): Promise<{ removed: number; blocked: number }> {
+  return (await cleanupBatch(options, limit)).counts;
+}
+
+type ScanPosition = Pick<Candidate, "tenant_id" | "scope_id" | "record_id">;
+async function cleanupBatch(options: PostgresConversationFileStagingCleanupOptions, limit: number, after?: ScanPosition) {
   if (!identity(options.maintenanceScopeId) || options.tenantId !== undefined && !identity(options.tenantId) ||
     !Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new TypeError("Invalid staging cleanup scope or bounds.");
   const before = new Date((options.now ?? Date.now)()).toISOString();
   const candidates = await options.persistence.client.query<Candidate>(`SELECT tenant_id,scope_id,record_id,version::text,payload
     FROM handrail_ai_documents WHERE kind='attachment' AND payload->'retention'->>'version'='1'
       AND payload->'retention'->>'scopeId'=$1 AND ($2::text IS NULL OR tenant_id=$2)
-      AND payload->>'expiresAt'<=$3 ORDER BY payload->>'expiresAt',tenant_id,scope_id,record_id LIMIT $4`,
-  [options.maintenanceScopeId, options.tenantId ?? null, before, limit]);
+      AND payload->>'expiresAt'<=$3 AND ($4::text IS NULL OR (tenant_id,scope_id,record_id)>($4,$5,$6))
+      ORDER BY tenant_id,scope_id,record_id LIMIT $7`,
+  [options.maintenanceScopeId, options.tenantId ?? null, before,
+    after?.tenant_id ?? null, after?.scope_id ?? null, after?.record_id ?? null, limit]);
   const counts = { removed: 0, blocked: 0 };
   for (const candidate of candidates.rows) {
     if (!valid(candidate, options.maintenanceScopeId, before)) { counts.blocked++; continue; }
-    const removed = await options.persistence.client.transaction(async client => {
+    const outcome = await options.persistence.client.transaction(async client => {
       const value = candidate.payload;
-      // Match retained-file materialization and conversation deletion lock order.
-      await lockPostgresConversation(client, candidate.tenant_id, value.retainedConversationId ?? value.conversationId);
+      // Stage admission and expiry share the upload identity lock. Retained
+      // materialization/deletion take the real conversation before its blobs.
+      await lockPostgresConversation(client, candidate.tenant_id, value.conversationId);
+      if (value.retainedConversationId) await lockPostgresConversation(client, candidate.tenant_id, value.retainedConversationId);
       await lockPostgresAttachmentBlob(client, candidate.tenant_id, value.blobKey);
       const current = await client.query<Candidate>(`SELECT tenant_id,scope_id,record_id,version::text,payload
         FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment' AND scope_id=$2 AND record_id=$3
@@ -65,20 +75,27 @@ export async function cleanupPostgresConversationFileStaging(
       const row = current.rows[0];
       // Consumption may have committed between discovery and locking. Retry a
       // later sweep with its current conversation lock, never guess a binding.
-      if (!row || row.version !== candidate.version) return false;
-      if (!valid(row, options.maintenanceScopeId, before) || JSON.stringify(row.payload) !== JSON.stringify(value)) return false;
+      if (!row || row.version !== candidate.version) return "changed";
+      if (!valid(row, options.maintenanceScopeId, before) || JSON.stringify(row.payload) !== JSON.stringify(value)) return "blocked";
+      if (!await recordPostgresAttachmentUploadExpiry(client, row.tenant_id, row.scope_id, value)) return "blocked";
       const deleted = await client.query(`DELETE FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment'
         AND scope_id=$2 AND record_id=$3 AND version=$4 RETURNING record_id`,
       [row.tenant_id, row.scope_id, row.record_id, Number(row.version)]);
-      if (!deleted.rows.length) return false;
+      if (!deleted.rows.length) return "changed";
       await client.query(`DELETE FROM handrail_ai_attachment_blobs WHERE tenant_id=$1 AND blob_key=$2
         AND NOT EXISTS (SELECT 1 FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment' AND payload->>'blobKey'=$2)`,
       [row.tenant_id, value.blobKey]);
-      return true;
+      return "removed";
     });
-    if (removed) counts.removed++;
+    if (outcome === "removed") counts.removed++;
+    else if (outcome === "blocked") counts.blocked++;
   }
-  return counts;
+  const last = candidates.rows.at(-1);
+  // Carry raw SQL positions past malformed rows; these are scan bounds only.
+  // Every deletion still validates ownership, policy, version and blob identity.
+  const next = candidates.rows.length === limit && last
+    ? { tenant_id: last.tenant_id, scope_id: last.scope_id, record_id: last.record_id } : undefined;
+  return { counts, next };
 }
 
 /** Explicit lifecycle hook: expiry continues while an app is idle, and can be
@@ -93,11 +110,12 @@ export function startPostgresConversationFileStagingCleanupWorker(options: Postg
     !Number.isSafeInteger(intervalMs) || intervalMs < 1_000 || !Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 500) {
     throw new TypeError("Invalid staging cleanup worker settings.");
   }
-  let running: Promise<void> | undefined, stopped = false;
+  let running: Promise<void> | undefined, stopped = false, cursor: ScanPosition | undefined;
   const flush = () => {
     if (stopped) return Promise.resolve();
-    running ??= cleanupPostgresConversationFileStaging(options, batchSize).then(result => {
-      try { options.onResult(result); } catch { /* Diagnostics cannot fail cleanup. */ }
+    running ??= cleanupBatch(options, batchSize, cursor).then(result => {
+      cursor = result.next;
+      try { options.onResult(result.counts); } catch { /* Diagnostics cannot fail cleanup. */ }
     }, () => { try { options.onError(); } catch { /* Diagnostics cannot fail cleanup. */ } })
       .finally(() => { running = undefined; });
     return running;

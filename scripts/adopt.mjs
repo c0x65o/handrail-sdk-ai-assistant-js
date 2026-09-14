@@ -79,7 +79,7 @@ function inspect(root) {
     && !locked.link && SOURCE_PATTERN.test(locked.resolved ?? "")
     && locked.resolved === current?.source && lockCurrentSource === current?.source && !legacyLocked
     && sourcesMatch && canonicalNodes.length === 1);
-  const recovery = source.includes("flushUsage") && source.includes("stopUsageWorker") &&
+  const recovery = source.includes("flushUsage") && (source.includes("stopUsageWorker") || source.includes("stopBackgroundWorkers")) &&
     (source.includes("recoverPendingOnContext") ||
       (source.includes("recoveryContexts") && source.includes("recoverPending")));
   const findings = [
@@ -91,7 +91,7 @@ function inspect(root) {
     { id: "telemetry", ok: importsSdkPath("server/usage-control") && source.includes("usageFromEnvironment"), detail: "automatic Handrail usage binding" },
     { id: "recovery", ok: recovery, detail: recovery
       ? "trusted-context or startup recovery plus graceful shutdown"
-      : "configure trusted-context recovery or recoveryContexts, then flush and stop usage on shutdown" },
+      : "configure trusted-context recovery or recoveryContexts, then flush usage and stop background workers on shutdown" },
     { id: "ui", ok: standardUi || explicitHeadless, detail: standardUi ? "standard styled assistant" : explicitHeadless ? "explicit headless integration" : "use HandrailAssistantLauncher, HandrailAssistantWorkspace, or explicitly select react/headless" },
   ];
   return { schemaVersion: 1, qualification: "static-source-and-lockfile-only", package: PACKAGE, host: basename(root), root, passed: findings.every((item) => item.ok), findings };

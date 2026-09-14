@@ -189,7 +189,7 @@ late uploads cannot recreate a sealed conversation's objects. Old workers and
 any previously issued signed URLs remain cutover dependencies: fence/drain them
 and establish outcomes before declaring old object removal final.
 
-## Retained-file staging expiry (unpublished source)
+## Retained-file staging expiry (public 0.2.37)
 
 The shared retained-file adapter now commits staging admission atomically with
 its new blob. Materialization commits the saved copy, upload consumption and
@@ -207,10 +207,34 @@ storage. Use one worker per service and await shutdown before closing SQL.
 Malformed marked rows are reported blocked for review and remain untouched.
 See [retained-file setup](trusted-history-and-attachments.md#retained-conversation-files).
 
-These source corrections are newer than public `5a0ebe5` and are not yet installed
-in Aegis. Its future adoption must include the worker lifecycle. Previously
+These corrections are public at `15a3806c2595a3f93a87a768ad13293113f41b58`
+(0.2.37), now normally installed by Aegis with matching locks and the service
+worker lifecycle. Seven installed attachment cases cover this integration. Previously
 unmarked uploads/imported copies still require the approved cutover; there is no
 migration or automatic purge of those records.
+
+The turn 36 unpublished follow-up makes this worker advance past blocked batches
+and retain minimal expired-upload retry receipts. It serializes stage admission
+with expiry, preserving saved files while refusing an old upload key after its
+staging metadata is removed. This follow-up is newer than public 15a; see
+[the current retention contract](trusted-history-and-attachments.md).
+
+## Ordinary upload expiry (unpublished source)
+
+The assistant PostgreSQL bundle now owns bounded physical expiry for newly
+marked version 2 ordinary uploads, with one service worker owned by
+`createHandrailAssistant`. It shares deletion's read-only active-work/history
+checks and locks, but removes neither the conversation nor its history,
+checkpoints, read acknowledgements or business/usage/effect receipts. Expiry
+validates owner/version/blob lease, preserves shared files, and retains only a
+minimal hashed expired-upload receipt for safe retries. Atomic consumption also
+preserves shared bytes. Corrupt history blocks only its conversation; temporary
+storage outages remain retryable failures. Old/unmarked rows and the retained-file
+version 1 policy are not adopted. See [the lifecycle and validation details](trusted-history-and-attachments.md#ordinary-upload-expiry-unpublished-source).
+
+This source is newer than installed public 15a and does not remove production
+data. The coordinated approved cutover remains necessary for retired tables,
+unmarked uploads and imported copies.
 
 ## Qualification
 

@@ -4,22 +4,54 @@ Goal: `06b47a97-7cd6-41b7-9040-6b88761094ce`.
 Scope remains JS/React/server and Flutter SDKs plus Mills, Spartan/Aegis and
 Hitcents/Cents web/mobile consumers. Overall completion is unproven.
 
-Latest milestone: turn 34 closes the shared retained-file adapter's atomicity and
-idle-expiry gaps, removes its unused import API, and fixes native postgres.js
-infinite-expiry encoding. Staging and retention/consumption now commit atomically;
-conversation deletion removes linked staging metadata. A bounded service worker
-expires only newly managed temporary records and preserves saved/shared bytes.
-Validation: 51 focused tests, full TypeScript, normal SDK build, scoped lint and
-five native PostgreSQL races pass. These are unpublished SDK source corrections;
-Aegis still installs public 0.2.36 and needs the reviewed release/adoption/worker
-lifecycle step recorded in its host handoff.
+Latest milestone: turn 36 completes the managed ordinary-upload expiry source
+follow-up, fixes shared-file consumption and removes the retired staging alias.
+Eighty focused cases, full TypeScript, scoped lint, normal build and
+twelve native PostgreSQL cases pass. The source and the terminal-approval fix
+remain newer than installed public 15a; neither is released by this goal.
+The updated shutdown template also passes a fresh normal public-15a install,
+clean reinstall, typed/build gates, static adoption and synthetic native runtime
+qualification. See the turn 36 entry and the exact retention contract below.
+The [current acceptance inventory](assistant-cleanup-acceptance.md) maps all six
+criteria to source, installed evidence and outstanding release/runtime/data gates.
 
-Turn 33's Mills dictation adoption, turn 32's Aegis provider binding and turn 31's
-Cents source visual pass remain qualified separately from rollout. Next independent
-work: Mills' now-unused auxiliary usage receipt projection/delivery integration,
-then current-source/doc remnant audit and the remaining qualification inventory.
-Public adoption of newer SDK source, authorized host release, live/native
-qualification and approved production cleanup remain open. No overall 100% claim.
+Turn 35 qualified the normal public adoption. All three
+web consumers install JS 0.2.37 at `15a3806c2595a3f93a87a768ad13293113f41b58`
+with matching locks, full typed compiles, builds and static adoption checks.
+Mills passes 187 selected cases; Cents passes 152; Aegis passes 113 of 114.
+Aegis's unchanged mounted terminal-approval assertion exposes a public SDK
+response regression. The newer source fix passes 22 SDK cases and full
+typecheck/lint/build, but remains unpublished and unadopted by installed hosts.
+
+All three main mobile consumers normally install public Flutter
+`50fe566d73f68b2beacc2a874dc9a038363b1509` (client 0.1.8/widgets 0.1.1) with matching
+locks and public Git-cache roots. Mills' shared workspace is now in main and
+passes full analysis, 312 selected cases and a release web build. Aegis passes
+analysis, 179 selected cases and its web build; Cents passes analysis, 96 selected
+cases and its web build. Cents's installed visual gate now passes at
+0.12282185395988604 against unchanged 0.123, with six actual installed captures.
+The test-font Greek glyph limitation remains. The detached Mills candidate also
+uses normal public resolution, and redundant host WebRTC dependencies are removed.
+
+The Flutter gateway fixture now normally installs public JS 15a; full client
+analysis and all 138 cases pass, including its formerly skipped attachment case.
+A new public-15a scaffold passes install, clean reinstall, both typed/build gates,
+static adoption and a native disposable-PostgreSQL synthetic runtime check.
+
+Turn 35 qualified atomic ordinary-upload admission, input snapshots and
+lost-commit replay. Turn 36 adds an automatically owned bounded expiry lifecycle
+for newly marked records, with no startup sweep or old-row adoption. Unresolved
+text/voice/provider/tool work, shared files and required receipts remain protected.
+Old unmarked records must remain for approved cutover. The turn 35 next-audit note
+is historical; its worker and alias tasks are now implemented in local source.
+
+Mills and Cents development Mobile Preview attempts returned
+`preview_browser_access_denied` outside this Dev Chat's saved scope, matching the
+earlier Spartan route rejection. No browser opened and no app failure was
+reproduced. This does not establish every possible live route is unavailable.
+Corrected SDK adoption, authorized runtime/native qualification and approved
+production cleanup remain open. No releases or production writes occurred;
+no overall completion or global blocked-audit streak is claimed.
 
 ## September 13 first autonomous continuation
 
@@ -87,40 +119,33 @@ adoption action. No dependency manifests/locks or release state changed here.
 
 ## Remaining acceptance work
 
-1. Re-audit all registered consumers for old runtime/routes/schema/seed remnants.
-   Earlier removal evidence is a starting point, not proof of current production
-   state. Mills, Cents and Spartan now have qualified empty-database baselines; direct
-   replay of their immutable historical chains still represents the old schema
-   intentionally. Existing production schemas remain to audit and clean through
-   the approved cutover.
-2. Finish retention of older unbound provider/continuation records and other
-   chat-derived evidence without losing business dispatch/idempotency safety.
-   Mills' source now uses the shared transaction and durable external-media
-   cleanup; actual adoption/rollout remains. Seven native PostgreSQL concurrency
-   cases are qualified locally; deployed runtime, provider and voice cases remain.
-3. Finish adopting shared feature surfaces and consolidate generic mobile wiring.
-   Mills' local catalog now supports archive/restore. Qualify all named features across Mills,
-   Aegis and Cents against the actual installed SDK revisions. Preserve domain
-   policies. Remove misleading host actions such as Cents' Clear-to-New duplicate;
-   unsupported SDK clear must remain explicitly unavailable. Reusing a deleted
-   conversation ID is not an added requirement of the agreed objective.
-4. Finish and qualify clean-install route/auth/persistence/migration setup,
-   diagnostic and scaffold behavior across the remaining scope. All three named
-   hosts' baselines are locally qualified; this does not establish rollout or
-   actual provider/runtime qualification.
-5. Align JS/Flutter consumers through full public HTTPS Git SHAs and locks from
-   the correct repositories. A local SDK build is not consumer installation.
-   The persisted objective explicitly prohibits release actions; no release or
-   production writes were performed in this continuation.
-6. Replace stale shared/host guidance and run conformance, browser/mobile and
-   deployed-runtime qualification. Do not infer live audio/provider behavior
-   from unit/widget tests. Use declared authorized preview routes.
+1. Complete a current-source/doc remnant audit across registered consumers using
+   the later milestones below. Older bullet lists are not a fresh inventory.
+   Immutable applied migration history is retained deliberately. All three hosts
+   have locally qualified empty-database baselines; production old-table removal
+   remains an approved cutover operation.
+2. Inventory and remove old imported SDK copies, unbound provider/continuation/
+   transcription records and chat-only files without losing ownership, uncertain
+   business outcome, audit or billing evidence. New file deletion/retention source
+   is qualified; older unmarked staging requires explicit review. No startup or
+   migration purge is authorized.
+3. Adopt the newer JS/Flutter source through reviewed public full SHAs and locks,
+   including Aegis's retained-file worker and Mills' shared mobile candidate.
+   Cents' public Flutter visual measurement remains below its gate; the source
+   correction passes locally and still requires publication/adoption. Cents'
+   Clear-to-New duplicate and scoped mobile generic wrapper copies are removed.
+4. Finish the actual runtime/provider/audio qualification matrix using authorized
+   browser/Mobile Preview routes and QA Vault identities. Record each platform
+   rejection precisely. Prior local conformance, clean install, build, native
+   fixture and image checks are evidence only for the scope they exercised.
+5. Perform the authorized coordinated host releases and native production cleanup
+   before claiming rollout or overall completion. The exact objective currently
+   prohibits commits, pushes, PRs, SDK publication and deployment. Production SQL
+   also needs the separate interactive approval mechanism.
 
-Prepare the coordinated production cutover and obtain the required native
-interactive database approval before data removal. Do not mark the overall goal
-complete while source, actual dependency adoption, runtime qualification or
-production cleanup remains incomplete. This turn makes code/test progress; it
-is not a blocked-audit turn.
+The shared source, consumer installation, runtime behavior and production data
+removal are separate completion facts. Turn 34 makes verified source progress;
+it is not a blocked-audit turn.
 
 ## September 13 third autonomous continuation
 
@@ -2191,3 +2216,310 @@ exact Aegis service adoption handoff. No consumer manifest, lock, runtime, datab
 or storage resource was changed. Public `5a0ebe5` lacks these corrections; a source
 qualification or temporary alias is not installed-consumer completion. No SDK
 publication/commit/push/PR/deployment or production cleanup occurred.
+
+Turn 34 additionally finished the next independently authorized Mills source step.
+The removed dictation route had left `beginMillsAIRuntimeUsage`, its custom
+admission/settlement and receipt builder, and audio-evidence forwarding with no
+production caller. Removed those APIs and the host retry timer. The 27-line host
+composition now uses the **installed public 0.2.36** environment client, receipt
+sink and `createAIRuntimeUsageDelivery`; no newer SDK release is needed for this
+part. The auxiliary outbox tenant and service scope are unchanged, including old
+receipts. Active live voice continues its trusted owner/session attribution,
+duration evidence and backend receipts. The shared assistant keeps its configured
+backend model; only obsolete auxiliary transcription configuration was removed.
+
+Mills verification: eight installed-SDK tests for configuration, intervals,
+shutdown while a flush is pending, SQL durability through outage/restart and lost
+acknowledgement, historical receipt deduplication, subsequent current live backend
+receipt delivery, environment isolation and voice evidence safety. Scoped
+TypeScript includes the full server composition/import graph and all three usage
+test files; ESLint passes. Logs: `/tmp/mills-web-turn34-usage-tests-final.log`,
+`/tmp/mills-web-turn34-typecheck-final.log`, `/tmp/mills-web-turn34-lint-final.log`.
+Corrected the host's historical SDK compatibility handoff to distinguish public
+0.2.34 limitations from the currently installed 0.2.36 APIs. The separate SDK
+package-contract run also passed all 31 cases
+(`/tmp/sdk-js-turn34-package-contract.log`). These checks do not exercise real
+telemetry billing, deployed providers or native audio playback. No release or
+production writes occurred.
+
+Late turn 34 shared-workspace update: external commits appeared at 07:41 Central.
+Read-only public `git ls-remote` confirmed JS `15a3806c2595a3f93a87a768ad13293113f41b58`
+(0.2.37) and Flutter `50fe566d73f68b2beacc2a874dc9a038363b1509`. Both contain the
+previously qualified local source. This goal run did not commit or push them.
+Mills web also moved externally to `05699556c55615585635d8792978786f7f58cd95` and
+Spartan web to `9da231f09158569dca6916168f918087cacbffec`; existing work was preserved.
+Mills manifest, lock and installed package remain JS 0.2.36/`5a0ebe5`; Spartan's
+manifest also remains that SHA and has no file-expiry worker yet. Reverify other
+consumer states before adoption. These public releases resolve the earlier SDK
+publication dependency, so it is no longer a valid blocker. Dependency adoption
+and local qualification remain authorized; this run's commit/push/PR/deployment
+restriction and native production-write approval requirements remain in force.
+The next continuation must use these exact verified public baselines, not stale
+claims that the source is unpublished. No overall completion claim is warranted.
+
+## September 14 thirty-fifth autonomous continuation
+
+Verified active native/durable objectives and current context/access. Relevant
+human Coverage Q&A search for SDK adoption returned no entries. Verified the public
+JS `15a3806` and Flutter `50fe566` repositories before changing consumers. No commit,
+push, PR, publication or deployment is authorized for this goal run.
+
+All three web manifests/allowScripts entries now pin the exact full public JS SHA.
+Normal npm 12 installs compile the SDK; only root metadata and the assistant
+package changed in each lock. The financial SDK pins and Spartan's normal
+postinstall patch are preserved. Static adoption checks pass in all three hosts.
+Mills typecheck/build plus 187 distinct selected tests pass. The first direct
+Vitest invocation inherited production React and failed 51 browser assertions;
+using the repository's test launcher passed all 69 browser cases. The other
+118 node cases had passed. Cents typecheck/build and 152 selected cases pass.
+
+Aegis starts one SDK staging-expiry worker after its assistant initializes and
+awaits it before usage flush/pool close. It uses the existing default
+`conversation-files` partition, fixed safe diagnostic codes and current file
+identities. Seven installed attachment cases include idle managed expiry, saved/
+unmarked preservation, shutdown and linked deletion. Twenty-eight provider cases
+and 56 UI/live-delivery cases pass. Full source/config plus all 496 test roots
+compile with the configured 48-file sequential batches. Two fixture annotations
+were corrected without changing behavior. Mounted API/native composition have
+22 passes and one failure: a later dismissal after execution returns 400.
+
+That mounted failure exposed the public SDK's missing response branch when the
+coordinator returns `already_decided` without making a new transition receipt.
+The new source-only fix returns the authorized terminal proposal in that branch;
+exact retries still return the original immutable decision receipt. It reproduces
+as two failing SDK cases before the fix (short and paginated history), then all
+22 assistant/coordinator cases, typecheck, lint and normal build pass. The host
+assertion remains unchanged and **still fails on installed public 0.2.37**. This
+is a corrected-SDK publication/adoption dependency, not installed qualification.
+No installed package was edited or aliased to hide it.
+
+Main Mills mobile received the reviewed source candidate's shared account/
+workspace/file/voice/financial-review wiring, removing its duplicate chat runtime
+and old playback files. Compared main against candidate base `b9049406d954ebc4115ce13c6a7f9f882d9476c4`;
+the conflicting source changes were the known intervening SDK dictation cleanup,
+which the shared candidate also retains. Qualification history was merged.
+Pre-change source copies and the merge plan are in `/tmp/mills-mobile-turn35-merge/`.
+All three main mobile manifests/locks and generated roots now resolve public
+Flutter `50fe566` normally. Mills changed only the two assistant dependencies;
+Spartan/Cents additionally resolve the SDK's WebRTC transitive dependencies.
+Mills main full analysis, 312 selected cases and release web build pass (70.9s).
+Aegis passes analysis, 179 selected cases and release web build (64.0s). Its first
+combined run passed 178 and one stale financial notice assertion failed; the
+assertion now matches the existing screen and dedicated tests, and its focused
+rerun passes. No financial behavior changed. Cents passes full analysis, 96
+selected cases and release web build (61.5s). Its installed regenerated goldens
+now pass the unchanged visual bound at 0.12282185395988604; authority files and
+thresholds are unchanged. Populated light/dark captures were inspected, including
+the remaining test-font missing Greek glyph. The six captures exactly match
+prior turn-31 source captures, and actual normal installed tests provide adoption
+evidence. Mills then removed unused direct WebRTC declarations; only dependency
+classification changed, and full analysis plus ten voice-adapter cases pass. The detached candidate now uses public roots, not source
+aliases. No other active worktree was touched.
+
+The Flutter gateway test consumer's old JS `d574ea7` pin is now aligned to
+public `15a3806`. npm 12 initially rejected Git fetching with `EALLOWGIT`. Its
+project lacked the declared root-Git setting used by the qualified hosts. Added
+`.npmrc` with `allow-git=root`, the exact pinned SDK lifecycle allowance, and the
+Node/npm development-tool contract; no global npm setting was changed. Normal
+installation succeeds. The formerly candidate-only attachment gateway now uses
+the installed dependency by default and is not skipped. Full client analysis and
+all 138 cases pass, including actual HTTP deletion/approval recovery and file
+ownership/expiry. Source overrides remain explicitly separate.
+
+Next independent retention audit: `rg cleanupExpired src` in the SDK finds only
+the generic staging method's declaration. Ordinary high-level uploads (Cents
+uses `attachmentUpload:true`) do not use the new retained-file marker/worker.
+SQL expiry prevents reads but does not prove idle physical byte/metadata cleanup.
+Implement new managed generic staging expiry after adoption qualification, keeping
+old unmarked records for approved cutover and preserving shared references and
+active/uncertain work. Detail: `/tmp/assistant-goal-turn35-next-audit.md`.
+
+Current logs: `/tmp/{mills,spartan,cents}-web-turn35-*`,
+`/tmp/{mills,spartan,cents}-mobile-turn35-*`,
+`/tmp/mills-candidate-turn35-pub-get.log`,
+`/tmp/flutter-gateway-turn35-*`, `/tmp/sdk-js-turn35-*`.
+A fresh scaffold frozen to public 15a passes normal install, check, clean ci,
+repeated check, static adoption and the native disposable PostgreSQL fixture.
+The first check failed devEngines because a directly invoked npm 12 CLI inherited
+npm 10 on PATH for nested scripts. Selecting npm 12 on PATH resolved it without
+changing the scaffold. The runtime fixture confirms one synthetic provider call,
+one usage receipt, fresh/repeated migration, auth/isolation, restart history and
+archive/restore; all owned processes/database resources are closed and removed.
+Logs: `/tmp/sdk-js-turn35-scaffold-*`.
+
+Mills and Cents dev Mobile Preview calls explicitly targeted their project IDs
+and were rejected outside saved scope with `preview_browser_access_denied`,
+`boundary=platform_blocker`, `app_failure_reproduced=false`. No browser opened.
+The existing Spartan rejection remains separate evidence. No raw listener,
+credential route or caller-supplied group bypass was attempted.
+
+Ordinary upload admission is also fixed in newer unpublished SDK source. Generic
+staging snapshots caller bytes/scalars before its first await; the PostgreSQL
+bundle snapshots before pool acquisition and commits bytes/metadata together.
+Failed metadata admission leaves no orphan; a lost commit acknowledgement returns
+unavailable without compensating deletion, and exact replay recovers the original
+identity. Stage success diagnostics occur after the acknowledged commit. Three
+regressions failed before the fix, then 52 focused staging/deletion/foundation
+cases passed, including a fourth lost-commit case. Full typecheck, scoped lint and
+normal build pass. The expanded native PostgreSQL checker passes all eight cases:
+rollback and concurrent exact retry, deletion-before-admission, lost commit reply,
+and the five existing retained-file consumption/expiry/deletion races. It creates
+and removes its own disposable cluster and accepts no project database URL.
+Logs: `/tmp/sdk-js-turn35-staging-{before,tests-final,typecheck,lint,build,native}.log`.
+
+All confirmed command handles are closed. Workspace whitespace checks pass in
+all nine involved checkouts; `/tmp/assistant-goal-turn35-workspace-receipt.json`
+records heads and changed counts. No source commit/publication/deployment or
+production data write occurred. Normal consumer adoption qualification is
+complete to the limits above; safe ordinary managed idle expiry and the remaining
+retention/legacy audit continue as independent work. The source approval/admission
+fixes are newer than public 15a and need later actual adoption. No overall
+completion or global blocked status is claimed.
+
+## September 14 thirty-sixth autonomous continuation — managed upload retention
+
+Resumed the unfinished work after account rotation, verified the unchanged active
+native/durable goal and preserved all existing work. The bounded-goal access
+contract remained `existing_action_specific_authorization`. Human Coverage Q&A
+for retention returned no answers. The objective's explicit release restriction
+and production-write approval boundary remain in force.
+
+Ordinary PostgreSQL uploads now receive a new version 2 retention marker in a
+trusted service partition. `createHandrailAssistant` owns one bounded idle worker,
+with no immediate startup sweep, no per-request timers and no adoption of old
+unmarked rows. Explicit service scheduling and principal-scoped cleanup use the
+same safe scanner. Deletion's readiness check is factored without mutations:
+active/uncertain text, voice, provider, tool and approval work blocks expiry;
+history, checkpoints, voice read state and required receipts remain intact.
+Expiry rereads metadata/version under conversation/blob locks, verifies the blob
+lease and preserves shared/business references. Worker flushes coalesce and
+shutdown joins in-flight cleanup before SQL closes.
+
+Shared-file consumption and retry identity needed additional corrections.
+PostgreSQL consumption now commits its metadata change and guarded byte removal
+together. Both ordinary and retained-file expiry retain the same minimal hashed
+`attachment.expired` receipt. Retained-file stage admission shares the upload
+identity lock with expiry and captures the upload key before waiting for storage.
+An old retry cannot recreate bytes after cleanup/restart; a conflicting request
+conflicts, and saved files remain available through their existing references.
+
+The resumed audit reproduced malformed-history starvation, malformed-key cursor
+failure, retained-file first-batch starvation, and retained-file retry allocating
+a new copy after expiry. Each regression is now fixed. Corrupt history blocks
+only its own conversation; temporary database failures remain unavailable.
+Both workers advance past blocked rows, including malformed SQL keys, without
+using scan positions as deletion authority. The retired staging `blob_` alias,
+fallback lookup and retained-file materialization grammar are removed. Old data
+is preserved for the approved cutover; business blob-key contracts are unchanged.
+
+The stable worker-stop alias now joins the attachment lifecycle; the new
+`stopBackgroundWorkers()` name is also accepted by the adoption checker. The
+scaffold and all three web hosts await shutdown before closing SQL. Mills uses
+`finally` so a failed final usage flush still stops cleanup. These host changes
+compile against their unchanged normal public 15a installations.
+
+Final SDK validation: 80 cases across seven files pass with one Vitest worker;
+full TypeScript, scoped lint and normal build pass. Twelve native PostgreSQL
+cases pass, including a retained upload retry waiting behind expiry, concurrent
+workers/materialization, changed leases, deletion races and lost commit replies.
+The fixture stops/removes its own cluster and accepts no project database URL.
+Package/adoption CLI contracts pass 39 cases. Final logs:
+`/tmp/sdk-js-turn36-retention-final-{tests,lint,build,native,contract}.log` and
+`/tmp/sdk-js-turn36-retained-receipt-typecheck.log`. Earlier failure receipts are
+`/tmp/sdk-js-turn36-{expiry-unreadable,cursor-before,retained-receipt-before}.log`.
+The final suite supersedes the earlier overlapping 73/77/79-case runs.
+
+A fresh public-15a scaffold passes normal npm 12 install, client/server typed
+checks/build, clean `npm ci`, repeated checks/build and static adoption with
+matching public HTTPS locks. Its owned PostgreSQL runtime fixture passes fresh
+and repeated migration, fail-closed auth, ownership isolation, create/send,
+permission revocation, restart history, archive/restore and usage outage/recovery
+with one synthetic provider call and one usage receipt. See
+[the scaffold qualification](scaffold-qualification.md). This verifies the updated
+template against public 15a, not installation of the newer retention source.
+
+Mills full TypeScript and Spartan/Cents server TypeScript checks pass after their
+shutdown edits: `/tmp/{mills,spartan,cents}-web-turn36-shutdown-typecheck.log`.
+All nine workspace diff checks pass; heads and changed counts are recorded in
+`/tmp/assistant-goal-turn36-workspace-receipt.json`. All command handles and owned
+database fixtures are closed. Flutter/mobile source and pins remain as qualified
+in turn 35. No commit, push, PR, SDK publication, deployment or production write
+occurred. Current JS HEAD remains public 15a; these source corrections require a
+new public committed revision before actual consumer adoption.
+
+The closing acceptance audit also removed the unused
+`resolveLegacyTurnMessageId` migration callback from canonical timeline, React
+transcript and styled props. No scoped consumer used it. Thirty-one timeline,
+approval, follow/presentation and launcher cases pass. Four initially failing
+presentation assertions were stale: domain cards occupy a separate timeline slot,
+and hiding the picker preserves catalog hydration/restoration. Corrected those
+assertions and documentation without changing those established runtime behaviors.
+Full TypeScript, scoped lint and normal build pass; package/adoption contracts
+pass all 39 cases again. Logs:
+`/tmp/sdk-js-turn36-timeline-removal-{final-tests,final-typecheck,lint,build}.log`
+and `/tmp/sdk-js-turn36-close-contract.log`. Retention/native checks were not
+repeated after this isolated presentation change. The adoption guide's stale
+c22/source-only mobile paragraphs now reflect installed public 50fe qualification.
+
+[The acceptance inventory](assistant-cleanup-acceptance.md) closes the source and
+handoff review. No additional independently actionable omission was identified
+in that review. Remaining gates are a permitted corrected public JS release and
+actual consumer adoption; authorized runtime/native qualification; and approved
+production database/storage cleanup. The selected objective explicitly forbids
+SDK publication/commits/deployment. Latest Mobile Preview evidence remains the
+exact Mills/Cents turn 35 and Spartan turn 28 `preview_browser_access_denied`
+results; these do not establish that all live routes are unavailable. Local
+fixtures do not establish provider execution or audio playback.
+
+This is the first end-of-turn audit at those remaining dependencies after closing
+the independently actionable source work. Keep the goal active unless the same
+blocking condition persists for the native goal's required consecutive turns;
+do not claim overall 100% or invent permission from elapsed time. Earlier parts
+of this turn made substantive source progress and are not repeated blocked turns.
+The final nine-repository snapshot is
+`/tmp/assistant-goal-turn36-workspace-close.json`; all heads are unchanged and
+all diff checks pass. The native goal remains active at this first dependency
+audit, with no running command or owned database/browser fixture left behind.
+
+## September 14 thirty-seventh autonomous continuation — dependency audit 2
+
+The prior turn was substantive source progress. Reverified the active native and
+Handrail goals: the objective still explicitly forbids commits, SDK publication
+and deployment. Both the local JS HEAD and the public repository's default HEAD
+remain `15a3806c2595a3f93a87a768ad13293113f41b58`; no newer public correction is
+available to adopt. The reviewed local changes and acceptance inventory remain
+present, with a clean whitespace check. There is no live build/test/job handle
+to wait on and no reason to repeat completed expensive checks.
+
+Retried the supported Mills development Mobile Preview route with its explicit
+project ID. Handrail again returned `preview_browser_access_denied`,
+`boundary=platform_blocker`, `app_failure_reproduced=false`: the project is outside
+this Dev Chat's saved scope. No browser opened. The available production-browser
+handoff is restricted to Handrail's own declared production site; arbitrary host
+targets are unsupported. These facts do not prove every possible live route is
+unavailable, but provide no supported Mills qualification route in this run.
+
+No independent implementation step remains identified after the acceptance review.
+This is the second consecutive end-of-turn audit of the same release/adoption,
+runtime-access and production-approval dependencies. Keep the full goal active
+for now; mark it blocked only if the next goal turn revalidates the same impasse.
+This dependency check is not a verified wait or new source completion.
+
+## September 14 thirty-eighth autonomous continuation — dependency audit 3
+
+Reverified the current context and unchanged selected objective. The local JS
+HEAD and public default HEAD remain
+`15a3806c2595a3f93a87a768ad13293113f41b58`; the remaining corrections are still
+unpublished. The workspace whitespace check passes. The acceptance inventory
+and existing validation receipts remain applicable; no source, runtime, access
+or approval change removes the previously verified dependencies.
+
+This is the third consecutive dependency audit after the independently actionable
+source review was finished. The Handrail goal update returned `ok: true` with
+status `blocked`, and the native goal update also returned `blocked`. Neither
+goal is complete. Resumption needs an applicable change to release authorization,
+permitted live/native qualification access or approved production cleanup scope.
+The latest Mills preview receipt remains the turn 37
+`preview_browser_access_denied` platform blocker; no browser opened or app failure
+was reproduced. No commit, push, PR, SDK publication, deployment or production
+write occurred. There are no outstanding build/test/browser/database handles.

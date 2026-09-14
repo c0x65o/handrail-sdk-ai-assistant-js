@@ -12,6 +12,8 @@ Handrail Knowledge Base. Repository acceptance does not itself prove KB
 publication; [`rollout-qualification.md`](./rollout-qualification.md) records
 the current evidence, external gates, and eventually the published entry ID
 and revision.
+The current Mills/Aegis/Cents cleanup gates are summarized in
+[assistant cleanup acceptance](assistant-cleanup-acceptance.md).
 
 ## Package identity and compatibility
 
@@ -89,7 +91,12 @@ enumerate server-trusted service scopes supplies `recoveryContexts`, then calls
 opaque user credential must never persist or reconstruct it for boot recovery;
 the SDK instead recovers that durable scope when it is next authenticated
 (`recoverPendingOnContext` defaults to true). Every host calls `flushUsage()`
-and `stopUsageWorker()` during graceful shutdown.
+and awaits `stopUsageWorker()` during graceful shutdown, before closing SQL.
+The unpublished ordinary-upload retention follow-up also exposes
+`stopBackgroundWorkers()`; the stable alias joins the same attachment cleanup
+and remains compilable against public 15a. That follow-up starts one bounded
+expiry lifecycle through the PostgreSQL adapter, with no startup sweep or old-row
+adoption. See [the exact policy and configuration](trusted-history-and-attachments.md#ordinary-upload-expiry-unpublished-source).
 
 Applications using `pg.Pool` call `postgres(pool)`. Applications that already
 own a conforming transactional `PostgresSqlClient` call
@@ -127,15 +134,15 @@ store.
 When business foreign keys require the ownership table to remain, use the
 [PostgreSQL catalog mapping](postgres-catalog-mapping.md). The SDK can
 own catalog lifecycle and deletion while the host supplies ownership columns,
-title redaction and transactional audit. Public JS revision
-`5a0ebe520a9e6fde0b3a792f959a7a10e0a3de50` (0.2.36) contains the mapping, JSON
-encoding, atomic history reads, deletion and voice-fencing changes. Mills has
-installed that exact public HTTPS revision locally with a matching npm lock.
-Cents and Spartan web now also normally install that revision with matching locks;
-their clean npm reinstalls, static adoption gates and focused installed tests
-pass. See [the current cleanup handoff](assistant-cleanup-goal-progress.md) for
-each consumer's remaining validation. Source availability and local installation
-do not establish deployment or legacy data removal.
+title redaction and transactional audit. The mapping, JSON encoding, atomic
+history reads, deletion and voice fencing are available in the normally installed
+public JS revision `15a3806c2595a3f93a87a768ad13293113f41b58` (0.2.37). All three
+web consumers use matching manifest/root/installed locks with normal SDK
+compilation. Static adoption, full typed compiles and builds pass; one Aegis
+mounted terminal-approval assertion remains failing as detailed below. See
+[the current cleanup handoff](assistant-cleanup-goal-progress.md) for exact test
+counts and limits. Source availability and local installation do not establish
+deployment or legacy data removal.
 Mills uses that mapping through the standard gateway and
 queues exclusive external-file deletion in the shared transaction. The SDK
 supplies the durable cleanup worker; Mills supplies canonical tenant/bucket/key
@@ -146,10 +153,22 @@ For retained-file adapters such as Aegis, the September 14 source correction als
 removes the unused file-import API, commits staging and retention/consumption
 atomically, binds staging deletion to the actual conversation and supplies an
 explicit idle-expiry worker for newly managed uploads. It fixes postgres.js
-infinite-expiry encoding. These changes are **newer than the installed public
-0.2.36 revision**. Adopt them with a reviewed public SHA/lock and one service-level
-worker; do not silently substitute local source. Old unmarked records remain a
+infinite-expiry encoding. These changes are public SDK 0.2.37 at
+`15a3806c2595a3f93a87a768ad13293113f41b58`, now normally installed by Aegis with
+a matching lock. Aegis wires one service-level worker and seven attachment cases
+qualify expiry, shutdown, saved-file preservation and linked deletion. Old unmarked records remain a
 separate approved cutover. See [the exact lifecycle setup](trusted-history-and-attachments.md#retained-conversation-files).
+
+September 14 installed-host qualification exposed one 0.2.37 approval regression:
+a different decision after execution returns 400 because the coordinator reports
+`already_decided` without creating a transition receipt. The follow-up source
+returns the authorized terminal proposal only in that branch and keeps exact
+replays on the original immutable receipt. Twenty-two SDK tests, including
+regressions after both short and paginated histories, qualify the source fix.
+The correction is not yet in public `15a3806`; Aegis's unchanged mounted test is
+still failing on that installed revision. Do not mark installed approval
+qualification complete or weaken that assertion before the corrected public
+revision is adopted and retested.
 
 ## Standard UI offering
 
@@ -165,42 +184,36 @@ qualification is in [shared-assistant-acceptance.md](./shared-assistant-acceptan
 current adoption and remaining web/mobile work are tracked in
 [the cleanup handoff](assistant-cleanup-goal-progress.md).
 
-Cents mobile now normally installs public Flutter c22 with its matching lock,
-removes generic host controller wrappers and uses the SDK's standard New action
-instead of a misleading Clear-to-New flow. Application analysis and a normal
-release web build pass, but its unchanged visual-reference gate remains failed.
-The local shared Copy layout plus editor sizing fix now passes the unchanged
-regression bound (0.122821853960 <= 0.123000), with the complete toolbar and both
-reference gates qualified. This source candidate is not yet an installed revision
-or proof of live/design parity. See the current cleanup handoff for exact evidence;
-neither feature suppression nor an alias counts as completed consumer adoption.
+Mills, Spartan/Aegis and Hitcents/Cents main mobile consumers normally install
+both SDK packages from the declared Flutter repository at full public commit
+`50fe566d73f68b2beacc2a874dc9a038363b1509`, with matching locks and actual public
+Git-cache resolution. Full analysis and release web builds pass for each. Mills
+passes 312 selected cases, Aegis 179 and Cents 96. Mills' reviewed shared workspace
+is in main; host projections retain authorized financial review and protected
+domain navigation, not a second transcript or chat runtime.
 
-Spartan mobile also normally installs public Flutter c22. It removed unused host
-copies of catalog and transcript data while retaining business action/result
-projection and financial review. Installed tests, real-theme offline captures,
-full analysis and the shell launcher check pass. Its explicit development Mobile
-Preview request was rejected by this Dev Chat's saved project scope; this is a
-platform blocker for that route, not runtime reproduction. The current cleanup
-handoff keeps these receipts separate from newer unpublished SDK adoption.
+Cents's installed shared Copy layout and editor sizing pass the unchanged visual
+bound (0.12282185395988604 <= 0.123000), with its full toolbar and six installed
+captures. This supersedes the earlier c22 failure and source-only candidate
+qualification. The bundled test-font Greek glyph limitation remains; passing the
+aggregate gate does not establish pixel parity or live/device behavior.
 
-Local Flutter source now includes standard pending approval decisions in addition
-to the preference control. Its validated opaque-review host seam preserves domain
-financial review; its durable decision journal requires exact receipt replay.
-The local JS gateway correction returns the original decision receipt after
-execution advances. These additions are beyond public JS 5a0ebe and Flutter c22;
-see the sibling Flutter `docs/approval-decisions.md` and the cleanup handoff for
-qualification and actual-adoption boundaries. Do not consider a temporary package
-alias or a passing old preference-switch test proof of this feature baseline.
+The public Flutter revision includes pending approval decisions, exact receipt
+replay, shared account/workspace controllers and the validated domain review seam.
+Its gateway fixture normally installs public JS 15a and passes all 138 client
+cases. Public JS 15a includes the original-decision receipt correction; the
+separate terminal-dismissal response fix remains unpublished, as described above.
+See the sibling Flutter `docs/approval-decisions.md` for the precise contract.
 
-
-Local Flutter `HandrailRealtimeVoiceSurface<T>` also standardizes voice status,
-startup/retry, microphone/playback controls, Stop/Back, background stopping and
-unconfirmed-end recovery. Host identity choices and financial review remain
-alongside those controls. Local `HandrailWebRtcVoiceSession<T>` now also owns
-microphone, peer/data-channel, playback and ordered teardown; the host supplies
-an authenticated SDP/end gateway. Remaining saved-call/activity presentation and
-actual public/native/provider/audio qualification are still open. See the sibling Flutter
-`docs/realtime-voice-surface.md` and the current cleanup handoff before adoption.
+`HandrailRealtimeVoiceSurface<T>` and `HandrailWebRtcVoiceSession<T>` are also in
+that public Flutter revision. They own standard status, capture, peer/data-channel
+setup, mute/playback, Stop/Back, background stopping, uncertain-end retry and
+ordered teardown. Hosts supply authenticated SDP/end gateways, trusted identity
+choices and financial review. Authorized development Mobile Preview attempts
+for all three consumers returned `preview_browser_access_denied`; no app failure
+was reproduced. Native devices, real provider/audio, deployment and approved
+production cleanup remain open. See the sibling Flutter adoption/voice guides
+and [the current cleanup handoff](assistant-cleanup-goal-progress.md).
 
 The default web experience is `HandrailAssistantLauncher` from
 `@handrail/ai-assistant/react/styled`. It is endpoint-driven and owns client

@@ -122,12 +122,13 @@ test("fails conformance for an unpinned or incomplete host", () => {
   assert.equal(spawnSync(process.execPath, [cli, "check", root]).status, 1);
 });
 
-test("accepts the shared workspace as the standard styled UI", () => {
+for (const stopMethod of ["stopUsageWorker", "stopBackgroundWorkers"]) test(`accepts the shared workspace with ${stopMethod}`, () => {
   const root = host();
   execFileSync(process.execPath, [cli, "migrate-package", root, "--write"]);
   writeCanonicalLock(root);
   const path = join(root, "src", "assistant.tsx");
-  writeFileSync(path, readFileSync(path, "utf8").replaceAll("HandrailAssistantLauncher", "HandrailAssistantWorkspace"));
+  writeFileSync(path, readFileSync(path, "utf8").replaceAll("HandrailAssistantLauncher", "HandrailAssistantWorkspace")
+    .replaceAll("stopUsageWorker", stopMethod));
   const result = spawnSync(process.execPath, [cli, "check", root], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stdout);
   assert.equal(JSON.parse(result.stdout).findings.find(finding => finding.id === "ui").ok, true);

@@ -30,6 +30,20 @@ function fixture() {
 }
 
 describe("attachment staging", () => {
+  it("captures upload bytes and identity before asynchronous storage", async () => {
+    const value = fixture();
+    const input = { ownerScopeId: "owner-1", conversationId: "conversation-1",
+      idempotencyKey: "frozen-upload", fingerprint: "original", mediaType: "application/pdf",
+      filename: "original.pdf", bytes: new Uint8Array([1, 2, 3]) };
+    const pending = value.service.stage(input);
+    input.bytes.fill(9); input.fingerprint = "changed"; input.filename = "changed.pdf";
+    const reference = await pending;
+    const resolved = await value.service.resolve({ ownerScopeId: "owner-1", conversationId: "conversation-1",
+      contentRef: reference.content_ref });
+    expect(resolved.bytes).toEqual(new Uint8Array([1, 2, 3]));
+    expect(resolved.record).toMatchObject({ fingerprint: "original", filename: "original.pdf" });
+  });
+
   it("retains only opaque metadata, enforces ownership, and deletes bytes after consumption", async () => {
     const value = fixture();
     const reference = await value.service.stage({ ownerScopeId: "owner-1", conversationId: "conversation-1",
@@ -56,23 +70,20 @@ describe("attachment staging", () => {
     expect(await value.service.cleanupExpired()).toBe(1); expect(value.records.size).toBe(0);
   });
 
-  it("returns a wire-compatible alias on legacy staging replay while retaining storage identity, ownership and consumption", async () => {
+  it("refuses retired staging identities without aliasing, restaging or purging their stored bytes", async () => {
     const value = fixture(), input = { ownerScopeId: "owner-1", conversationId: "conversation-1",
       idempotencyKey: "upload-1", fingerprint: "sha256-1", mediaType: "image/png", bytes: new Uint8Array([1]) };
     const staged = await value.service.stage(input);
     const original = value.records.get(staged.content_ref)!;
     const legacy = { ...original, contentRef: original.contentRef.replace(/^ref_/u, "blob_") };
     value.records.delete(original.contentRef); value.records.set(legacy.contentRef, legacy);
-    const replay = await value.service.stage(input);
-    expect(validateReference(replay)).toEqual(staged);
-    expect(value.records.size).toBe(1);
-    const read = { ownerScopeId: input.ownerScopeId, conversationId: input.conversationId, contentRef: replay.content_ref };
-    expect((await value.service.resolve(read)).bytes).toEqual(input.bytes);
-    expect((await value.service.resolve({ ...read, contentRef: legacy.contentRef })).bytes).toEqual(input.bytes);
-    await expect(value.service.resolve({ ...read, ownerScopeId: "other" })).rejects.toMatchObject({ code: "forbidden" });
-    await value.service.consume(read);
-    expect(value.records.get(legacy.contentRef)?.consumedAt).not.toBeNull();
-    expect(value.blobs.size).toBe(0);
+    await expect(value.service.stage(input)).rejects.toMatchObject({ code: "not_found" });
+    const read = { ownerScopeId: input.ownerScopeId, conversationId: input.conversationId, contentRef: staged.content_ref };
     await expect(value.service.resolve(read)).rejects.toMatchObject({ code: "not_found" });
+    await expect(value.service.resolve({ ...read, contentRef: legacy.contentRef })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(value.service.consume(read)).rejects.toMatchObject({ code: "not_found" });
+    expect([...value.records.values()]).toEqual([legacy]);
+    expect([...value.blobs.values()]).toEqual([input.bytes]);
+    expect(value.deleted).not.toHaveBeenCalled();
   });
 });

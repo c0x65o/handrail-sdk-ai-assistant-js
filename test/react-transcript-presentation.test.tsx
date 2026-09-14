@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, within } from "@testing-library/react";
+import { cleanup, render, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAttachmentUploader, createConversationStore, type ConversationId, type ConversationRuntime } from "../src/index.js";
 import { createInitialConversationState, type ConversationState } from "../src/conversation/state.js";
@@ -48,10 +48,13 @@ describe("styled transcript presentation", () => {
     view.rerender(<StyledChatPreset state={state} messageActions={messageActions}
       toolRendererKeys={{ web_search: "search.summary" }}
       toolResultRenderers={{ "search.summary": () => <span>Search summary card</span> }}/>);
-    expect(message.getByText("Search summary card")).toBeTruthy();
+    // Domain results occupy their own canonical timeline slot; they are not
+    // embedded into the assistant message's Markdown article.
+    expect(within(view.getByRole("region", { name: "Conversation transcript" })).getByText("Search summary card")).toBeTruthy();
+    expect(message.queryByText("Search summary card")).toBeNull();
   });
 
-  it.each([true, false])("disables the thread controls with selected conversation=%s", (selected) => {
+  it.each([true, false])("hides thread controls while retaining catalog hydration with selected conversation=%s", async (selected) => {
     const conversationId = "conversation" as ConversationId;
     const state = transcript();
     const store = createConversationStore(conversationId, state);
@@ -62,7 +65,7 @@ describe("styled transcript presentation", () => {
       runningCount: 0, errorCount: 0, unreadCount: 0,
       threads: [{ conversationId, runtime, turnStatus: "idle" as const, unread: false, revision: null }] };
     const workspace = { getSnapshot: () => snapshot, subscribe: () => () => {}, open: vi.fn(), select: vi.fn() };
-    const list = vi.fn();
+    const list = vi.fn(async () => ({ items: [], hasMore: false, nextCursor: null }));
     const uploader = createAttachmentUploader<Blob>({ upload: async () => { throw new Error("Unused upload"); } });
     const view = render(<HandrailChatWorkspace workspace={workspace} conversationPicker={false}
       catalogOptions={{ catalog: { list } as never, authorizationContext: {} }}
@@ -72,7 +75,8 @@ describe("styled transcript presentation", () => {
     expect(view.queryByRole("button", { name: "New" })).toBeNull();
     expect(view.queryByText("Threads")).toBeNull();
     expect(view.container.querySelector(".hr-chat__picker")).toBeNull();
-    expect(list).not.toHaveBeenCalled();
+    await waitFor(() => expect(list).toHaveBeenCalledOnce());
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ lifecycle: "all", authorizationContext: {} }));
     if (selected) {
       expect(view.getByRole("textbox")).toBeTruthy();
       expect(view.getByRole("button", { name: "Dictate" })).toBeTruthy();

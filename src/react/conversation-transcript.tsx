@@ -15,13 +15,12 @@ export interface ConversationTranscriptProps extends Omit<HTMLAttributes<HTMLDiv
 }
 
 /** Shared chronology, saved failures and scroll following; hosts supply domain card formatting. */
-export function ConversationTranscript({ state, proposals, includeToolResult, resolveLegacyTurnMessageId,
+export function ConversationTranscript({ state, proposals, includeToolResult,
   renderMessage, renderApproval, renderToolResult, renderFailure, emptyState, children, onScroll, ...props }: ConversationTranscriptProps) {
   const contentVersion = useMemo(() => ({ state, proposals }), [state, proposals]);
   const follow = useSmartTranscriptFollow({ conversationId: state.conversation_id, contentVersion });
   const entries = conversationTimeline(state, {
     ...(proposals ? { proposals } : {}), ...(includeToolResult ? { includeToolResult } : {}),
-    ...(resolveLegacyTurnMessageId ? { resolveLegacyTurnMessageId } : {}),
   });
   return <div className="hr-chat__transcript-wrap">
     <div {...props} ref={follow.transcriptRef} tabIndex={props.tabIndex ?? 0} role={props.role ?? "list"}

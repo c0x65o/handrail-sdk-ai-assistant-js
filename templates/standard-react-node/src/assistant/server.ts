@@ -22,5 +22,7 @@ export function createApplicationAssistant(options: Options) {
 }
 
 export async function stopAssistant(assistant: HandrailAssistant): Promise<void> {
-  try { await assistant.flushUsage(); } finally { assistant.stopUsageWorker(); }
+  // Await the stable alias so a frozen earlier SDK remains compilable; newer
+  // revisions also join attachment cleanup before the host closes its pool.
+  try { await assistant.flushUsage(); } finally { await assistant.stopUsageWorker(); }
 }

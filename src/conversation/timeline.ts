@@ -10,8 +10,6 @@ export interface ConversationTimelineOptions {
   readonly proposals?: readonly ConversationApprovalProposalRecord[];
   /** Show domain result cards; unselected tool results remain in activity. */
   readonly includeToolResult?: (call: ConversationToolCallRecord) => boolean;
-  /** Migration adapter for a host's legacy turn/message identities. */
-  readonly resolveLegacyTurnMessageId?: (turnId: string) => string | null;
 }
 
 /** Preserve canonical message order and bind actions/failures to their original question. */
@@ -32,9 +30,8 @@ export function conversationTimeline(state: ConversationState, options: Conversa
   });
   for (const item of [...actions, ...results].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id))) {
     const turn = state.turns.find((candidate) => candidate.turn_id === item.turnId);
-    const legacyMessageId = options.resolveLegacyTurnMessageId?.(String(item.turnId));
-    const relatedIndex = messages.findIndex((message) => message.message_id === legacyMessageId ||
-      message.turn_id === item.turnId || turn?.input_message_ids.includes(message.message_id) || turn?.output_message_ids.includes(message.message_id));
+    const relatedIndex = messages.findIndex((message) => message.turn_id === item.turnId ||
+      turn?.input_message_ids.includes(message.message_id) || turn?.output_message_ids.includes(message.message_id));
     let start = 0, end = messages.length;
     if (relatedIndex >= 0) {
       for (let index = relatedIndex; index >= 0; index--) if (messages[index]!.role === "user") { start = index + 1; break; }

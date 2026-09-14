@@ -1,5 +1,11 @@
 export { cleanupPostgresConversationFileStaging, startPostgresConversationFileStagingCleanupWorker,
   type PostgresConversationFileStagingCleanupOptions } from "./conversation-file-staging.js";
+import { cleanupPostgresAssistantAttachmentStaging, startPostgresAssistantAttachmentStagingCleanupWorker,
+  type ManagedAssistantStagingRecord, type PostgresAssistantStagingCursor } from "./assistant-attachment-staging.js";
+import { assertPostgresAttachmentUploadNotExpired } from "./attachment-expiry-receipts.js";
+export { cleanupPostgresAssistantAttachmentStaging, startPostgresAssistantAttachmentStagingCleanupWorker,
+  type PostgresAssistantStagingCleanupOptions, type PostgresAssistantStagingCleanupResult,
+  type PostgresAssistantStagingCursor } from "./assistant-attachment-staging.js";
 import { assertPostgresConversationWritable, postgresDocumentConversation, deletePostgresConversationHistory,
   deletePostgresConversationAttachments, lockPostgresAttachmentBlob } from "./conversation-deletion.js";
 import { PostgresConversationCatalogTable, PostgresCatalogIdentityError, type PostgresCatalogRow, type PostgresConversationCatalogTableOptions } from "./catalog-table.js";
@@ -7,7 +13,7 @@ export type { PostgresConversationCatalogTableOptions } from "./catalog-table.js
 export { enqueuePostgresConversationFileCleanup, drainPostgresConversationFileCleanup,
   startPostgresConversationFileCleanupWorker, type PostgresConversationFileCleanupOptions } from "./conversation-file-cleanup.js";
 import { createHash } from "node:crypto";
-import { parseConversationEvent, type ConversationEvent, type ConversationId, type ConversationRevision } from "../conversation/events.js";
+import { ConversationEventValidationError, parseConversationEvent, type ConversationEvent, type ConversationId, type ConversationRevision } from "../conversation/events.js";
 import {
   ConversationEventStoreConflictError,
   ConversationEventStoreUnavailableError,
@@ -75,9 +81,9 @@ import {
   retainConversationActivity,
   matchesConversationActivityRead,
 } from "../conversation/activity.js";
-import { createAttachmentStagingService, type AttachmentBlobStore, type AttachmentStagingMetadataStore,
+import { AttachmentStagingError, createAttachmentStagingService, type AttachmentBlobStore, type AttachmentStagingMetadataStore,
   type AttachmentStagingLimits, type StagedAttachmentRecord } from "../attachments/staging.js";
-import { diagnoseAiOperation, type AiDiagnosticSink } from "../diagnostics.js";
+import { diagnoseAiOperation, emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 import { parseNormalizedUsageReceipt, type NormalizedUsageReceipt } from "../usage.js";
 import { parseOpenAIReportedAudioUsage, type OpenAIReportedAudioUsage } from "../providers/openai-audio-usage.js";
 import {
@@ -1366,7 +1372,7 @@ export class PostgresConversationEventStore implements ConversationEventStore {
       const head = result.rows[0]?.latest_revision;
       const latestRevision = head === null ? null : Number(head) as ConversationRevision;
       if (latestRevision !== null && (!Number.isSafeInteger(latestRevision) || latestRevision < 1)) {
-        throw new TypeError("The event page did not return a valid head revision");
+        throw new ConversationEventStoreUnavailableError("read", "The event page did not return a valid head revision", false);
       }
       return Object.freeze({ entries, nextCursor: entries.at(-1)?.cursor ?? null,
         latestRevision, hasMore: rows.length > limit });
@@ -1418,7 +1424,10 @@ export class PostgresConversationEventStore implements ConversationEventStore {
 
   private storeError(error: unknown, operation: ConstructorParameters<typeof ConversationEventStoreUnavailableError>[0]): Error {
     if (error instanceof ConversationEventStoreConflictError || error instanceof ConversationEventStoreUnavailableError) return error;
-    return new ConversationEventStoreUnavailableError(operation, "The conversation event store is unavailable.");
+    // Invalid persisted events will not heal by retrying the same page. Preserve
+    // this distinction without exposing event content through the error message.
+    return new ConversationEventStoreUnavailableError(operation, "The conversation event store is unavailable.",
+      !(error instanceof ConversationEventValidationError));
   }
 }
 
@@ -1873,6 +1882,9 @@ export interface PostgresAssistantPersistenceScope {
 export interface PostgresAssistantPersistenceOptions {
   readonly diagnostics?: AiDiagnosticSink;
   readonly attachmentLimits?: AttachmentStagingLimits;
+  /** Trusted service partition for new managed uploads. Defaults to assistant-uploads.
+   * Use distinct partitions when independently operated services share SDK tables. */
+  readonly attachmentMaintenanceScopeId?: string;
   readonly usageClient?: AIRuntimeUsageClient;
 }
 
@@ -1910,6 +1922,10 @@ export interface PostgresAssistantPersistenceBundle<TAuthorizationContext> {
 export interface PostgresAssistantPersistence {
   readonly persistence: PostgresAiPersistence;
   readonly attachmentLimits: AttachmentStagingLimits;
+  /** Supplied by the SDK PostgreSQL adapter; custom storage owns its own lifecycle. */
+  startAttachmentCleanupWorker?(options?: {
+    readonly intervalMs?: number; readonly batchSize?: number; readonly diagnostics?: AiDiagnosticSink;
+  }): ReturnType<typeof startPostgresAssistantAttachmentStagingCleanupWorker>;
   forScope<TAuthorizationContext>(
     scope: PostgresAssistantPersistenceScope,
     options: PostgresAssistantScopedOptions<TAuthorizationContext>,
@@ -1938,9 +1954,26 @@ export function postgresFromClient(
 ): PostgresAssistantPersistence {
   const persistence = new PostgresAiPersistence(createDiagnosedPostgresSqlClient(client, options.diagnostics));
   const attachmentLimits = Object.freeze(options.attachmentLimits ?? DEFAULT_ASSISTANT_ATTACHMENT_LIMITS);
+  const maintenanceScopeId = id(options.attachmentMaintenanceScopeId ?? "assistant-uploads", "attachmentMaintenanceScopeId");
+  if (maintenanceScopeId.length > 256) throw new TypeError("Invalid attachment maintenance scope.");
   return Object.freeze({
     persistence,
     attachmentLimits,
+    startAttachmentCleanupWorker(worker: { readonly intervalMs?: number; readonly batchSize?: number;
+      readonly diagnostics?: AiDiagnosticSink } = {}) {
+      const diagnostics = worker.diagnostics ?? options.diagnostics;
+      return startPostgresAssistantAttachmentStagingCleanupWorker({ persistence, maintenanceScopeId,
+        ...(worker.intervalMs === undefined ? {} : { intervalMs: worker.intervalMs }),
+        ...(worker.batchSize === undefined ? {} : { batchSize: worker.batchSize }),
+        onResult: result => {
+          if (result.blocked) emitAiDiagnostic(diagnostics, { domain: "attachment", operation: "staging_cleanup",
+            phase: "failed", code: "staging_cleanup_blocked", retryable: false });
+          else if (result.removed) emitAiDiagnostic(diagnostics, { domain: "attachment", operation: "staging_cleanup", phase: "succeeded" });
+        },
+        onError: () => emitAiDiagnostic(diagnostics, { domain: "attachment", operation: "staging_cleanup",
+          phase: "failed", code: "staging_cleanup_unavailable", retryable: true }),
+      });
+    },
     forScope<TAuthorizationContext>(
       scope: PostgresAssistantPersistenceScope,
       scoped: PostgresAssistantScopedOptions<TAuthorizationContext>,
@@ -1949,6 +1982,21 @@ export function postgresFromClient(
       const scopeId = id(scope.scopeId, "scopeId");
       const attachmentBlobs = new PostgresAttachmentBlobStore(persistence, tenantId);
       const attachmentMetadata = new PostgresAttachmentStagingMetadataStore(persistence, tenantId, scopeId);
+      class ManagedMetadata extends PostgresAttachmentStagingMetadataStore {
+        override create(record: StagedAttachmentRecord) {
+          if (record.ownerScopeId !== scopeId) throw new AttachmentStagingError("forbidden");
+          const managed: ManagedAssistantStagingRecord = { ...record, retention: { version: 2, scopeId: maintenanceScopeId } };
+          return super.create(managed);
+        }
+      }
+      const stagingFor = (storage: PostgresAiPersistence, diagnostics = true) => createAttachmentStagingService({
+        blobs: new PostgresAttachmentBlobStore(storage, tenantId),
+        metadata: new ManagedMetadata(storage, tenantId, scopeId),
+        limits: attachmentLimits,
+        ...(!diagnostics || options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+      });
+      const staging = stagingFor(persistence);
+      let cleanupCursor: PostgresAssistantStagingCursor | undefined, cleanupRunning: Promise<number> | undefined;
       const usageOutbox = new PostgresAIRuntimeUsageOutbox(persistence, tenantId, scopeId);
       const usageClient = scoped.usageClient ?? options.usageClient;
       return Object.freeze({
@@ -1959,11 +2007,69 @@ export function postgresFromClient(
         activity: new PostgresConversationActivityStore(persistence, tenantId, scopeId),
         attachmentBlobs,
         attachmentMetadata,
-        attachments: createAttachmentStagingService({
-          blobs: attachmentBlobs,
-          metadata: attachmentMetadata,
-          limits: attachmentLimits,
-          ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+        attachments: Object.freeze({
+          ...staging,
+          async stage(input: Parameters<typeof staging.stage>[0]) {
+            // Freeze before waiting for a pool connection, then admit both bytes
+            // and metadata in one transaction. A failed claim cannot orphan bytes.
+            const captured = { ...input, bytes: input.bytes instanceof Uint8Array
+              ? new Uint8Array(input.bytes) : input.bytes };
+            try {
+              if (captured.ownerScopeId !== scopeId) throw new AttachmentStagingError("forbidden");
+              const reference = await persistence.client.transaction(async tx => {
+                await assertPostgresConversationWritable(tx, tenantId, id(captured.conversationId, "conversationId"));
+                await assertPostgresAttachmentUploadNotExpired(tx, tenantId, scopeId, captured.conversationId,
+                  id(captured.idempotencyKey, "idempotencyKey"), id(captured.fingerprint, "fingerprint"));
+                return stagingFor(new PostgresAiPersistence(tx), false).stage(captured);
+              });
+              emitAiDiagnostic(options.diagnostics, { domain: "attachment", operation: "stage", phase: "succeeded",
+                conversationId: captured.conversationId });
+              return reference;
+            } catch (error) {
+              // A lost commit acknowledgement is uncertain. Never compensate by
+              // deleting bytes; replay must consult the same durable upload key.
+              if (!(error instanceof AttachmentStagingError) || error.code === "unavailable") {
+                emitAiDiagnostic(options.diagnostics, { domain: "attachment", operation: "stage", phase: "failed",
+                  conversationId: captured.conversationId, code: "unavailable", retryable: true });
+              }
+              if (error && typeof error === "object" && "code" in error && error.code === "conversation_deleted") {
+                throw new AttachmentStagingError("not_found");
+              }
+              throw error instanceof AttachmentStagingError ? error : new AttachmentStagingError("unavailable");
+            }
+          },
+          async consume(input: Parameters<typeof staging.consume>[0]) {
+            const captured = { ...input };
+            try {
+              return await persistence.client.transaction(async tx => {
+                await assertPostgresConversationWritable(tx, tenantId, id(captured.conversationId, "conversationId"));
+                const storage = new PostgresAiPersistence(tx), working = stagingFor(storage, false);
+                const resolved = await working.resolve(captured);
+                await lockPostgresAttachmentBlob(tx, tenantId, resolved.record.blobKey);
+                await new PostgresAttachmentStagingMetadataStore(storage, tenantId, scopeId)
+                  .markConsumed(resolved.record.contentRef, new Date().toISOString());
+                await tx.query(`DELETE FROM handrail_ai_attachment_blobs WHERE tenant_id=$1 AND blob_key=$2
+                  AND NOT EXISTS (SELECT 1 FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment'
+                    AND payload->>'blobKey'=$2 AND NOT (scope_id=$3 AND record_id=$4 AND payload->>'consumedAt' IS NOT NULL))`,
+                [tenantId, resolved.record.blobKey, scopeId, resolved.record.contentRef]);
+                return resolved.record;
+              });
+            } catch (error) {
+              if (error && typeof error === "object" && "code" in error && error.code === "conversation_deleted") {
+                throw new AttachmentStagingError("not_found");
+              }
+              throw error instanceof AttachmentStagingError ? error : new AttachmentStagingError("unavailable");
+            }
+          },
+          cleanupExpired() {
+            // The generic raw-store cleanup cannot enforce Postgres ownership or
+            // active-work safety. Use the same bounded scan as the service worker.
+            cleanupRunning ??= cleanupPostgresAssistantAttachmentStaging({ persistence, maintenanceScopeId, tenantId, scopeId },
+              attachmentLimits.cleanupBatchSize ?? 100, cleanupCursor).then(result => {
+              cleanupCursor = result.nextCursor ?? undefined; return result.removed;
+            }).finally(() => { cleanupRunning = undefined; });
+            return cleanupRunning;
+          },
         }),
         synchronization: new PostgresConversationSyncStateStore(persistence, tenantId),
         events: new PostgresConversationEventStore(persistence, tenantId),

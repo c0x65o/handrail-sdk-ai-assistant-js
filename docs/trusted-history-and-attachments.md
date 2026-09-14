@@ -37,13 +37,13 @@ descriptor and trusted resolver; it does not assume SDK storage exists. This
 default fixes the case where an application uses the complete assistant but its
 picker rejects PDFs because no host document descriptor was supplied.
 
-Staging now issues the protocol's `ref_…` content-reference grammar. Earlier
-staging issued `blob_…`, which the shared upload queue correctly rejected even
-after a successful HTTP upload. Retrying an existing staged upload exposes a
-`ref_…` alias without creating a second blob or changing its stored identity,
-fingerprint or expiry. Shared resolution accepts that alias and the original
-legacy reference; consumption still updates/deletes the original stored record
-and blob. Account and conversation checks apply to both paths.
+Staging issues the protocol's `ref_…` content-reference grammar. The unpublished
+cleanup follow-up removes the earlier `blob_…` staging alias and fallback lookup.
+Old upload retries report missing content and cannot restage it under the same
+identity. Hosts use a new upload key for new content. Account/conversation checks
+still protect current references. This source removal does not erase old bytes:
+old staging records remain for the separately approved disposable-data cutover.
+Retained business-file blob keys are a different storage contract and unchanged.
 
 Durable attachment events contain presentation metadata, not an authorization
 grant or provider content reference. A host constructing saved provider history
@@ -145,18 +145,25 @@ other tenants/partitions, shared references, unmarked historical uploads and
 malformed records are preserved. Diagnose nonzero `blocked` counts; cleanup must
 not guess a malformed target. Expiry continues when no one uploads another file.
 
-These September 14 lifecycle corrections, worker and import removal are currently
-unpublished SDK source. Public 0.2.36 at
-`5a0ebe520a9e6fde0b3a792f959a7a10e0a3de50` contains the earlier adapter, not these
-corrections. Consumers need an authorized SDK commit/release, a full public HTTPS
-SHA and matching lock, then the explicit worker wiring and host release. Current
-local source tests are not installed-consumer or deployment evidence.
+These September 14 lifecycle corrections, worker and import removal are now
+public SDK 0.2.37 at `15a3806c2595a3f93a87a768ad13293113f41b58` (verified against
+the public Git repository on September 14). That commit appeared externally
+while this goal run was qualifying source; this run did not publish it.
+All three web consumers now normally install this public revision with matching
+locks. Aegis wires one service-level worker and its seven attachment cases qualify
+expiry, shutdown and linked deletion. Application typed compiles/builds and
+static adoption gates pass; the separate terminal-approval regression still
+blocks full installed-server approval qualification. Source and local tests do
+not establish deployment or production data removal.
 
 ## Current consumer qualification
 
-Mills, Spartan and Cents web normally install public SDK 0.2.36; their mobile
-clients normally install the declared Flutter sibling's public
-`c22b5ac97b0bcabd99b2d96995a0ed85c49ec124`. Mills has removed its custom dictation
+Mills, Spartan and Cents web normally install public JS 0.2.37 at full SHA
+`15a3806c2595a3f93a87a768ad13293113f41b58`; their main mobile clients normally
+install public Flutter `50fe566d73f68b2beacc2a874dc9a038363b1509` with matching
+locks. Full mobile analyses/release web builds pass; Mills has 312, Aegis 179 and
+Cents 96 selected passing cases. Cents's unchanged visual gate now passes.
+Mills has removed its custom dictation
 route in favor of SDK conversation-bound transcription. Historical notes about
 pending adoption from `1f2e381c2fe96c79108850ebcbab7b98954a5d3f` are superseded by
 [the current progress record](assistant-cleanup-goal-progress.md).
@@ -166,3 +173,83 @@ shared bytes and linked deletion. `scripts/check-postgres-conversation-files.mjs
 adds native PostgreSQL races using a disposable cluster and the real postgres.js
 driver. It accepts no existing database connection. This does not establish live
 provider execution, production file removal or web/mobile audio behavior.
+
+
+## Ordinary upload admission follow-up (unpublished source)
+
+The generic PostgreSQL bundle now commits upload bytes and metadata in one
+transaction. It captures bytes and scalar identity before waiting for the pool;
+storage-agnostic staging also captures input before asynchronous storage. A failed
+metadata claim rolls back new bytes. A lost commit acknowledgement reports
+unavailable without deleting potentially committed content; an exact retry reads
+the original durable upload identity. Success diagnostics occur only after the
+commit is acknowledged. Three regressions failed before the fix; 52 related
+staging/deletion/foundation cases now pass, including lost-acknowledgement replay.
+Full TypeScript, scoped lint and normal build pass. The owned native PostgreSQL
+checker passes eight cases, including failed admission rollback/concurrent retry,
+deletion-before-admission and a lost commit acknowledgement. The five existing
+retained-file races also still pass. Logs: `/tmp/sdk-js-turn35-staging-*`.
+
+This source is newer than installed public 15a. Existing old uploads require the
+separately approved cutover; neither admission nor replay adopts unmarked rows.
+
+## Ordinary upload expiry (unpublished source)
+
+`postgres(pool)` and `postgresFromClient(client)` now mark newly admitted ordinary
+uploads with retention version 2 and a trusted `attachmentMaintenanceScopeId`
+(default `assistant-uploads`). Use a distinct partition when independently
+operated services share SDK tables. These records reference actual conversations;
+the retained-file adapter above uses a separate version 1 policy and lifecycle.
+
+`createHandrailAssistant` owns one expiry worker per assistant service when the
+PostgreSQL adapter provides it. The default interval is 60 seconds, batch size
+100, with no immediate startup sweep. Configure `attachmentCleanup` to change
+the interval/bounds, or set it to `false` when an explicitly owned SDK scheduler
+uses `persistence.startAttachmentCleanupWorker()` instead. Custom persistence
+implementations own their lifecycle. Await `assistant.stopBackgroundWorkers()`
+before closing SQL; the stable `await assistant.stopUsageWorker()` alias also
+joins attachment cleanup and remains compilable against the frozen public SDK.
+Stopping does not cancel admitted turns. Hosts still drain their active work and
+flush usage through the existing shutdown contract.
+
+The bounded `cleanupPostgresAssistantAttachmentStaging` helper accepts the trusted
+maintenance partition, optional tenant and principal scope, and a returned cursor.
+A principal scope requires its tenant. Omit a tenant only from a service authorized
+for every tenant in that partition. The bundle's `attachments.cleanupExpired()`
+uses the same checks, restricted to its trusted tenant/principal. Workers coalesce
+concurrent flushes, advance past blocked records and resume their scan after its
+end. No request data selects the maintenance partition.
+
+Expiry takes the conversation and blob locks, refuses active text/voice,
+unfinished tools/providers and pending approvals, then rereads metadata/version
+and verifies the exact blob lease. Malformed history blocks that conversation;
+temporary database failures remain unavailable errors. Expiry removes only
+validated, expired version 2 metadata and unreferenced bytes. Changed leases,
+shared business references, old/unmarked/version 1 records and unresolved work
+remain intact. History, checkpoints, voice read state, usage and effect receipts
+are unchanged. Safe diagnostics report `staging_cleanup_blocked` or
+`staging_cleanup_unavailable` without file content or raw storage errors.
+
+Metadata removal retains an `attachment.expired` idempotency receipt containing
+hashed upload identity/fingerprint and version/status only. An exact old retry
+returns `expired`; changed input conflicts, including after service restart.
+The PostgreSQL `consume()` operation also commits consumption and guarded byte
+removal together, preserving bytes referenced by a business attachment. Rollback
+restores the original metadata and receipt state if deletion fails.
+
+Turn 36 qualification passes 80 cases across seven files, full TypeScript,
+scoped lint, normal build and twelve native PostgreSQL concurrency/admission
+cases. The native fixture stops and removes its own cluster. These source
+changes require a new public committed SDK revision and normal consumer adoption;
+installed public 15a does not contain them. This evidence does not establish
+live provider/audio execution or approved removal of old production objects.
+
+The same unpublished follow-up gives version 1 retained-file staging the minimal
+expired-upload receipt. Stage admission and expiry share the original upload
+identity lock; expired retries cannot allocate replacement bytes, even when they
+wait behind a concurrent sweep. Retained saved copies remain readable through
+their existing references. New uploads use new keys. The retained-file worker
+also advances past blocked batches, including malformed database keys, while
+preserving the public cleanup result shape. Scan positions never authorize
+deletion. A shared regression run and the native PostgreSQL retry race qualify
+these paths; installed public 15a does not contain these follow-ups.

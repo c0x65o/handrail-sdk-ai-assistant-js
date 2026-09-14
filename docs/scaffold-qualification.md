@@ -13,7 +13,9 @@ normal Handrail production database approval requirement still applies.
 
 ## Reproduce the clean setup check
 
-Use the declared Node engine and npm 12.0.2 or newer. npm 12 includes the
+Use the declared Node engine and npm 12.0.2 or newer on `PATH`, including for
+nested npm scripts. Invoking an npm 12 CLI directly while `npm` on `PATH` is
+version 10 does not satisfy that toolchain contract. npm 12 includes the
 [pacote HTTPS Git resolution fix](https://github.com/npm/pacote/releases/tag/v22.0.0).
 The scaffold's `.npmrc` enables root-declared Git dependencies; its manifest
 permits the SDK `prepare` and esbuild setup scripts. SDK compilation remains in
@@ -62,7 +64,55 @@ server/pool/client, archive/restore and usage recovery after an outage. Cleanup
 closes its clients, HTTP listeners, usage workers and pools before removing the
 owned cluster. Fixture auth is never copied into the generated host.
 
-## Published baseline qualification
+## Current public 0.2.37 qualification — September 14, turn 35
+
+A fresh scaffold frozen to public JS
+`15a3806c2595a3f93a87a768ad13293113f41b58` passes normal npm 12 install,
+client/server typed compile and production build, clean `npm ci`, repeated
+compile/build and static adoption. Manifest/root/installed lock and real package
+identity are verified; SDK compilation ran in the normal Git prepare hook.
+The first check picked up npm 10 in nested scripts and was correctly refused by
+`devEngines`; selecting the declared npm 12 on `PATH` resolved it without
+changing the scaffold or relaxing its engine checks.
+
+The real PostgreSQL fixture passes fresh/repeated migration, fail-closed auth,
+authenticated send, account/tenant isolation, permission revocation, restart
+history, archive/restore and usage recovery. It records one synthetic provider
+call and one usage receipt. All owned clients/listeners/pools and the disposable
+cluster were closed and removed. No host database URL or real provider was used.
+
+Fixture: `/tmp/handrail-clean-scaffold-217786b0-turn35-public`.
+Logs: `/tmp/sdk-js-turn35-scaffold-{install,check-final,ci,ci-check,runtime}.log`
+and `/tmp/sdk-js-turn35-scaffold-adoption.json`.
+
+Ordinary staging idle expiry and the terminal-approval response fix are qualified
+in newer unpublished source; public 15a does not contain them. This fixture does
+not qualify complete retention, financial effects, live provider/audio, native
+devices or production rollout.
+
+## Shutdown follow-up — September 14, turn 36
+
+The template now awaits the stable `stopUsageWorker()` alias in a `finally` block
+before its host closes SQL. This remains compilable against frozen public 15a;
+in the newer source the alias also joins the managed attachment cleanup worker.
+It does not make that unpublished worker available in a public-15a installation.
+
+A newly generated `/tmp/handrail-clean-scaffold-217786b0-turn36-public` frozen to
+the same full public 15a SHA passes normal npm 12 install, typed client/server
+check and build, clean `npm ci`, repeated check/build and static adoption with
+matching HTTPS root and installed locks. SDK compilation remains in normal Git
+dependency preparation. The native PostgreSQL fixture again passes fresh/repeated
+migration, fail-closed auth, tenant/user isolation, create/send, permission
+revocation, restart history, archive/restore and usage outage/recovery. It records
+one synthetic provider call and one usage receipt, then closes and removes all
+owned SQL/listener/client resources. No project database or real provider is used.
+
+Logs: `/tmp/sdk-js-turn36-scaffold-{generate,install,check,ci,ci-check,runtime}.log`
+and `/tmp/sdk-js-turn36-scaffold-adoption.json`. The SDK package/adoption CLI
+contract run also accepts both worker-stop methods. Its final count and receipt
+are recorded in the [goal progress log](assistant-cleanup-goal-progress.md).
+
+## Historical public baseline qualification
 
 Public revision `5d9387c1a07b4b131cbc65ce273a5d1f6faf035b` (0.2.35) installed
 and compiled but intermittently failed during first send. A deterministic

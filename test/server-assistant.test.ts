@@ -92,6 +92,10 @@ describe("createHandrailAssistant", () => {
 
   it("derives isolated persistence and transports only from authenticated context", async () => {
     const scopes: string[] = [];
+    let releaseCleanup!: () => void;
+    const pendingCleanup = new Promise<void>(resolve => { releaseCleanup = resolve; });
+    const stopCleanup = vi.fn(() => pendingCleanup);
+    const startCleanup = vi.fn(() => ({ flush: async () => undefined, stop: stopCleanup }));
     const assistant = await createHandrailAssistant({
       id: "aegis",
       instructions: "Protect the customer.",
@@ -106,7 +110,7 @@ describe("createHandrailAssistant", () => {
           automation: { id: null, source: "server_derived", trust: "authoritative" },
         },
       }),
-      persistence: postgres(pool),
+      persistence: { ...postgres(pool), startAttachmentCleanupWorker: startCleanup },
       provider: {
         metadata: { provider_id: "test", model_id: "test-model", capabilities: {
           streaming: true, text: true, tool_calls: true, parallel_tool_calls: false, reasoning: false,
@@ -132,6 +136,13 @@ describe("createHandrailAssistant", () => {
     expect((await capability("bob")).status).toBe(200);
     expect((await capability("alice")).status).toBe(200);
     expect(scopes).toEqual(["tenant-a/alice", "tenant-a/bob"]);
+    expect(startCleanup).toHaveBeenCalledTimes(1);
+    let closed = false;
+    const stopping = assistant.stopUsageWorker().then(() => { closed = true; });
+    await Promise.resolve(); expect(closed).toBe(false);
+    expect(stopCleanup).toHaveBeenCalledTimes(1);
+    releaseCleanup(); await stopping; expect(closed).toBe(true);
+    await assistant.stopBackgroundWorkers();
   });
 
   it.each([["confirmed", 0], ["rejected", 0], ["confirmed", 1166], ["rejected", 1166]] as const)(
@@ -300,8 +311,20 @@ describe("createHandrailAssistant", () => {
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(originalDecision);
     expect(executions).toBe(1);
-    expect((await approvals.get({ permissionContext: context(new Request("https://example.test")),
-      proposalId: proposalId as never }))?.status).toBe("executed");
+    const executed = await approvals.get({ permissionContext: context(new Request("https://example.test")),
+      proposalId: proposalId as never });
+    expect(executed?.status).toBe("executed");
+    const lateDismissal = await assistant.handle(new Request("https://example.test/approvals/transition", {
+      method: "POST", headers: { "x-user": "alice", "content-type": "application/json" },
+      body: JSON.stringify({ conversationId: "conversation-approved", proposalId,
+        expectedVersion: executed!.proposal_version, status: "rejected", idempotencyKey: "late-dismissal",
+        idempotencyFingerprint: "late-dismissal" }),
+    }));
+    expect(lateDismissal.status).toBe(200);
+    expect(await lateDismissal.json()).toEqual({ ok: true, value: executed });
+    expect(await approvals.get({ permissionContext: context(new Request("https://example.test")),
+      proposalId: proposalId as never })).toEqual(executed);
+    expect(executions).toBe(1);
     expect(activityRecords.some((record) => record.summary === "Running approved work")).toBe(true);
     expect(activityRecords.at(-1)).toMatchObject({ summary: "Applying reviewed updates",
       progress: { completed: 43, total: 43, unit: "products" } });

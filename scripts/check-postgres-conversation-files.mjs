@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { PostgresAiPersistence, cleanupPostgresConversationFileStaging,
-  deletePostgresConversationHistory } from '../dist/postgres/index.js';
+  cleanupPostgresAssistantAttachmentStaging, deletePostgresConversationHistory, postgresFromClient } from '../dist/postgres/index.js';
 import { deletePostgresConversationAttachments } from '../dist/postgres/conversation-deletion.js';
 import { createConversationFileStorage } from '../dist/server/conversation-files.js';
 const require = createRequire(import.meta.url);
@@ -64,6 +64,111 @@ try {
     throw result.error ?? new Error('Fixture operation ended before its barrier');
   })]);
   const observed = promise => promise.then(value => ({ value }), error => ({ error }));
+  const ordinary = (client, tenantId) => postgresFromClient(client).forScope({ tenantId, scopeId: 'alice' },
+    { createConversationId: () => 'unused' }).attachments;
+  const input = { ownerScopeId: 'alice', conversationId: 'ordinary', idempotencyKey: 'upload',
+    fingerprint: 'original', mediaType: 'text/plain', bytes };
+  const expireOrdinary = (client, tenantId) => cleanupPostgresAssistantAttachmentStaging({
+    persistence: new PostgresAiPersistence(client), tenantId, maintenanceScopeId: 'assistant-uploads',
+    now: () => Date.now() + 61 * 60_000,
+  });
+  {
+    const tenant = 'ordinary-expiry-workers'; await ordinary(a, tenant).stage(input);
+    const results = await Promise.all([expireOrdinary(a, tenant), expireOrdinary(b, tenant)]);
+    assert.equal(results.reduce((sum, value) => sum + value.removed, 0), 1);
+    assert.equal(results.reduce((sum, value) => sum + value.blocked, 0), 0);
+    assert.deepEqual(await state(tenant), { docs: [], blobs: [] });
+    await assert.rejects(ordinary(b, tenant).stage(input), { code: 'expired' });
+    console.log('PASS concurrent ordinary expiry workers collect one upload and preserve transaction ownership');
+  }
+  {
+    const tenant = 'ordinary-expiry-active-race', entered = deferred(), release = deferred();
+    await ordinary(a, tenant).stage(input);
+    const paused = tap(a, async sql => {
+      if (sql.includes("payload->'retention'->>'version'='2'")) { entered.resolve(); await release.promise; }
+    });
+    const expiring = observed(expireOrdinary(paused, tenant)); await arrived(entered, expiring);
+    const writes = new PostgresAiPersistence(b);
+    const running = await writes.compareAndSetDocument({ tenantId: tenant, kind: 'durable_turn', scopeId: 'ordinary',
+      recordId: 'active', expectedVersion: null, value: { status: 'running' } });
+    release.resolve(); const result = await expiring; assert.equal(result.error, undefined);
+    assert.equal(result.value.removed, 0); assert.equal(result.value.blocked, 1);
+    assert.equal((await state(tenant)).blobs.length, 1);
+    await writes.compareAndSetDocument({ ...running, expectedVersion: running.version, value: { status: 'completed' } });
+    assert.equal((await expireOrdinary(a, tenant)).removed, 1);
+    assert.deepEqual(await state(tenant), { docs: [], blobs: [] });
+    assert.equal((await writes.getDocument(tenant, 'durable_turn', 'ordinary', 'active')).value.status, 'completed');
+    console.log('PASS ordinary expiry checks work admitted after discovery and preserves its completed receipt');
+  }
+  {
+    const tenant = 'ordinary-expiry-renewal-race', entered = deferred(), release = deferred();
+    const ref = await ordinary(a, tenant).stage(input);
+    const paused = tap(a, async sql => {
+      if (sql.includes("payload->'retention'->>'version'='2'")) { entered.resolve(); await release.promise; }
+    });
+    const expiring = observed(expireOrdinary(paused, tenant)); await arrived(entered, expiring);
+    // Fixture-only lease change under normal conversation/blob locks. No public
+    // read renews a lease and no production metadata is rewritten by this check.
+    const renewed = new Date(Date.now() + 120 * 60_000).toISOString();
+    await b.transaction(async tx => {
+      const store = new PostgresAiPersistence(tx);
+      const row = await store.getDocument(tenant, 'attachment', 'alice', ref.content_ref);
+      await store.compareAndSetDocument({ ...row, expectedVersion: row.version, value: { ...row.value, expiresAt: renewed } });
+      await tx.query('UPDATE handrail_ai_attachment_blobs SET expires_at=$3::text::timestamptz WHERE tenant_id=$1 AND blob_key=$2',
+        [tenant, row.value.blobKey, renewed]);
+    });
+    release.resolve(); const result = await expiring; assert.equal(result.error, undefined);
+    assert.equal(result.value.removed, 0);
+    const saved = await state(tenant); assert.equal(saved.docs.length, 1); assert.equal(saved.blobs.length, 1);
+    assert.equal(saved.docs[0].payload.expiresAt, renewed);
+    assert.equal((await expireOrdinary(a, tenant)).removed, 0);
+    console.log('PASS ordinary expiry rereads changed metadata and cannot remove a renewed lease');
+  }
+  {
+    const tenant = 'ordinary-rollback';
+    const failing = tap(a, async sql => {
+      if (sql.startsWith('INSERT INTO handrail_ai_documents') && sql.includes("'attachment'")) {
+        throw new Error('Fixture transaction aborted after metadata insertion');
+      }
+    });
+    await assert.rejects(ordinary(failing, tenant).stage(input), { code: 'unavailable' });
+    assert.deepEqual(await state(tenant), { docs: [], blobs: [] });
+    const [first, second] = await Promise.all([ordinary(a, tenant).stage(input), ordinary(b, tenant).stage(input)]);
+    assert.deepEqual(first, second);
+    const stored = await state(tenant); assert.equal(stored.docs.length, 1); assert.equal(stored.blobs.length, 1);
+    console.log('PASS ordinary upload rollback removes bytes and metadata; concurrent retries retain one exact upload');
+  }
+  {
+    const tenant = 'ordinary-deletion-first', entered = deferred(), release = deferred();
+    // Admission now acquires the conversation lock before allocating bytes.
+    // Pause before that transaction so deletion can win without a test deadlock.
+    const paused = { query: a.query, transaction: async operation => {
+      entered.resolve(); await release.promise; return a.transaction(operation);
+    } };
+    const uploading = observed(ordinary(paused, tenant).stage(input));
+    await arrived(entered, uploading);
+    await remove(b, tenant, input.conversationId);
+    release.resolve();
+    const result = await uploading;
+    assert.equal(result.error?.code, 'not_found');
+    assert.deepEqual(await state(tenant), { docs: [], blobs: [] });
+    console.log('PASS deletion wins before ordinary upload admission; the rejected transaction leaves no bytes or metadata');
+  }
+  {
+    const tenant = 'ordinary-lost-commit'; let loseReply = true;
+    const uncertain = { query: a.query, transaction: async operation => {
+      const result = await a.transaction(operation);
+      if (loseReply) { loseReply = false; throw new Error('Fixture lost commit acknowledgement'); }
+      return result;
+    } };
+    await assert.rejects(ordinary(uncertain, tenant).stage(input), { code: 'unavailable' });
+    const committed = await state(tenant);
+    assert.equal(committed.docs.length, 1); assert.equal(committed.blobs.length, 1);
+    const retry = await ordinary(b, tenant).stage(input);
+    assert.equal(retry.content_ref, committed.docs[0].payload.contentRef);
+    assert.deepEqual(await state(tenant), committed);
+    console.log('PASS lost ordinary upload commit acknowledgement preserves the committed upload and exact retry identity');
+  }
   {
     const tenant = 'single-consumption', storage = files(a, tenant), ref = await stage(storage);
     const results = await Promise.allSettled([storage.materialize('first', [ref]), files(b, tenant).materialize('second', [ref])]);
@@ -74,7 +179,23 @@ try {
     assert.equal(sweeps.reduce((sum, result) => sum + result.removed, 0), 1);
     const retained = await state(tenant); assert.equal(retained.docs.length, 1); assert.equal(retained.blobs.length, 1);
     assert.deepEqual((await storage.download(retained.docs[0].payload.conversationId, ref.attachment_id)).data, bytes);
-    console.log('PASS concurrent materialization admits one conversation; two expiry workers remove one staging row and preserve its saved copy');
+    await assert.rejects(stage(files(b, tenant)), { code: 'expired' });
+    console.log('PASS concurrent materialization admits one conversation; expiry preserves its saved copy and expired retry identity');
+  }
+  {
+    const tenant = 'retained-expiry-retry-race', entered = deferred(), release = deferred();
+    await stage(files(a, tenant));
+    const paused = tap(a, async sql => {
+      if (sql.includes('FOR UPDATE SKIP LOCKED')) { entered.resolve(); await release.promise; }
+    });
+    const expiring = observed(cleanup(paused, tenant)); await arrived(entered, expiring);
+    const retrying = observed(stage(files(b, tenant)));
+    await awaitLock('sdk-fixture-b'); release.resolve();
+    const [expired, retry] = await Promise.all([expiring, retrying]);
+    assert.equal(expired.error, undefined); assert.deepEqual(expired.value, { removed: 1, blocked: 0 });
+    assert.equal(retry.error?.code, 'expired');
+    assert.deepEqual(await state(tenant), { docs: [], blobs: [] });
+    console.log('PASS retained upload retry waits for expiry and cannot recreate removed bytes with the old key');
   }
   {
     const tenant = 'expiry-discovery-race', storage = files(a, tenant), ref = await stage(storage);
@@ -139,7 +260,7 @@ try {
     assert.deepEqual(await state(tenant), { docs: [], blobs: [] });
     console.log('PASS deletion waits for retained copy and consumption commit, then removes both saved and linked staging state');
   }
-  console.log('PASS five native PostgreSQL retained-file concurrency cases; fixture contains no project data');
+  console.log('PASS twelve native PostgreSQL upload/expiry/retained-file cases; fixture contains no project data');
 } finally {
   for (const release of releases) release();
   await Promise.allSettled(pools.map(sql => sql.end({ timeout: 1 })));
