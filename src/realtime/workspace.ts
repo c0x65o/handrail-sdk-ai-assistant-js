@@ -1,6 +1,6 @@
 export type RealtimeWorkspaceCallStatus = "admitted" | "starting" | "active" | "ending" | "ended" | "uncertain";
 export interface RealtimeWorkspaceCursor { readonly conversationId: string; readonly callId: string }
-export interface RealtimeWorkspaceCounts { readonly total: number; readonly running: number; readonly completed: number; readonly failed: number }
+export interface RealtimeWorkspaceCounts { readonly total: number; readonly running: number; readonly waitingForApproval?: number; readonly completed: number; readonly failed: number }
 export interface RealtimeWorkspaceCall extends RealtimeWorkspaceCursor {
   readonly status: RealtimeWorkspaceCallStatus; readonly counts: RealtimeWorkspaceCounts; readonly unread: boolean;
 }
@@ -44,8 +44,10 @@ export function parseRealtimeWorkspacePage(input: unknown): RealtimeWorkspacePag
     for (const name of ["total", "running", "completed", "failed"]) {
       if (!Number.isSafeInteger(raw[name]) || (raw[name] as number) < 0) throw new TypeError("Invalid voice workspace counts.");
     }
-    const counts = Object.freeze({ total: raw.total as number, running: raw.running as number, completed: raw.completed as number, failed: raw.failed as number });
-    if (counts.total !== counts.running + counts.completed + counts.failed) throw new TypeError("Invalid voice workspace counts.");
+    const waiting = raw.waitingForApproval ?? 0;
+    if (!Number.isSafeInteger(waiting) || (waiting as number) < 0) throw new TypeError("Invalid voice approval counts.");
+    const counts = Object.freeze({ ...(waiting === 0 ? {} : { waitingForApproval: waiting as number }), total: raw.total as number, running: raw.running as number, completed: raw.completed as number, failed: raw.failed as number });
+    if (counts.total !== counts.running + counts.completed + counts.failed + (waiting as number)) throw new TypeError("Invalid voice workspace counts.");
     return Object.freeze({ ...cursor(value), status: value.status as RealtimeWorkspaceCallStatus, counts, unread: value.unread });
   });
   return Object.freeze({ calls: Object.freeze(calls), next: page.next === null ? null : cursor(page.next) });

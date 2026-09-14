@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { PostgresPersistenceConflictError } from "./index.js";
 import { DurableRealtimeCallConflictError, type PostgresRealtimeCallStore } from "./realtime-calls.js";
 
-export type RealtimeToolActivityStatus = "running" | "completed" | "failed";
+export type RealtimeToolActivityStatus = "running" | "waiting_for_approval" | "completed" | "failed";
 export interface RealtimeToolActivityRecord {
   readonly schemaVersion: 1;
   readonly toolCallId: string;
@@ -14,6 +14,7 @@ export interface RealtimeToolActivityRecord {
 export interface RealtimeToolActivitySummary {
   readonly total: number;
   readonly running: number;
+  readonly waitingForApproval?: number;
   readonly completed: number;
   readonly failed: number;
 }
@@ -47,7 +48,7 @@ export function postgresRealtimeToolActivityScope(callScopeId: string, callId: s
 }
 function validate(value: RealtimeToolActivityRecord, toolCallId: string): RealtimeToolActivityRecord {
   if (!value || value.schemaVersion !== 1 || value.toolCallId !== toolCallId ||
-      !["running", "completed", "failed"].includes(value.status) ||
+      !["running", "waiting_for_approval", "completed", "failed"].includes(value.status) ||
       ![value.startedAt, value.updatedAt].every((time) => Number.isSafeInteger(time) && time >= 0) ||
       value.updatedAt < value.startedAt) throw new TypeError("Stored realtime tool activity is invalid.");
   identity(value.toolCallId); identity(value.name);
@@ -69,6 +70,12 @@ export class PostgresRealtimeToolActivityStore {
     this.#scope = postgresRealtimeToolActivityScope(calls.scopeId, callId);
     this.#readBinding = createHash("sha256").update(JSON.stringify([calls.tenantId, calls.scopeId, callId])).digest("hex");
   }
+  async get(toolCallId: string): Promise<RealtimeToolActivityRecord | null> {
+    if (!await this.calls.get(this.callId)) throw new DurableRealtimeCallConflictError();
+    const saved = await this.calls.persistence.getDocument<RealtimeToolActivityRecord>(this.calls.tenantId,
+      "realtime_tool_activity", this.#scope, identity(toolCallId));
+    return saved ? Object.freeze(validate(saved.value, toolCallId)) : null;
+  }
   async record(input: { readonly workerId: string; readonly toolCallId: string; readonly name: string;
     readonly status: RealtimeToolActivityStatus }): Promise<RealtimeToolActivityRecord> {
     return this.calls.withConversationLock(this.callId, calls =>
@@ -77,7 +84,7 @@ export class PostgresRealtimeToolActivityStore {
   async #record(input: { readonly workerId: string; readonly toolCallId: string; readonly name: string;
     readonly status: RealtimeToolActivityStatus }): Promise<RealtimeToolActivityRecord> {
     identity(input.workerId); identity(input.toolCallId); identity(input.name);
-    if (!["running", "completed", "failed"].includes(input.status)) throw new TypeError("Realtime tool activity status is invalid.");
+    if (!["running", "waiting_for_approval", "completed", "failed"].includes(input.status)) throw new TypeError("Realtime tool activity status is invalid.");
     for (let attempt = 0; attempt < 4; attempt++) {
       const call = await this.calls.get(this.callId);
       if (!call || call.workerId !== input.workerId) throw new DurableRealtimeCallConflictError();
@@ -86,7 +93,11 @@ export class PostgresRealtimeToolActivityStore {
       const previous = saved ? validate(saved.value, input.toolCallId) : undefined;
       if (previous && previous.name !== input.name) throw new DurableRealtimeCallConflictError();
       if (previous?.status === input.status || previous && input.status === "running") return Object.freeze({ ...previous });
-      if (previous && previous.status !== "running" || !previous && (input.status !== "running" || call.status !== "active")) {
+      // A browser can decide and settle before the live transport publishes its
+      // pending callback. That late callback must not regress a durable outcome.
+      if (previous && input.status === "waiting_for_approval" &&
+        ["completed", "failed"].includes(previous.status)) return Object.freeze({ ...previous });
+      if (previous && !["running", "waiting_for_approval"].includes(previous.status) || !previous && (input.status !== "running" || call.status !== "active")) {
         throw new DurableRealtimeCallConflictError();
       }
       const now = this.clock();
@@ -103,15 +114,17 @@ export class PostgresRealtimeToolActivityStore {
   }
   async summary(): Promise<RealtimeToolActivitySummary> {
     if (!await this.calls.get(this.callId)) throw new DurableRealtimeCallConflictError();
-    const result = await this.calls.persistence.client.query<{ total: string; running: string; completed: string; failed: string }>(
+    const result = await this.calls.persistence.client.query<{ total: string; running: string; completed: string; failed: string; waiting: string }>(
       `SELECT count(*)::text AS total, count(*) FILTER (WHERE payload->>'status'='running')::text AS running,
+       count(*) FILTER (WHERE payload->>'status'='waiting_for_approval')::text AS waiting,
        count(*) FILTER (WHERE payload->>'status'='completed')::text AS completed,
        count(*) FILTER (WHERE payload->>'status'='failed')::text AS failed FROM handrail_ai_documents
        WHERE tenant_id=$1 AND kind='realtime_tool_activity' AND scope_id=$2`, [this.calls.tenantId, this.#scope]);
     const row = result.rows[0];
-    const value = { total: Number(row?.total), running: Number(row?.running), completed: Number(row?.completed), failed: Number(row?.failed) };
+    const waiting = Number(row?.waiting);
+    const value = { ...(waiting === 0 ? {} : { waitingForApproval: waiting }), total: Number(row?.total), running: Number(row?.running), completed: Number(row?.completed), failed: Number(row?.failed) };
     if (!Object.values(value).every((count) => Number.isSafeInteger(count) && count >= 0) ||
-      value.total !== value.running + value.completed + value.failed) throw new TypeError("Stored realtime tool counts are invalid.");
+      value.total !== value.running + value.completed + value.failed + waiting) throw new TypeError("Stored realtime tool counts are invalid.");
     return Object.freeze(value);
   }
   async readState() {

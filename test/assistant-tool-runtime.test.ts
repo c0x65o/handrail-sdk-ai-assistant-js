@@ -9,6 +9,8 @@ import { InMemoryConversationEventStore } from "../src/conversation/event-store.
 import { InMemoryApprovalProposalStore } from "../src/conversation/approval-proposal-store.js";
 import { createApprovalExecutionCoordinator } from "../src/tools/approval-execution.js";
 import { createApprovalCoordinator } from "../src/conversation/approval-coordinator.js";
+import { resumeExternalToolApprovals } from "../src/server/external-tool-approvals.js";
+import { InMemoryDurableApplicationTurnStore } from "../src/transports/durable.js";
 
 type Context = { scopeId: string; userId: string };
 const context: Context = { scopeId: "household:user", userId: "user" };
@@ -84,6 +86,99 @@ it.each(["confirm", "reject"] as const)("waits on native %s and reuses retained 
   expect(h.effect).toHaveBeenCalledTimes(decision === "confirm" ? 1 : 0);
   expect(await (await h.create()).awaitApproval({ ...location, call, signal })).toEqual(result);
   expect(h.effect).toHaveBeenCalledTimes(decision === "confirm" ? 1 : 0);
+});
+
+it.each(["confirm", "reject"] as const)("resumes external %s after runtime replacement without reopening a provider", async decision => {
+  const h = await setup(true), signal = new AbortController().signal;
+  await h.runtime.execute(call, signal, location);
+  await h.runtime.awaitApproval({ ...location, call, signal });
+  const runtimeFor = vi.fn(async () => h.create());
+  const resume = () => resumeExternalToolApprovals({ context, conversationId: location.conversationId,
+    proposals: h.proposals, events: h.events, turns: new InMemoryDurableApplicationTurnStore(), runtimeFor });
+  await resume();
+  expect(runtimeFor).not.toHaveBeenCalled();
+  expect((await h.pendingProposal()).expires_at).toBeNull();
+  await h.decide(decision);
+  await resume();
+  await resume();
+  expect(runtimeFor).toHaveBeenCalledTimes(2);
+  expect(h.effect).toHaveBeenCalledTimes(decision === "confirm" ? 1 : 0);
+  const events = (await h.events.read({ conversationId: location.conversationId as never })).entries;
+  expect(events.filter(entry => entry.event.payload.type === "tool_call.result_recorded")).toHaveLength(1);
+  expect(events.some(entry => ["turn.started", "turn.completed", "message.created"].includes(entry.event.payload.type))).toBe(false);
+});
+
+it("requires fresh external authorization and leaves a saved decision recoverable after denial", async () => {
+  const h = await setup(true), signal = new AbortController().signal;
+  await h.runtime.execute(call, signal, location);
+  await h.runtime.awaitApproval({ ...location, call, signal });
+  await h.decide("confirm");
+  const runtimeFor = vi.fn(async () => h.create());
+  const resume = () => resumeExternalToolApprovals({ context, conversationId: location.conversationId,
+    proposals: h.proposals, events: h.events, turns: new InMemoryDurableApplicationTurnStore(), runtimeFor });
+  h.authorizeLocation.mockRejectedValueOnce(new Error("Session revoked"));
+  await expect(resume()).rejects.toThrow("Session revoked");
+  expect(h.effect).not.toHaveBeenCalled();
+  expect((await h.pendingProposal()).status).toBe("confirmed");
+  await resume();
+  expect(h.effect).toHaveBeenCalledOnce();
+});
+
+it("a denied external proposal does not starve a later authorized decision", async () => {
+  const h = await setup(true), signal = new AbortController().signal;
+  const later = { ...call, tool_call_id: "later-call" };
+  for (const item of [call, later]) {
+    await h.runtime.execute(item, signal, location);
+    await h.runtime.awaitApproval({ ...location, call: item, signal });
+  }
+  const coordinator = createApprovalCoordinator({ proposalStore: h.proposals, eventStore: h.events, authorize: () => "allow" });
+  for (const proposal of await h.proposals.listGroup({ permissionContext: context, groupId: location.conversationId as never })) {
+    await coordinator.decide({ permissionContext: context, conversationId: location.conversationId as never,
+      proposalId: proposal.proposal_id, expectedVersion: proposal.proposal_version, decision: "confirm",
+      attribution: { actor: { type: "user", id: "user" as never }, source: { type: "runtime" } },
+      idempotencyKey: `confirm-${proposal.proposal_id}`, idempotencyFingerprint: `confirm-${proposal.proposal_id}`, signal });
+  }
+  h.authorizeLocation.mockRejectedValueOnce(new Error("Permission revoked for first action"));
+  const resume = () => resumeExternalToolApprovals({ context, conversationId: location.conversationId,
+    proposals: h.proposals, events: h.events, turns: new InMemoryDurableApplicationTurnStore(), runtimeFor: () => h.create() });
+  await expect(resume()).rejects.toThrow("Permission revoked for first action");
+  expect(h.effect).toHaveBeenCalledOnce();
+  const proposals = await h.proposals.listGroup({ permissionContext: context, groupId: location.conversationId as never });
+  expect(proposals.filter(p => p.status === "confirmed")).toHaveLength(1);
+  expect(proposals.filter(p => p.status === "executed")).toHaveLength(1);
+  await resume();
+  expect(h.effect).toHaveBeenCalledTimes(2);
+});
+
+it("does not execute a saved proposal belonging to another external transport", async () => {
+  const h = await setup(true), signal = new AbortController().signal;
+  await h.runtime.execute(call, signal, location);
+  await h.runtime.awaitApproval({ ...location, call, signal });
+  await h.decide("confirm");
+  await resumeExternalToolApprovals({ context, conversationId: location.conversationId,
+    proposals: h.proposals, events: h.events, turns: new InMemoryDurableApplicationTurnStore(), runtimeFor: () => null });
+  expect(h.effect).not.toHaveBeenCalled();
+  expect((await h.pendingProposal()).status).toBe("confirmed");
+});
+
+it("binds external resumption to reviewed arguments and converges concurrent observers to one effect", async () => {
+  const h = await setup(true), signal = new AbortController().signal;
+  await h.runtime.execute(call, signal, location);
+  await h.runtime.awaitApproval({ ...location, call, signal });
+  await h.decide("confirm");
+  const resume = () => resumeExternalToolApprovals({ context, conversationId: location.conversationId,
+    proposals: h.proposals, events: h.events, turns: new InMemoryDurableApplicationTurnStore(), runtimeFor: () => h.create() });
+  const original = await h.proposals.listGroup({ permissionContext: context, groupId: location.conversationId as never });
+  const read = vi.spyOn(h.proposals, "listGroup").mockResolvedValueOnce(original.map(proposal => ({ ...proposal,
+    reviewed_arguments: { type: "opaque_reference" as const,
+      argument_ref: assistantToolArgumentReference({ value: "substituted" }) as never } })));
+  await expect(resume()).rejects.toMatchObject({ code: "idempotency_conflict" });
+  expect(h.effect).not.toHaveBeenCalled();
+  read.mockRestore();
+  await Promise.allSettled([resume(), resume()]);
+  await resume();
+  expect(h.effect).toHaveBeenCalledOnce();
+  expect((await h.pendingProposal()).status).toBe("executed");
 });
 
 it.each(["conversationId", "turnId"] as const)("refuses a foreign or stale %s before events or execution", async key => {

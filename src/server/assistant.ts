@@ -5,6 +5,8 @@ export { retainProviderInvocation, type ProviderInvocationOperationStore } from 
 export { createConversationFileStorage, type ConversationFileStorageOptions, type ConversationFileInput,
   type RetainedConversationFile } from "./conversation-files.js";
 import { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
+import { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
+export { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
 export { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime, type AssistantToolRuntimeOptions } from "./assistant-tool-runtime.js";
 export { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { createToolActivityObserver, type HandrailAssistantToolObserver } from "./tool-observer.js";
@@ -147,6 +149,9 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
    * cannot reconstruct (and must not persist) opaque user credentials at boot.
    */
   readonly recoverPendingOnContext?: boolean;
+  /** Trusted external transports (for example live voice) can resume exact saved
+   * decisions with fresh authorization, independently of expired media leases. */
+  readonly externalApprovalRuntimeFor?: ExternalApprovalRuntimeFactory<TContext>;
   readonly authorizeConversation?: Parameters<PostgresAssistantPersistence["forScope"]>[1]["authorizeConversation"];
   readonly authorizeApproval?: Parameters<PostgresAssistantPersistence["forScope"]>[1]["authorizeApproval"];
   /** @deprecated Approval requests do not expire. Ignored. */
@@ -355,6 +360,16 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     // the next authorized read after a restart) will dispatch the saved action.
     await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
     const bundle = bundleFor(context);
+    if (options.externalApprovalRuntimeFor) {
+      try {
+        await resumeExternalToolApprovals({ context, conversationId, events: bundle.events,
+          proposals: approvalStoreFor(context), turns: bundle.durableTurns,
+          runtimeFor: options.externalApprovalRuntimeFor });
+      } catch (cause) {
+        emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "external_approval_resumption",
+          phase: "failed", conversationId, code: "approval_resumption_failed", retryable: true, cause });
+      }
+    }
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const replay = await replayConversation({ conversationId: conversationId as never, eventStore: bundle.events });
       const state = replay.state;

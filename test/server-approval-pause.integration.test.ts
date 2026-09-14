@@ -7,11 +7,75 @@ import { createToolPlugin } from '../src/tools/plugin.js';
 import { createHandrailAiClient } from '../src/client/index.js';
 import { replayConversation } from '../src/conversation/replay.js';
 import { AI_RUNTIME_PROTOCOL_VERSION } from '../src/protocol.js';
+import { createAiApplication } from '../src/server/application.js';
+import { createAssistantToolRuntime, assistantToolArgumentReference } from '../src/server/assistant-tool-runtime.js';
+import { createApprovalExecutionCoordinator } from '../src/tools/approval-execution.js';
 
 const fact = <T extends string | null>(id: T) => ({ id, source: 'server_derived' as const, trust: 'authoritative' as const });
 const context: HandrailAssistantAuthorizationContext = { principalId: 'user', tenantId: 'tenant', scopeId: 'user',
   attribution: { organization: fact('org'), project: fact('project'), service_environment: fact('test'),
     known_user: fact('user'), session: fact('session'), automation: fact(null) } };
+
+it.each(['confirmed', 'rejected'] as const)('HTTP decisions resume an external %s proposal after restart without reopening its provider', async status => {
+  const database = new PGlite();
+  const adapt = (db: Pick<PGlite, 'query'>): PostgresSqlClient => {
+    const client: PostgresSqlClient = { async query<T extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) {
+      const result = await db.query<T>(sql, values ? [...values] : []);
+      return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
+    }, transaction: operation => operation(client) }; return client;
+  };
+  const sql: PostgresSqlClient = { query: adapt(database).query,
+    transaction: operation => database.transaction(tx => operation(adapt(tx as unknown as Pick<PGlite, 'query'>))) };
+  const persistence = postgresFromClient(sql);
+  await persistence.persistence.migrate();
+  const bundle = persistence.forScope<HandrailAssistantAuthorizationContext>(context, {
+    createConversationId: () => 'conversation' as never, authorizeConversation: () => 'allow', authorizeApproval: () => 'allow' });
+  await bundle.catalog.create({ authorizationContext: context, idempotencyKey: 'new' as never });
+  const effect = vi.fn(async () => ({ saved: true }));
+  const plugin = createToolPlugin({ pluginId: 'external', version: '1.0.0', displayName: 'External',
+    registrations: [{ definition: { name: 'save', description: 'Save', input_schema: { type: 'object', properties: {} } }, executor: effect }],
+    approvals: [{ toolName: 'save', mode: 'always', summarize: () => 'Save reviewed change' }] });
+  const providerRequest = vi.fn(async function* () { throw new Error('External approval must not open a provider'); yield {}; });
+  const location = { conversationId: 'conversation', turnId: 'saved-voice-call' };
+  const call = { tool_call_id: 'voice-action', name: 'save', arguments: {} };
+  const lease = new AbortController();
+  const freshAuthorization = vi.fn(async () => {});
+  const runtime = async (authorize: () => void | Promise<void>) => createAssistantToolRuntime({ context,
+    events: bundle.events, proposalStore: bundle.approvals, authorizeLocation: authorize,
+    application: await createAiApplication({ installContext: context, plugins: [plugin], policy: () => ({ outcome: 'allow' }),
+      toolExecutionLedger: bundle.toolLedger,
+      approvalCoordinator: createApprovalExecutionCoordinator({ proposalStore: bundle.approvals, eventStore: bundle.events,
+        authorize: async () => { await authorize(); return 'allow' as const; },
+        verifyArguments: ({ binding, reviewedArguments, arguments: args }) => binding.type === 'opaque_reference' &&
+          reviewedArguments.type === 'opaque_reference' && binding.argumentReference === reviewedArguments.argument_ref &&
+          binding.argumentReference === assistantToolArgumentReference(args) ? 'match' : 'mismatch' }) }) });
+  const create = () => createHandrailAssistant({ id: 'external', authorize: () => context, persistence, automaticTitles: false,
+    externalApprovalRuntimeFor: async input => {
+      expect(input).toMatchObject(location);
+      return runtime(freshAuthorization);
+    }, provider: openaiResponses({ model: 'fixture', request: providerRequest, supportsToolSearch: false }) });
+  let assistant = await create();
+  try {
+    const live = await runtime(() => lease.signal.throwIfAborted());
+    await live.execute(call, lease.signal, location);
+    expect(await live.awaitApproval({ ...location, call, signal: lease.signal })).toMatchObject({ status: 'external_approval_required' });
+    const proposal = (await bundle.approvals.listGroup({ permissionContext: context, groupId: 'conversation' as never }))[0]!;
+    lease.abort();
+    await assistant.stopBackgroundWorkers(); assistant = await create();
+    const decide = () => assistant.handle(new Request('https://app.test/approvals/transition', { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ conversationId: 'conversation',
+        proposalId: proposal.proposal_id, expectedVersion: 1, status, idempotencyKey: 'decision', idempotencyFingerprint: 'decision' }) }));
+    expect((await decide()).status).toBe(200);
+    await assistant.stopBackgroundWorkers(); assistant = await create();
+    expect((await decide()).status).toBe(200);
+    expect(freshAuthorization).toHaveBeenCalled();
+    expect(effect).toHaveBeenCalledTimes(status === 'confirmed' ? 1 : 0);
+    expect(providerRequest).not.toHaveBeenCalled();
+    expect(await bundle.durableTurns.load('conversation', location.turnId)).toBeNull();
+    expect((await bundle.events.read({ conversationId: 'conversation' as never })).entries
+      .filter(entry => entry.event.payload.type === 'tool_call.result_recorded')).toHaveLength(1);
+  } finally { await assistant.stopBackgroundWorkers(); await database.close(); }
+}, 30_000);
 
 it.each([['confirmed', false], ['rejected', false], ['confirmed', true]] as const)('rests across comments and restart, then resumes %s once (comment running=%s)', async (decision, commentRunning) => {
   const database = new PGlite();

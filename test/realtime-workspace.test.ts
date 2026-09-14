@@ -5,6 +5,14 @@ const call = (conversationId: string, callId = "voice", extra: Partial<RealtimeW
 });
 const page = (...calls: RealtimeWorkspaceCall[]) => ({ calls, next: null });
 afterEach(() => vi.useRealTimers());
+it("distinguishes a saved approval from running or uncertain voice work", () => {
+  const waiting = call("one", "voice", { status: "ended", counts: {
+    total: 1, running: 0, waitingForApproval: 1, completed: 0, failed: 0 } });
+  const parsed = parseRealtimeWorkspacePage(page(waiting));
+  expect(parsed.calls[0]?.counts.waitingForApproval).toBe(1);
+  expect(summarizeRealtimeWorkspace({ calls: parsed.calls, loading: false, synchronized: true, error: null }).unresolvedTools).toBe(0);
+  expect(() => parseRealtimeWorkspacePage(page({ ...waiting, counts: { ...waiting.counts, waitingForApproval: -1 } }))).toThrow();
+});
 it("validates and projects public voice fields only", () => {
   expect(parseRealtimeWorkspacePage({ calls: [{ ...call("one"), providerCallRef: "secret" }], next: null })).toEqual(page(call("one")));
   for (const input of [{ calls: [] }, page(call("one", "voice", { unread: true })), page(call("one", "voice", { counts: { total: 1, running: -1, completed: 2, failed: 0 } }))]) {

@@ -38,8 +38,13 @@ it("retains bounded voice tool activity across reloads, duplicate callbacks and 
     await expect(activity().record({ ...input, status: "completed" })).rejects.toThrow("acknowledgement lost");
     await activity().record({ ...input, status: "completed" });
     expect((await activity().record(input)).status).toBe("completed");
+    expect((await activity().record({ ...input, status: "waiting_for_approval" })).status).toBe("completed");
     await expect(activity().record({ ...input, status: "failed" })).rejects.toBeInstanceOf(DurableRealtimeCallConflictError);
     await activity().record({ ...input, toolCallId: "update-product" });
+    await activity().record({ ...input, toolCallId: "update-product", status: "waiting_for_approval" });
+    expect(await activity().get("update-product")).toMatchObject({ status: "waiting_for_approval" });
+    expect(await activity().summary()).toEqual({ total: 2, running: 0, waitingForApproval: 1, completed: 1, failed: 0 });
+    expect(await activity().get("missing")).toBeNull();
     await activity().record({ ...input, toolCallId: "unresolved-product" });
     expect(await activity().readState()).toMatchObject({ unread: false, readToken: null });
     await calls().requestEnd("voice");
