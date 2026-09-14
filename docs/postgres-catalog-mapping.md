@@ -1,7 +1,8 @@
 # Retaining a host ownership table
 
-Local source candidate, September 13, 2026. This API has not yet been installed
-by Mills through a public committed SDK revision.
+Published in public JS SDK revision `5a0ebe520a9e6fde0b3a792f959a7a10e0a3de50`
+(0.2.36). Mills' local checkout now installs this revision through public HTTPS
+Git with a matching lock. This does not establish deployment or production cleanup.
 
 New applications should use the default `postgresFromClient(...).forScope(...)`
 catalog and SDK migrations. An existing application may need to retain a small

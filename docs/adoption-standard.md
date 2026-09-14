@@ -59,8 +59,7 @@ retain the matching lock. The adoption checker verifies the resolved Git SHA,
 dependency-group consistency and absence of duplicate/legacy/linked SDK lock
 nodes. Its output is explicitly **static-source-and-lockfile-only**, not runtime
 conformance. [Scaffold qualification](./scaffold-qualification.md) separates
-installation/build evidence from the pending published history fix and live
-host/provider/audio qualification.
+installed setup/runtime evidence from live host/provider/audio qualification.
 
 ## One supported architecture
 
@@ -95,7 +94,7 @@ and `stopUsageWorker()` during graceful shutdown.
 Applications using `pg.Pool` call `postgres(pool)`. Applications that already
 own a conforming transactional `PostgresSqlClient` call
 `postgresFromClient(client)`; they must not copy the SDK store bundle.
-The local PostgreSQL candidate casts serialized JSON parameters through text
+The PostgreSQL adapter casts serialized JSON parameters through text
 before `jsonb`, so postgres.js does not encode them a second time. Adapters must
 return decoded JSON values. Existing double-encoded rows are a separate approved
 cutover concern; this parameter fix does not rewrite stored data.
@@ -125,20 +124,83 @@ gateway, and remove the seam only when the domain data itself is deliberately
 migrated. The default for a new project is the SDK Postgres catalog and approval
 store.
 
-When business foreign keys require the ownership table to remain, use the local
-[PostgreSQL catalog mapping candidate](postgres-catalog-mapping.md). The SDK can
+When business foreign keys require the ownership table to remain, use the
+[PostgreSQL catalog mapping](postgres-catalog-mapping.md). The SDK can
 own catalog lifecycle and deletion while the host supplies ownership columns,
-title redaction and transactional audit. This requires its eventual public
-committed SDK revision; it does not update an existing consumer pin.
-Mills' local source now uses that mapping through the standard gateway and
+title redaction and transactional audit. Public JS revision
+`5a0ebe520a9e6fde0b3a792f959a7a10e0a3de50` (0.2.36) contains the mapping, JSON
+encoding, atomic history reads, deletion and voice-fencing changes. Mills has
+installed that exact public HTTPS revision locally with a matching npm lock.
+Cents and Spartan web now also normally install that revision with matching locks;
+their clean npm reinstalls, static adoption gates and focused installed tests
+pass. See [the current cleanup handoff](assistant-cleanup-goal-progress.md) for
+each consumer's remaining validation. Source availability and local installation
+do not establish deployment or legacy data removal.
+Mills uses that mapping through the standard gateway and
 queues exclusive external-file deletion in the shared transaction. The SDK
 supplies the durable cleanup worker; Mills supplies canonical tenant/bucket/key
 validation and storage access. See [deletion/retention](conversation-deletion.md)
 for immutable-key retries, active upload protection and cutover limits.
 
+For retained-file adapters such as Aegis, the September 14 source correction also
+removes the unused file-import API, commits staging and retention/consumption
+atomically, binds staging deletion to the actual conversation and supplies an
+explicit idle-expiry worker for newly managed uploads. It fixes postgres.js
+infinite-expiry encoding. These changes are **newer than the installed public
+0.2.36 revision**. Adopt them with a reviewed public SHA/lock and one service-level
+worker; do not silently substitute local source. Old unmarked records remain a
+separate approved cutover. See [the exact lifecycle setup](trusted-history-and-attachments.md#retained-conversation-files).
+
 ## Standard UI offering
 
-The current local consolidation candidate and its release dependencies are qualified in [shared-assistant-acceptance.md](./shared-assistant-acceptance.md); the chronological ledger is [shared-assistant-consolidation.md](./shared-assistant-consolidation.md). It adds `HandrailAssistantWorkspace` for applications that already create an authenticated SDK client, and the endpoint launcher delegates to that same component. The complete sidebar, uncontrolled approval preference, authenticated dictation and per-conversation upload queues are SDK responsibilities. A host counter uses `renderComposerActions`, which leaves the standard microphone available. See [the minimal shared UI example](../examples/minimal-shared-assistant.tsx). These APIs require the candidate's eventual committed SDK revision; an older Git pin does not acquire them automatically.
+`HandrailAssistantWorkspace` serves applications that already create an
+authenticated SDK client; the endpoint launcher delegates to the same component.
+The complete sidebar, uncontrolled approval preference, authenticated dictation
+and per-conversation upload queues are SDK responsibilities. A host counter uses
+`renderComposerActions`, which leaves the standard microphone available. See
+[the minimal shared UI example](../examples/minimal-shared-assistant.tsx).
+These APIs exist in public JS revision `5a0ebe520a9e6fde0b3a792f959a7a10e0a3de50`;
+an older consumer pin does not acquire them automatically. Historical source
+qualification is in [shared-assistant-acceptance.md](./shared-assistant-acceptance.md);
+current adoption and remaining web/mobile work are tracked in
+[the cleanup handoff](assistant-cleanup-goal-progress.md).
+
+Cents mobile now normally installs public Flutter c22 with its matching lock,
+removes generic host controller wrappers and uses the SDK's standard New action
+instead of a misleading Clear-to-New flow. Application analysis and a normal
+release web build pass, but its unchanged visual-reference gate remains failed.
+The local shared Copy layout plus editor sizing fix now passes the unchanged
+regression bound (0.122821853960 <= 0.123000), with the complete toolbar and both
+reference gates qualified. This source candidate is not yet an installed revision
+or proof of live/design parity. See the current cleanup handoff for exact evidence;
+neither feature suppression nor an alias counts as completed consumer adoption.
+
+Spartan mobile also normally installs public Flutter c22. It removed unused host
+copies of catalog and transcript data while retaining business action/result
+projection and financial review. Installed tests, real-theme offline captures,
+full analysis and the shell launcher check pass. Its explicit development Mobile
+Preview request was rejected by this Dev Chat's saved project scope; this is a
+platform blocker for that route, not runtime reproduction. The current cleanup
+handoff keeps these receipts separate from newer unpublished SDK adoption.
+
+Local Flutter source now includes standard pending approval decisions in addition
+to the preference control. Its validated opaque-review host seam preserves domain
+financial review; its durable decision journal requires exact receipt replay.
+The local JS gateway correction returns the original decision receipt after
+execution advances. These additions are beyond public JS 5a0ebe and Flutter c22;
+see the sibling Flutter `docs/approval-decisions.md` and the cleanup handoff for
+qualification and actual-adoption boundaries. Do not consider a temporary package
+alias or a passing old preference-switch test proof of this feature baseline.
+
+
+Local Flutter `HandrailRealtimeVoiceSurface<T>` also standardizes voice status,
+startup/retry, microphone/playback controls, Stop/Back, background stopping and
+unconfirmed-end recovery. Host identity choices and financial review remain
+alongside those controls. Local `HandrailWebRtcVoiceSession<T>` now also owns
+microphone, peer/data-channel, playback and ordered teardown; the host supplies
+an authenticated SDP/end gateway. Remaining saved-call/activity presentation and
+actual public/native/provider/audio qualification are still open. See the sibling Flutter
+`docs/realtime-voice-surface.md` and the current cleanup handoff before adoption.
 
 The default web experience is `HandrailAssistantLauncher` from
 `@handrail/ai-assistant/react/styled`. It is endpoint-driven and owns client
@@ -258,6 +320,16 @@ write approval; discarding old chats does not authorize release or bypass that
 access control. Retain business/audit records and pending usage settlement that
 are independent of the discarded transcript. Do not turn cleanup into a startup
 side effect. Old applied migration files remain the historical ledger.
+
+For an empty database whose historical chain creates retired objects, use a
+reviewed baseline rather than rewriting applied SQL. Bind the original prefix's
+hashes/timestamps and the baseline checksum, preserve business seeds with their
+original installation-time semantics, and atomically record baseline origin and
+the acknowledged prefix. Skip existing schemas, then apply later migrations and
+SDK persistence normally. A current model snapshot with a non-mutating boundary
+keeps future generation from proposing unapproved legacy cleanup. Mills, Cents
+and Spartan have locally qualified implementations.
+This does not authorize production cleanup or assert deployed adoption.
 
 Mills Family Office, Spartan Aegis and Hitcents Cents use this replacement
 decision as of September 13, 2026, including their registered mobile consumers.

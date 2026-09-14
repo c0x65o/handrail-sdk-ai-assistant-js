@@ -90,89 +90,79 @@ storage contract explicitly. The Flutter client's default workspace also
 negotiates protected saved downloads; package adoption requires its own reviewed
 committed revision and lockfile.
 
-### Existing retained-file stores
+### Retained conversation files
 
 `createConversationFileStorage` from `@handrail/ai-assistant/server/assistant`
-provides the shared lifecycle for applications whose existing contract retains
-conversation files after temporary uploads are consumed. It owns bounded SDK
-staging, whole-request reference validation, immutable file retention in a
-PostgreSQL transaction, checksummed reads and restart/replay behavior. Retention
-commits before upload consumption; a failed metadata write rolls back the new
-blob and leaves the upload usable. Saved bytes do not expire with staging.
+provides the shared lifecycle for applications that retain conversation files
+after temporary uploads are consumed. Supply trusted tenant/principal identity,
+`authorizeConversation`, content policy and size/type settings. It owns bounded
+staging, whole-request reference validation, immutable retention, checksummed
+reads and restart/replay behavior. Authorization is checked before and after
+materialization/download, including replay. Saved files survive staging expiry.
 
-Supply server-derived tenant/principal identity, `authorizeConversation`, file
-content policy and size/type settings. Authorization runs on every materialize
-and download, including replay. `import` is a server-trusted migration operation:
-the importer must authorize original source and target ownership. It neither
-executes historical operations nor changes source records.
+The September 14 source correction makes blob allocation and staging admission
+atomic. Retaining a file, consuming its upload and binding the staging metadata
+to the actual conversation also commit together. Any failed write rolls back
+both changes. Conversation deletion removes the saved copy and its linked staging
+metadata, while preserving other registered SDK references to shared blobs.
+PostgreSQL infinite expiry is sent as text and cast by the database so postgres.js
+does not attempt to convert it through an invalid JavaScript Date.
 
-The optional `identity` settings preserve existing upload scope, saved scope,
-blob keys and transaction-lock namespace. Freeze those values when migrating an
-existing consumer. Both current `ref_` references and SDK aliases for historical
-`blob_` staging records resolve without host string rewriting. Spartan uses this
-adapter with its original identities, media policy and authorized history import.
-It no longer maintains a separate retention transaction or byte-integrity reader.
+There is no retained-file `import` API. Mills, Spartan/Aegis and Hitcents/Cents do
+not preserve or import old chats. Removing that API does not erase historical
+records; old unmarked staging, imported copies and business references require the
+explicit, approved cutover inventory. Do not infer ownership from matching text.
 
-This is an explicit storage adapter, not a silent retention change to ordinary
-high-level assistants. It is a local candidate API; ordinary consumers still
-need a committed public SDK SHA and matching lockfile before using it.
+The optional `identity` settings control upload/saved scopes, blob keys and lock
+namespace. Freeze a deployed consumer's current settings. Spartan already uses
+SDK defaults; switching back to its retired identities would strand new files.
+Its adapter supplies format/size/access policy and protected downloads only.
 
-Historical `message.created` events with `source.type = "import"` are inserted
-by their original timestamp. Equal timestamps preserve insertion order, and
-ordinary live arrivals are not reordered. Promoting an imported attachment
-placeholder preserves its attachments. Existing message IDs are never
-overwritten, so importers must reconcile saved user mutation IDs and reply/turn
-links before importing. Do not deduplicate messages by equal text or infer that
-importing history authorizes executing a recorded tool or proposal.
-
-## Mills integration status
-
-The same pending revision also fixes title usage capture: once provider usage
-has been reported, a failed durable capture cannot be replaced by an unavailable
-receipt under that identity. Generation fails without renaming or repeating the
-external request after restart. `server-conversation-titles.test.ts` covers the
-delayed capture failure and preserves the reported token values.
-
-These additions are prepared in the SDK worktree after published revision
-`1f2e381c2fe96c79108850ebcbab7b98954a5d3f`; they are not published or consumed by
-Mills yet. Consumption requires an authorized publication followed by a public
-HTTPS Git dependency pinned to the resulting full commit SHA and matching
-lockfile. No local or vendored dependency is needed or permitted.
-
-Tests cover stored image/PDF/CSV/XLSX projection, resolver ownership and byte/type
-checks, retained synchronous image behavior, trusted preparation context and
-redacted failures, chronological imports, placeholders and duplicate replay.
-Provider-loop and high-level assistant recovery/ownership suites provide
-regression checks. These are local fixture checks, not evidence of live provider
-access or completion of Mills' history migration.
-
-
-## Shared attachment content validation
-
-`createAttachmentContentValidator` from `@handrail/ai-assistant/server/assistant`
-checks common image/PDF/spreadsheet signatures, declared-type mismatches, UTF-8
-delimited text, batch bounds and safe filenames. Defaults are five files,
-10 MiB per file and 20 MiB total; `acceptedMediaTypes` can restrict the standard
-formats. `AttachmentContentError.reason` supports branded error presentation
-without copying the validation algorithm. These checks identify supported input
-formats; they are not a document parser or a malware scanner.
+Applications using this adapter must start one service-level
+`startPostgresConversationFileStagingCleanupWorker` from
+`@handrail/ai-assistant/persistence/postgres` after normal persistence setup, and
+await `stop()` before closing the database. Use the same trusted
+`maintenanceScopeId` for uploads and the worker (default upload partition:
+`conversation-files`). This is a service lifecycle hook, not a worker per request.
 
 ```ts
-import { createAttachmentContentValidator } from "@handrail/ai-assistant/server/assistant";
-
-const validateContent = createAttachmentContentValidator({
-  acceptedMediaTypes: ["image/png", "image/jpeg", "application/pdf"],
+const fileExpiry = startPostgresConversationFileStagingCleanupWorker({
+  persistence,
+  maintenanceScopeId: "conversation-files",
+  // Omit tenantId only for a service authorized for all tenants in this partition.
+  tenantId: trustedTenantId,
+  onResult: ({ removed, blocked }) => diagnostics.fileExpiry({ removed, blocked }),
+  onError: () => diagnostics.fileExpiryUnavailable(),
 });
-const validateFile = (input: { fileName: string; mediaType: string; data: Uint8Array }) => {
-  const [file] = validateContent([{ ...input, declaredMediaType: input.mediaType }]);
-  return { fileName: file!.fileName, mediaType: file!.mediaType, data: file!.data };
-};
-// Supply validateFile to createConversationFileStorage with host authorization,
-// compatible limits and any frozen identities required by existing saved files.
+// During service shutdown, before closing persistence:
+await fileExpiry.stop();
 ```
 
-The validator is synchronous and preserves the input byte type. Storage freezes
-bytes before asynchronous work. Hosts with other formats provide a domain
-validator; this addition does not change high-level staging's existing allowlist
-or rewrite previously saved identities. Spartan now supplies only its limits,
-format list and branded validation messages to this shared helper.
+The worker has no immediate startup sweep. Its bounded timer/explicit `flush()`
+collects only expired temporary records carrying the new SDK retention policy.
+It rechecks row versions and conversation/blob locks before removal. Saved copies,
+other tenants/partitions, shared references, unmarked historical uploads and
+malformed records are preserved. Diagnose nonzero `blocked` counts; cleanup must
+not guess a malformed target. Expiry continues when no one uploads another file.
+
+These September 14 lifecycle corrections, worker and import removal are currently
+unpublished SDK source. Public 0.2.36 at
+`5a0ebe520a9e6fde0b3a792f959a7a10e0a3de50` contains the earlier adapter, not these
+corrections. Consumers need an authorized SDK commit/release, a full public HTTPS
+SHA and matching lock, then the explicit worker wiring and host release. Current
+local source tests are not installed-consumer or deployment evidence.
+
+## Current consumer qualification
+
+Mills, Spartan and Cents web normally install public SDK 0.2.36; their mobile
+clients normally install the declared Flutter sibling's public
+`c22b5ac97b0bcabd99b2d96995a0ed85c49ec124`. Mills has removed its custom dictation
+route in favor of SDK conversation-bound transcription. Historical notes about
+pending adoption from `1f2e381c2fe96c79108850ebcbab7b98954a5d3f` are superseded by
+[the current progress record](assistant-cleanup-goal-progress.md).
+
+The retained-file suite verifies atomic failures/retries, authorization, expiry,
+shared bytes and linked deletion. `scripts/check-postgres-conversation-files.mjs`
+adds native PostgreSQL races using a disposable cluster and the real postgres.js
+driver. It accepts no existing database connection. This does not establish live
+provider execution, production file removal or web/mobile audio behavior.

@@ -22,6 +22,14 @@ assert.match(source, /^git\+https:\/\/github\.com\/c0x65o\/handrail-sdk-ai-assis
 assert.equal(lock.packages[''].dependencies[name], source);
 assert.equal(lock.packages[`node_modules/${name}`].resolved, source);
 assert.equal(lock.packages[`node_modules/${name}`].link, undefined);
+// npm 10 can leave the checked-in HTTPS lock unchanged while recording an SSH
+// source in the installed tree. Qualification must check both resolutions.
+const installedLock = JSON.parse(await readFile(join(root, 'node_modules/.package-lock.json'), 'utf8'));
+assert.equal(installedLock.packages[`node_modules/${name}`].resolved, source);
+assert.equal(installedLock.packages[`node_modules/${name}`].link, undefined);
+const installedPackage = JSON.parse(await readFile(join(root, 'node_modules', name, 'package.json'), 'utf8'));
+assert.equal(installedPackage.name, name);
+assert.equal(installedPackage.version, lock.packages[`node_modules/${name}`].version);
 assert.equal(await realpath(join(root, 'node_modules', name)), join(root, 'node_modules', name));
 const installedRequire = createRequire(join(root, 'package.json'));
 const installed = (specifier) => import(pathToFileURL(installedRequire.resolve(specifier)).href);

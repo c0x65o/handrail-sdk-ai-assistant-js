@@ -357,7 +357,7 @@ export class InMemoryConversationCatalog<TAuthorizationContext = unknown>
         operation: "permanent_delete",
         status: "deleted",
         conversationId: current.conversationId,
-        deletedVersion: nextVersion(current.version, "permanent_delete"),
+        deletedVersion: current.version,
       } satisfies PermanentlyDeleteConversationResult);
       this.#records.delete(current.conversationId);
       this.#tombstones.set(current.conversationId, result);

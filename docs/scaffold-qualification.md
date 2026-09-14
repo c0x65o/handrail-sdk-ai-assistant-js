@@ -33,8 +33,10 @@ Scaffolding resolves the latest public committed SHA once. For a previously
 agreed frozen revision, add `--sdk-revision <40-character-sha>` to the scaffold
 command. Neither branch/tag dependencies nor temporary source aliases qualify.
 After installation, the root lock specification and installed node's `resolved`
-URL/SHA must exactly match the manifest. The current CLI can be run from this
-source checkout; consumers do not receive these template changes until release.
+URL/SHA must exactly match the manifest, including the installed hidden lock at
+`node_modules/.package-lock.json`. npm 10 can leave the checked-in lock unchanged
+while rewriting that installed resolution to SSH. The template and CLI are
+available in public JS revision `5a0ebe520a9e6fde0b3a792f959a7a10e0a3de50`.
 
 The generated doctor checks configuration syntax and required names without
 printing their values or contacting the database/provider. The server uses SDK
@@ -60,20 +62,40 @@ server/pool/client, archive/restore and usage recovery after an outage. Cleanup
 closes its clients, HTTP listeners, usage workers and pools before removing the
 owned cluster. Fixture auth is never copied into the generated host.
 
-**Known release dependency:** public revision
-`5d9387c1a07b4b131cbc65ce273a5d1f6faf035b` (`0.2.35`) installs and compiles, but
-the runtime fixture intermittently fails during first send. Source inspection
-and a deterministic PostgreSQL regression exposed a non-atomic page/head read:
-at READ COMMITTED, a concurrent append can appear in the second head query but
-not the first event page, creating a false history gap. The source now returns
-both from one SQL statement. The native regression failed before that change
-and passes afterward. A public pin containing that correction and a new clean
-runtime qualification are still required; successful intermittent runs are not
-accepted as completion. Do not disable recovery or substitute a local alias to
-hide this adoption dependency.
+## Published baseline qualification
+
+Public revision `5d9387c1a07b4b131cbc65ce273a5d1f6faf035b` (0.2.35) installed
+and compiled but intermittently failed during first send. A deterministic
+PostgreSQL regression exposed the cause: at READ COMMITTED, a concurrent append
+could appear in a separate head query without appearing in the earlier event
+page, creating a false history gap. The SDK now reads both in one SQL statement.
+
+Public revision `5a0ebe520a9e6fde0b3a792f959a7a10e0a3de50` (0.2.36) includes
+that correction. A newly generated scaffold pinned to this exact SHA passed
+fresh `npm install`, typed client/server and production build, clean `npm ci`,
+the same build gates and the static adoption check using Node 22.23.1/npm 12.0.2.
+SDK compilation ran during normal Git dependency preparation. Manifest, checked-in
+lock, installed hidden lock, package version and real installed paths were checked;
+no local SDK aliases or packaging/publication steps were used.
+
+The native PostgreSQL fixture then passed fresh/repeated migration, fail-closed
+auth, authenticated create/send, user/tenant isolation, permission revocation and
+usage capture during an outage. A new server/pool/client recovered canonical
+history, archive/restore and queued usage without re-executing the synthetic
+provider. It recorded one provider call and one usage receipt. All owned clients,
+listeners, pools and the disposable cluster were stopped and removed. This
+supersedes the earlier pending-public-history-fix dependency; it does not claim
+that every consumer or real provider has been qualified.
+
+Fixture: `/tmp/handrail-clean-scaffold-217786b0-9-public`.
+Logs: `/tmp/sdk-public-5a-scaffold-{install,check,ci,ci-check,adoption,runtime,lint}.log`.
+The runtime checker now also asserts the installed lock and package identity so
+an HTTPS root lock cannot hide npm 10's SSH rewrite. That fixture-only assertion
+is a new local change; the application SDK used for this run was the public pin.
 
 The fixture does not establish live provider execution, audio playback, mobile
 presentation, full deletion/retention, financial tool authorization or deployed
 consumer adoption. Those require the shared acceptance suite and each host's
-authorized runtime qualification. Unpublished cleanup APIs are likewise absent
-from the existing public pin.
+authorized runtime qualification. The new local in-memory deletion-receipt
+correction and Flutter reviewed-deletion implementation are separate adoption
+dependencies; they are not included in this public JS baseline.

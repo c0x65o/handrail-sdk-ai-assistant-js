@@ -209,7 +209,7 @@ describe("InMemoryConversationCatalog", () => {
       operation: "permanent_delete",
       status: "deleted",
       conversationId: id("lifecycle"),
-      deletedVersion: 6,
+      deletedVersion: 5,
     });
     expect(await target.permanentlyDelete(deletionInput)).toEqual({
       ...deleted,

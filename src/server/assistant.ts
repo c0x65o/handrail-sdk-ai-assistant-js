@@ -515,8 +515,18 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         }
         throw new ApprovalProposalStoreError("not_found", "transition");
       }
-      const coordinator = createApprovalCoordinator<TContext>({ proposalStore,
-        eventStore: bundle.events, authorize: () => "allow" });
+      // Return the immutable decision receipt, even if execution has advanced
+      // the proposal before this reply or an exact idempotent retry arrives.
+      let decisionReceipt: Awaited<ReturnType<typeof proposalStore.transition>> | undefined;
+      const coordinator = createApprovalCoordinator<TContext>({ proposalStore: {
+        create: (request) => proposalStore.create(request),
+        get: (request) => proposalStore.get(request),
+        listGroup: (request) => proposalStore.listGroup(request),
+        async transition(request) {
+          decisionReceipt = await proposalStore.transition(request);
+          return decisionReceipt;
+        },
+      }, eventStore: bundle.events, authorize: () => "allow" });
       const result = await coordinator.decide({ permissionContext: input.permissionContext,
         conversationId: supplied.conversationId as never, proposalId: input.proposalId,
         expectedVersion: input.expectedVersion,
@@ -527,9 +537,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         ...(input.decisionReason === undefined ? {} : { decisionReason: input.decisionReason }),
         signal: new AbortController().signal });
       if (result.outcome === "accepted" || result.outcome === "already_decided") {
-        const retained = await proposalStore.get({ permissionContext: input.permissionContext,
-          proposalId: input.proposalId });
-        if (retained !== null) return retained;
+        if (decisionReceipt !== undefined) return decisionReceipt;
       }
       const code = result.outcome === "forbidden" ? "permission_denied"
         : result.outcome === "not_found" ? "not_found"

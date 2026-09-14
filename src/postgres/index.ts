@@ -1,3 +1,5 @@
+export { cleanupPostgresConversationFileStaging, startPostgresConversationFileStagingCleanupWorker,
+  type PostgresConversationFileStagingCleanupOptions } from "./conversation-file-staging.js";
 import { assertPostgresConversationWritable, postgresDocumentConversation, deletePostgresConversationHistory,
   deletePostgresConversationAttachments, lockPostgresAttachmentBlob } from "./conversation-deletion.js";
 import { PostgresConversationCatalogTable, PostgresCatalogIdentityError, type PostgresCatalogRow, type PostgresConversationCatalogTableOptions } from "./catalog-table.js";
@@ -990,8 +992,10 @@ export class PostgresAIRuntimeUsageAdmissionStore {
 export class PostgresAttachmentBlobStore implements AttachmentBlobStore {
   constructor(readonly persistence: PostgresAiPersistence, readonly tenantId: string) { id(tenantId, "tenantId"); }
   async put(input: { readonly key: string; readonly bytes: Uint8Array; readonly mediaType: string; readonly expiresAt: string }) {
+    // Send the timestamp as text so drivers do not coerce PostgreSQL infinity
+    // through JavaScript Date (which cannot represent retained-file expiry).
     await this.persistence.client.query(
-      "INSERT INTO handrail_ai_attachment_blobs (tenant_id,blob_key,payload,media_type,expires_at) VALUES ($1,$2,$3,$4,$5)",
+      "INSERT INTO handrail_ai_attachment_blobs (tenant_id,blob_key,payload,media_type,expires_at) VALUES ($1,$2,$3,$4,$5::text::timestamptz)",
       [this.tenantId, id(input.key, "blobKey"), input.bytes, id(input.mediaType, "mediaType"), input.expiresAt],
     );
   }

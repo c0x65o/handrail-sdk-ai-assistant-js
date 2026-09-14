@@ -261,6 +261,8 @@ export interface PermanentlyDeleteConversationResult {
   readonly status: "deleted" | "idempotent";
   /** Permanent deletion is irreversible; this identity cannot be restored. */
   readonly conversationId: ConversationId;
+  /** The removed descriptor's version, exactly the accepted expectedVersion.
+   * Deletion does not create a new catalog descriptor/version. */
   readonly deletedVersion: ConversationCatalogVersion;
 }
 

@@ -4,7 +4,10 @@ Recorded: 2026-09-04
 
 Historical snapshot: UI selectors, package pins and candidate status below are
 not current rollout instructions. See [the September 13 local acceptance review](./shared-assistant-acceptance.md)
-for the shared UI implementation, qualification and release dependencies.
+for the shared UI implementation, qualification and release dependencies. Current
+consumer pins, installed checks and open cutover gates are recorded in
+[the assistant cleanup handoff](./assistant-cleanup-goal-progress.md); the matrix
+below is retained only as September 4 evidence.
 
 This record separates source/API qualification from immutable release and
 runtime rollout. A local packed candidate proves code compatibility but is not

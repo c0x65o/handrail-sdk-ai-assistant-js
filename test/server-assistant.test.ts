@@ -287,6 +287,21 @@ describe("createHandrailAssistant", () => {
     }
     expect(await pending).toMatchObject({ status: "completed", result: { is_error: false } });
     expect(executions).toBe(1);
+    const originalDecision = await decision.json();
+    expect(originalDecision).toMatchObject({ ok: true, value: {
+      proposal_id: proposalId, proposal_version: 2, status: "confirmed",
+    } });
+    const replay = await assistant.handle(new Request("https://example.test/approvals/transition", {
+      method: "POST", headers: { "x-user": "alice", "content-type": "application/json" },
+      body: JSON.stringify({ conversationId: "conversation-approved", proposalId,
+        expectedVersion: 1, status, idempotencyKey: "confirm-approved",
+        idempotencyFingerprint: "confirm-approved" }),
+    }));
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(originalDecision);
+    expect(executions).toBe(1);
+    expect((await approvals.get({ permissionContext: context(new Request("https://example.test")),
+      proposalId: proposalId as never }))?.status).toBe("executed");
     expect(activityRecords.some((record) => record.summary === "Running approved work")).toBe(true);
     expect(activityRecords.at(-1)).toMatchObject({ summary: "Applying reviewed updates",
       progress: { completed: 43, total: 43, unit: "products" } });
