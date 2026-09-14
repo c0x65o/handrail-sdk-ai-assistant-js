@@ -240,7 +240,8 @@ describe("styled React preset", () => {
       tool_call_id: "call-1", tool_name: "update_household", reviewed_arguments: {
         type: "redacted_json", value: {} }, status: "pending", proposal_version: 1,
       expires_at: "2099-01-01T00:00:00.000Z", created_at: "2026-01-01T00:00:00.000Z",
-      updated_at: "2026-01-01T00:00:00.000Z", created_attribution: {}, latest_attribution: {},
+      updated_at: "2026-01-01T00:00:00.000Z", created_attribution: { actor: { type: "system" }, source: { type: "runtime" } },
+      latest_attribution: { actor: { type: "system" }, source: { type: "runtime" } },
       decision_at: null, decision_attribution: null, decision_reason: null, failure_reason: null } as never;
     const listApprovalGroup = vi.fn(async () => [proposal]);
     const transitionApproval = vi.fn(async () => proposal);
@@ -250,7 +251,7 @@ describe("styled React preset", () => {
       subscribe: () => () => undefined };
     const view = render(<StandardGatewayApprovals client={{ workspace,
       resources: { listApprovalGroup, transitionApproval } } as never}/>);
-    expect(await screen.findByText("update household")).toBeTruthy();
+    expect(await screen.findByText("Update household")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(transitionApproval).toHaveBeenCalledWith(expect.objectContaining({
       conversationId: "conversation-1", proposalId: "proposal-1", expectedVersion: 1,

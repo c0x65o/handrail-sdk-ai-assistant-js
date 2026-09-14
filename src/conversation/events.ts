@@ -232,7 +232,8 @@ export interface TurnStartedPayload {
 export type ConversationTurnStatus =
   | "queued"
   | "running"
-  | "waiting_for_tool_result";
+  | "waiting_for_tool_result"
+  | "waiting_for_approval";
 
 export interface TurnStatusChangedPayload {
   type: "turn.status_changed";
@@ -416,7 +417,7 @@ export interface ApprovalProposalCreatedPayload {
   tool_name: string;
   status: "pending";
   proposal_version: 1;
-  expires_at: ConversationTimestamp;
+  expires_at: ConversationTimestamp | null;
   reviewed_arguments: ConversationApprovalReviewedArguments;
 }
 
@@ -675,7 +676,7 @@ const APPROVAL_BINARY_VALUE_PATTERNS = [
   /^(?:[a-z0-9+/]{256,}={0,2})$/i,
 ] as const;
 
-const TURN_STATUSES = ["queued", "running", "waiting_for_tool_result"] as const;
+const TURN_STATUSES = ["queued", "running", "waiting_for_tool_result", "waiting_for_approval"] as const;
 const TURN_COMPLETION_OUTCOMES = ["stop", "length", "tool_calls"] as const;
 const TURN_CANCELLATION_REASONS = [
   "user",
@@ -1585,7 +1586,7 @@ function validatePayload(
       if (object.proposal_version !== 1) {
         fail(`${path}.proposal_version`, "must equal the initial version 1");
       }
-      validateTimestamp(object.expires_at, `${path}.expires_at`);
+      if (object.expires_at !== null) validateTimestamp(object.expires_at, `${path}.expires_at`);
       validateApprovalReviewedArguments(
         object.reviewed_arguments,
         `${path}.reviewed_arguments`,
@@ -1795,9 +1796,7 @@ export function parseConversationEvent(value: unknown): ConversationEvent {
         "approval proposals must be created by an explicit host system actor",
       );
     }
-    if (Date.parse(payload.expires_at) <= Date.parse(object.occurred_at as string)) {
-      fail("$event.payload.expires_at", "must be later than occurred_at");
-    }
+
   } else if (payload.type === "approval.proposal_status_changed") {
     if (actor.type !== "user" && actor.type !== "system") {
       fail(

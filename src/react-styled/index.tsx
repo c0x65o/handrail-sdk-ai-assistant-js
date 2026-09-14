@@ -1,8 +1,8 @@
 import { createInitialConversationState } from "../conversation/state.js";
 import { ConversationTranscript } from "../react/conversation-transcript.js";
 import { reviewedToolArguments } from "../conversation/approval-arguments.js";
-import { StructuredDetails, structuredDetailLabel, HANDRAIL_STRUCTURED_DETAILS_CSS } from "../react/structured-details.js";
-export { StructuredDetails, structuredDetailLabel, HANDRAIL_STRUCTURED_DETAILS_CSS, type StructuredDetailsProps } from "../react/structured-details.js";
+import { StructuredDetailsDisclosure, shouldCollapseStructuredDetails, structuredDetailLabel, HANDRAIL_STRUCTURED_DETAILS_CSS } from "../react/structured-details.js";
+export { StructuredDetails, StructuredDetailsDisclosure, shouldCollapseStructuredDetails, structuredDetailLabel, HANDRAIL_STRUCTURED_DETAILS_CSS, type StructuredDetailsProps, type StructuredDetailsDisclosureProps } from "../react/structured-details.js";
 import type { ConversationTimelineOptions } from "../conversation/timeline.js";
 import type { ConversationApprovalResources } from "../react/use-conversation-approvals.js";
 import type { ConversationApprovalProposalRecord, ConversationToolCallRecord } from "../conversation/state.js";
@@ -291,11 +291,11 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
     record.conversationId === resolvedState?.conversation_id),
   [activity, resolvedState?.conversation_id]);
   const remoteActivity = useSyncExternalStore(subscribeActivity, getActivity, getActivity);
-  const latestTurn = resolvedState?.turns.at(-1);
+  const latestTurn = resolvedState?.turns.find(turn => turn.turn_id === resolvedState.active_turn_id) ?? resolvedState?.turns.at(-1);
   const currentActivity = resolvedState?.conversation_id ? resolveConversationActivity(resolvedState, {
     conversationId: resolvedState.conversation_id,
     turnStatus: resolvedState.active_turn_id ? "running" : latestTurn?.status === "failed" ? "error"
-      : latestTurn?.status === "completed" || latestTurn?.status === "cancelled" ? "completed"
+      : latestTurn?.status === "completed" || latestTurn?.status === "cancelled" || latestTurn?.status === "waiting_for_approval" ? "completed"
         : latestTurn ? "running" : "idle", unread: false,
   }, remoteActivity) : remoteActivity;
   const activityProgress = currentActivity?.progress;
@@ -329,8 +329,8 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
           : call.result && renderToolResult ? renderToolResult(call.result, call, undefined) : null}
         renderApproval={proposal => {
           const context: StyledApprovalRenderContext = { state: resolvedState, busy: approvalReview.busy !== null,
-            readOnly: Boolean(props.readOnly || !props.approvalResources),
-            decide: async status => { if (!props.readOnly) await approvalReview.decide(proposal, status); } };
+            readOnly: Boolean(props.readOnly || !props.approvalResources || approvalReview.error),
+            decide: async status => { if (!props.readOnly && !approvalReview.error) await approvalReview.decide(proposal, status); } };
           return props.renderApproval ? props.renderApproval(proposal, context)
             : <StandardApprovalCard proposal={proposal} context={context}/>;
         }}
@@ -352,7 +352,7 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
           ? ` (${activityProgress.completed}/${activityProgress.total}${activityProgress.unit ? ` ${activityProgress.unit}` : ""})`
           : ""}</span>
         : currentActivity?.turnStatus === "completed" || currentActivity?.turnStatus === "error"
-          ? <span role="status">{currentActivity.turnStatus === "completed" ? "Done"
+          ? <span role="status">{currentActivity.turnStatus === "completed" ? resolvedState?.turns.at(-1)?.status === "waiting_for_approval" ? "Approval requested" : "Done"
             : latestTurn?.error?.message ?? "The assistant could not complete this request."}</span>
           : <><StreamStatus/><AssistantActivityIndicator className="hr-chat__assistant-activity"/></>}<TypingIndicator/></div>
       <ToolActivity className="hr-chat__tool-activity" {...(props.toolActivity ? { display: props.toolActivity } : {})}
@@ -381,7 +381,7 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
 function responseIsComplete(state: ConversationState, message: ConversationMessageRecord): boolean {
   const turn = state.turns.find((candidate) => candidate.turn_id === message.turn_id
     || candidate.output_message_ids.includes(message.message_id));
-  return turn ? ["completed", "cancelled", "failed"].includes(turn.status) && !turn.remote_may_still_be_running
+  return turn ? ["completed", "cancelled", "failed", "waiting_for_approval"].includes(turn.status) && !turn.remote_may_still_be_running
     : !state.active_turn_id;
 }
 
@@ -898,13 +898,14 @@ export function StandardApprovalCard({ proposal, context }: {
 }) {
   const arguments_ = reviewedToolArguments(context.state, proposal);
   const pending = proposal.status === "pending";
-  const expired = Date.parse(proposal.expires_at) <= Date.now();
+  const expired = proposal.status === "expired";
   return <article className="hr-chat__approval" role="listitem" aria-label="Assistant action">
     <strong>{structuredDetailLabel(proposal.tool_name)}</strong><span className="hr-chat__approval-status">{expired && pending ? "Expired" : ({
       pending: "Review required", confirmed: "Approved · awaiting execution", rejected: "Rejected",
       executing: "Executing", executed: "Executed", failed: "Execution failed", expired: "Expired",
     })[proposal.status]}</span>
-    {arguments_ ? <details open={pending}><summary>Action details</summary><StructuredDetails value={arguments_}/></details>
+    {arguments_ ? <StructuredDetailsDisclosure value={arguments_} summary="Action details" always
+      defaultOpen={pending && !shouldCollapseStructuredDetails(arguments_)}/>
       : <p>Action details are unavailable. Refresh this conversation before confirming.</p>}
     {proposal.failure_reason && <p>{proposal.failure_reason}</p>}
     {pending && <div className="hr-chat__approval-actions">
@@ -959,7 +960,7 @@ function ClientAssistantWorkspace(props: HandrailAssistantWorkspaceProps & {
     ...(props.loadAttachment ? { loadAttachment: props.loadAttachment }
       : client.attachmentDownload ? { loadAttachment: client.attachmentDownload } : {}),
     ...(onApprovalModeChange ? { onApprovalModeChange } : {}),
-    historyLayout: props.historyLayout ?? "compact",
+    historyLayout: props.historyLayout ?? "sidebar",
     historyOptions: { autoCreate: true, refreshKey: generatedTitles, ...props.historyOptions },
     catalogOptions: { catalog: client.catalog, authorizationContext },
     ...(client.activity ? { activity: client.activity } : {}),

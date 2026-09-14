@@ -188,6 +188,7 @@ export interface ConversationRuntimeSendMessageInput<TRequest> {
 }
 
 export type ConversationRuntimeTurnStatus =
+  | "waiting_for_approval"
   | "completed"
   | "cancelled"
   | "failed"
@@ -789,6 +790,19 @@ export async function createConversationRuntime<TRequest>(
       if (destroyed) throw new ConversationRuntimeDestroyedError();
       if (frameState.failure !== null) {
         return result(turnId, "interrupted", frameState.failure);
+      }
+      if (transportResult?.status === "waiting_for_approval") {
+        if (frameState.terminal !== null || transportResult.pendingToolCallIds.length === 0) {
+          return result(turnId, "interrupted", { code: "invalid_approval_wait",
+            message: "The saved approval wait conflicts with the response.", retryable: false });
+        }
+        await persistGenerated(() => {
+          const current = store.getSnapshot().turns.find(candidate => candidate.turn_id === turnId);
+          if (!current || current.status === "waiting_for_approval" || isTerminalTurnStatus(current.status)) return [];
+          return [{ actor: { type: "assistant" }, source: runtimeSource(),
+            payload: { type: "turn.status_changed", turn_id: turnId, status: "waiting_for_approval" } }];
+        });
+        return result(turnId, "waiting_for_approval");
       }
       if (frameState.terminal === null || !frameState.lastWasTerminal) {
         const disconnected = transportResult?.status === "disconnected";
@@ -2569,6 +2583,7 @@ function retryResultForObservation(
   if (
     suppressRetry ||
     outcome.status === "completed" ||
+    outcome.status === "waiting_for_approval" ||
     outcome.status === "cancelled" ||
     outcome.status === "failed"
   ) {

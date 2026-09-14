@@ -287,8 +287,11 @@ describe("createHandrailAssistant", () => {
       expect((await events.read({ conversationId: "conversation-approved" as never, limit: 5000 })).entries.some(({ event }) =>
         event.payload.type === "approval.proposal_created" && event.payload.proposal_id === legacyId)).toBe(false);
     }
+    expect(await pending).toMatchObject({ status: "external_approval_required" });
+    const resumed = exposed!.awaitApproval({ conversationId: "conversation-approved", turnId: "turn-approved",
+      call, signal: new AbortController().signal });
     if (status === "rejected") {
-      expect(await pending).toMatchObject({ status: "completed", result: { is_error: true } });
+      expect(await resumed).toMatchObject({ status: "completed", result: { is_error: true } });
       expect(executions).toBe(0);
       const audit = await events.read({ conversationId: "conversation-approved" as never, limit: 5000 });
       expect(audit.entries.some(({ event }) => event.payload.type === "tool_call.started")).toBe(false);
@@ -296,7 +299,7 @@ describe("createHandrailAssistant", () => {
         .map(({ event }) => event.payload)).toMatchObject([{ is_error: true }]);
       return;
     }
-    expect(await pending).toMatchObject({ status: "completed", result: { is_error: false } });
+    expect(await resumed).toMatchObject({ status: "completed", result: { is_error: false } });
     expect(executions).toBe(1);
     const originalDecision = await decision.json();
     expect(originalDecision).toMatchObject({ ok: true, value: {

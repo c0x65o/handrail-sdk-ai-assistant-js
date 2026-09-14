@@ -579,7 +579,7 @@ sensitive tool inputs into proposal metadata or audit events.
 `ApprovalProposalStore` is host-persistable;
 `InMemoryApprovalProposalStore` is bounded and non-durable.
 `createApprovalCoordinator` performs permission-checked, versioned,
-idempotent confirm/reject/expire decisions for one proposal or a group.
+idempotent confirm/reject decisions for one proposal or a group.
 `createApprovalExecutionCoordinator` lets `BoundedToolExecutor` resume only an
 exact confirmed proposal, re-authorize it, verify its argument binding, claim
 execution, and record a terminal result. Stable proposal, decision, and
@@ -892,18 +892,17 @@ approval and idempotency rules. Pass the stable provider tool-call identity
 through to that executor. New applications should use SDK tool plugins and the
 bounded SDK tool executor directly.
 
-When an existing application owns confirmation and execution, publish its saved
-proposal before waiting inside the observed tool. Call
-`toolActivity.waitForApproval({ conversationId, turnId, signal, expiresAt, read })`
-with an absolute persisted expiry in milliseconds. The `read(signal)` callback
-returns `{ status: "pending" }` until the existing domain endpoint finishes, then
-`{ status: "settled", value: savedResult }`; throw for rejection, missing state,
-or failed execution. The SDK serializes reads, reports waiting/settlement, and
-bounds slow reads and activity writes by cancellation and expiry (at most fifteen
-minutes per observation). It does not execute the approved action again.
+Approval requests do not expire. The default server persists a
+`waiting_for_approval` outcome and ends its provider invocation and durable
+worker. The composer becomes available immediately; a comment neither confirms
+nor rejects a saved action. An explicit decision resumes that original work with
+current authorization and the same argument/effect identity, after any newer
+active message finishes. Server restart does not resume undecided work.
 
-`waitForApplicationApproval` from `@handrail/ai-assistant/server/assistant` provides
-the same observation without activity reporting. Hosts retain proposal identity,
-expiry, authorization, execution evidence, and cancellation policy. Ending a wait
-does not revoke an approval or undo an action already executing. Provider time
-budgets must explicitly account for the separately bounded human wait.
+Custom provider integrations should return `external_approval_required` from
+`awaitApproval` while pending, and propagate the provider loop's saved waiting
+outcome. Do not convert it into an error or wait inside a provider callback.
+`toolActivity.waitForApproval` and `waitForApplicationApproval` are deprecated
+explicit observation helpers; they no longer enforce an expiry and should not
+be used to hold a provider turn open. See [approval pauses](docs/approval-pauses.md)
+for the release and live-transport integration contract.

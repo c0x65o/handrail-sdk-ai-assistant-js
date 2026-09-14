@@ -190,7 +190,8 @@ export interface RealtimeVoiceToolApprovalWorkflow<TPermissionContext> {
     input: RealtimeVoiceToolApprovalReviewInput<TPermissionContext>,
   ) => ConversationApprovalReviewedArguments |
     Promise<ConversationApprovalReviewedArguments>;
-  readonly expiresAt: (
+  /** @deprecated Approval requests do not expire; this callback is ignored. */
+  readonly expiresAt?: (
     input: RealtimeVoiceToolApprovalReviewInput<TPermissionContext>,
   ) => ConversationTimestamp | Promise<ConversationTimestamp>;
   /** Returns exact confirmed evidence, or undefined while human review is pending. */
@@ -606,10 +607,7 @@ class RealtimeVoiceServerToolBridgeImpl<
       signal,
     };
     try {
-      const [reviewedArguments, expiresAt] = await Promise.all([
-        workflow.reviewArguments(reviewInput),
-        workflow.expiresAt(reviewInput),
-      ]);
+      const reviewedArguments = await workflow.reviewArguments(reviewInput);
       const scopedCallId = await scopedIdentity("call", call.session_id, call.call_id);
       const created = await workflow.proposalStore.create({
         permissionContext: approval.permissionContext,
@@ -618,7 +616,7 @@ class RealtimeVoiceServerToolBridgeImpl<
         toolCallId: scopedCallId as ConversationToolCallId,
         toolName: call.name,
         reviewedArguments,
-        expiresAt,
+        expiresAt: null,
         attribution: approval.attribution,
         idempotencyKey: `realtime-proposal:${fingerprint}`,
         idempotencyFingerprint: `realtime-proposal:${fingerprint}`,

@@ -305,19 +305,21 @@ export function reduceConversationEvent(
 
     case "turn.status_changed": {
       const index = findTurn(accepted, payload.turn_id);
+      const waiting = payload.status === "waiting_for_approval";
+      const activeId = waiting
+        ? accepted.active_turn_id === payload.turn_id ? null : accepted.active_turn_id
+        : payload.turn_id;
       if (index >= 0) {
         const turn = accepted.turns[index]!;
         if (isTerminal(turn)) return accepted;
-        return updateTurn(accepted, index, freeze({
-          ...turn,
-          status: payload.status,
-        }), payload.turn_id);
+        if (!waiting && accepted.active_turn_id !== null && accepted.active_turn_id !== payload.turn_id) {
+          throw new TypeError("Another conversation turn is active");
+        }
+        return updateTurn(accepted, index, freeze({ ...turn, status: payload.status,
+          remote_may_still_be_running: !waiting }), activeId);
       }
-      return appendTurn(accepted, emptyTurn({
-        turn_id: payload.turn_id,
-        status: payload.status,
-        attribution,
-      }), payload.turn_id);
+      return appendTurn(accepted, freeze({ ...emptyTurn({ turn_id: payload.turn_id,
+        status: payload.status, attribution }), remote_may_still_be_running: !waiting }), activeId);
     }
 
     case "turn.attempt_started":
@@ -535,21 +537,16 @@ export function reduceConversationEvent(
       );
       if (index < 0) return accepted;
       const current = accepted.approval_proposals[index]!;
+      // Old expiry events remain replayable; new proposals have no deadline.
+      if (payload.status === "expired" && (current.expires_at === null ||
+        Date.parse(event.occurred_at) < Date.parse(current.expires_at))) return accepted;
+
       if (
         payload.proposal_version !== current.proposal_version + 1 ||
         !isLegalConversationApprovalProposalTransition(
           current.status,
           payload.status,
         )
-      ) {
-        return accepted;
-      }
-      const occurredAt = Date.parse(event.occurred_at);
-      const expiresAt = Date.parse(current.expires_at);
-      if (
-        (payload.status === "expired" && occurredAt < expiresAt) ||
-        (["confirmed", "executing"].includes(payload.status) &&
-          occurredAt >= expiresAt)
       ) {
         return accepted;
       }

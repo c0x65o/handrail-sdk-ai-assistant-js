@@ -543,10 +543,7 @@ function hasExactConfirmation(
   return payload?.type === "approval.proposal_status_changed" &&
     payload.status === "confirmed" &&
     payload.proposal_version === expectedVersion &&
-    expectedVersion >= 2 &&
-    Date.parse(proposal.expires_at) > Date.parse(payload.status === "confirmed"
-      ? audit.confirmed!.occurred_at
-      : proposal.expires_at);
+    expectedVersion >= 2;
 }
 
 function matchesExistingExecution(

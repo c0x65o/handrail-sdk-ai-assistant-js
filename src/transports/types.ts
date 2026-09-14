@@ -122,8 +122,17 @@ export interface TurnObservationFailed {
   readonly usageReceipt?: NormalizedUsageReceipt | null;
 }
 
+/** A durable human decision boundary. No execution remains active. */
+export interface TurnObservationWaitingForApproval {
+  readonly status: "waiting_for_approval";
+  readonly checkpoint: TurnResumePoint;
+  readonly pendingToolCallIds: readonly string[];
+  readonly usageReceipt?: NormalizedUsageReceipt | null;
+}
+
 export type TurnObservationResult =
   | TurnObservationCompleted
+  | TurnObservationWaitingForApproval
   | TurnObservationCancelled
   | TurnObservationDisconnected
   | TurnObservationFailed;

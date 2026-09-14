@@ -1717,10 +1717,9 @@ export interface PostgresApprovalProposalStoreOptions<TPermissionContext> {
   readonly scopeId: (context: TPermissionContext) => string;
   readonly authorize: ApprovalProposalPermissionCheck<TPermissionContext>;
   readonly now?: () => ConversationTimestamp;
+  /** @deprecated Reads no longer expire proposals. Ignored. */
   readonly expiryAttribution?: ConversationEventAttribution;
 }
-
-const POSTGRES_EXPIRY_ATTRIBUTION = Object.freeze({ actor: { type: "system" as const }, source: { type: "runtime" as const } });
 
 function approvalId(value: unknown, operation: "create" | "get" | "list_group" | "transition"): string {
   if (typeof value !== "string" || value.length < 1 || value.length > 256) throw new ApprovalProposalStoreError("invalid_input", operation);
@@ -1749,24 +1748,21 @@ function approvalTransition(current: ConversationApprovalProposalRecord, input: 
 /** Durable approval proposals; authorization runs before every identifier lookup. */
 export class PostgresApprovalProposalStore<TPermissionContext> implements ApprovalProposalStore<TPermissionContext> {
   readonly #now: () => ConversationTimestamp;
-  readonly #expiryAttribution: ConversationEventAttribution;
   constructor(readonly options: PostgresApprovalProposalStoreOptions<TPermissionContext>) {
     id(options.tenantId, "tenantId"); this.#now = options.now ?? (() => new Date().toISOString() as ConversationTimestamp);
-    this.#expiryAttribution = options.expiryAttribution ?? POSTGRES_EXPIRY_ATTRIBUTION;
   }
 
   async create(input: CreateApprovalProposalInput<TPermissionContext>): Promise<ConversationApprovalProposalRecord> {
     approvalId(input.proposalId, "create"); approvalId(input.turnId, "create"); approvalId(input.toolCallId, "create"); approvalId(input.toolName, "create");
     if (input.groupId !== undefined) approvalId(input.groupId, "create");
     if (!isConversationApprovalReviewedArguments(input.reviewedArguments) || input.attribution.actor.type !== "system" ||
-      !Number.isFinite(Date.parse(input.expiresAt)) || !this.validIdempotency(input)) throw new ApprovalProposalStoreError("invalid_input", "create");
+      (input.expiresAt != null && !Number.isFinite(Date.parse(input.expiresAt))) || !this.validIdempotency(input)) throw new ApprovalProposalStoreError("invalid_input", "create");
     await this.allowed({ operation: "create", permissionContext: input.permissionContext, proposalId: input.proposalId,
       ...(input.groupId ? { groupId: input.groupId } : {}) });
     const scope = id(this.options.scopeId(input.permissionContext), "scopeId"), now = this.#now();
-    if (Date.parse(input.expiresAt) <= Date.parse(now)) throw new ApprovalProposalStoreError("invalid_input", "create");
     const logical = { proposalId: input.proposalId, groupId: input.groupId ?? null, turnId: input.turnId,
       toolCallId: input.toolCallId, toolName: input.toolName, reviewedArguments: input.reviewedArguments,
-      expiresAt: input.expiresAt, attribution: input.attribution };
+      expiresAt: input.expiresAt ?? null, attribution: input.attribution };
     try {
       const retained = await this.options.persistence.getOrCreateIdempotent({ tenantId: this.options.tenantId,
         domain: "approval.create", scopeId: scope, idempotencyKey: input.idempotencyKey,
@@ -1775,7 +1771,7 @@ export class PostgresApprovalProposalStore<TPermissionContext> implements Approv
           const record = approvalRecord({ proposal_id: input.proposalId, group_id: input.groupId ?? null,
             turn_id: input.turnId, tool_call_id: input.toolCallId, tool_name: input.toolName,
             reviewed_arguments: input.reviewedArguments, status: "pending", proposal_version: 1,
-            expires_at: input.expiresAt, created_at: now, updated_at: now,
+            expires_at: null, created_at: now, updated_at: now,
             created_attribution: input.attribution, latest_attribution: input.attribution,
             decision_at: null, decision_attribution: null, decision_reason: null, failure_reason: null }, "create");
           await tx.query("INSERT INTO handrail_ai_approvals (tenant_id,scope_id,proposal_id,group_id,version,payload,updated_at) VALUES ($1,$2,$3,$4,1,$5::text::jsonb,$6)",
@@ -1790,8 +1786,7 @@ export class PostgresApprovalProposalStore<TPermissionContext> implements Approv
     approvalId(input.proposalId, "get"); await this.allowed({ operation: "get", permissionContext: input.permissionContext, proposalId: input.proposalId });
     const scope = id(this.options.scopeId(input.permissionContext), "scopeId");
     try { return await this.options.persistence.client.transaction(async (tx) => {
-      const current = await this.lookup(tx, scope, input.proposalId, true);
-      return current ? this.expireIfDue(tx, scope, current) : null;
+      return this.lookup(tx, scope, input.proposalId, false);
     }); } catch (error) { throw this.unavailable(error, "get"); }
   }
 
@@ -1799,10 +1794,10 @@ export class PostgresApprovalProposalStore<TPermissionContext> implements Approv
     approvalId(input.groupId, "list_group"); await this.allowed({ operation: "list_group", permissionContext: input.permissionContext, groupId: input.groupId });
     const scope = id(this.options.scopeId(input.permissionContext), "scopeId");
     try { return await this.options.persistence.client.transaction(async (tx) => {
-      const result = await tx.query<{ payload: unknown }>("SELECT payload FROM handrail_ai_approvals WHERE tenant_id=$1 AND scope_id=$2 AND group_id=$3 ORDER BY updated_at,proposal_id FOR UPDATE",
+      const result = await tx.query<{ payload: unknown }>("SELECT payload FROM handrail_ai_approvals WHERE tenant_id=$1 AND scope_id=$2 AND group_id=$3 ORDER BY updated_at,proposal_id",
         [this.options.tenantId, scope, input.groupId]);
       const records: ConversationApprovalProposalRecord[] = [];
-      for (const row of result.rows) records.push(await this.expireIfDue(tx, scope, approvalRecord(row.payload, "list_group")));
+      for (const row of result.rows) records.push(approvalRecord(row.payload, "list_group"));
       return Object.freeze(records);
     }); } catch (error) { throw this.unavailable(error, "list_group"); }
   }
@@ -1828,10 +1823,8 @@ export class PostgresApprovalProposalStore<TPermissionContext> implements Approv
           const current = await this.lookup(tx, scope, input.proposalId, true);
           if (!current) throw new ApprovalProposalStoreError("not_found", "transition");
           if (current.proposal_version !== input.expectedVersion) throw new ApprovalProposalStoreError("version_conflict", "transition");
-          const now = this.#now(), expired = Date.parse(now) >= Date.parse(current.expires_at);
-          if (input.status === "expired" && !expired) throw new ApprovalProposalStoreError("not_expired", "transition");
-          if ((current.status === "pending" && expired && input.status !== "expired") ||
-            (input.status === "executing" && expired) || !isLegalConversationApprovalProposalTransition(current.status, input.status)) {
+          const now = this.#now();
+          if (input.status === "expired" || !isLegalConversationApprovalProposalTransition(current.status, input.status)) {
             throw new ApprovalProposalStoreError("invalid_transition", "transition");
           }
           if (["expired", "executing", "executed", "failed"].includes(input.status) && input.attribution.actor.type !== "system" ||
@@ -1852,14 +1845,6 @@ export class PostgresApprovalProposalStore<TPermissionContext> implements Approv
     const result = await client.query<{ payload: unknown }>(`SELECT payload FROM handrail_ai_approvals WHERE tenant_id=$1 AND scope_id=$2 AND proposal_id=$3${lock ? " FOR UPDATE" : ""}`,
       [this.options.tenantId, scope, proposalId]);
     return result.rows[0] ? approvalRecord(result.rows[0].payload, "get") : null;
-  }
-  private async expireIfDue(tx: PostgresSqlClient, scope: string, current: ConversationApprovalProposalRecord): Promise<ConversationApprovalProposalRecord> {
-    const now = this.#now();
-    if (current.status !== "pending" || Date.parse(now) < Date.parse(current.expires_at)) return current;
-    const next = approvalTransition(current, { status: "expired", attribution: this.#expiryAttribution } as TransitionApprovalProposalInput<unknown>, now);
-    await tx.query("UPDATE handrail_ai_approvals SET version=$4,payload=$5::text::jsonb,updated_at=$6 WHERE tenant_id=$1 AND scope_id=$2 AND proposal_id=$3 AND version=$7",
-      [this.options.tenantId, scope, current.proposal_id, next.proposal_version, JSON.stringify(next), now, current.proposal_version]);
-    return next;
   }
   private validIdempotency(input: { idempotencyKey: string; idempotencyFingerprint: string }): boolean {
     return /^[a-z0-9][a-z0-9._:/-]*$/iu.test(input.idempotencyKey) && input.idempotencyKey.length <= 256 &&

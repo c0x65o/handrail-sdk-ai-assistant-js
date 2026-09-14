@@ -179,6 +179,10 @@ JS/Flutter components, styling contract, verified public baselines and tests.
 
 `HandrailAssistantWorkspace` serves applications that already create an
 authenticated SDK client; the endpoint launcher delegates to the same component.
+The default history layout is a visible sidebar, stacked above the conversation
+on a narrow screen. A Threads menu requires the explicit `historyLayout="compact"`
+option. Keep the composer and transcript padding in the shared presentation;
+hosts own the surrounding panel size, safe areas and branding.
 The complete sidebar, uncontrolled approval preference, authenticated dictation
 and per-conversation upload queues are SDK responsibilities. A host counter uses
 `renderComposerActions`, which leaves the standard microphone available. See
@@ -431,3 +435,13 @@ and any approved domain exception. Installation count alone is never success.
   do not drop or recreate receipt identities.
 - A mutation runs before review: disable the tool immediately and restore one
   authoritative proposal/confirmation boundary.
+
+
+## Approval pause cutover
+
+See [approval pauses](approval-pauses.md) for the pending local source contract:
+no approval deadlines, idle durable waits, explicit-decision resumption, and
+coordinated server/React/Flutter adoption. The documented live-call handoff is a
+separate remaining qualification requirement; a passing text fixture does not
+establish voice resumption. Do not adopt the changed lower-level callback in a
+custom live host until that handoff is implemented and qualified.

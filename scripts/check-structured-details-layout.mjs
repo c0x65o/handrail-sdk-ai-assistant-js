@@ -13,7 +13,7 @@ const arguments_ = {
   title: "Enhancement: all-in-one Compose tech-to-resource control",
   status: "todo", priority: "normal",
   description: "Build a unified Compose tech-to-resource control covering backup verification, nightly configuration comparisons, SSH discovery, and verified port-to-server mapping.",
-  resources: [{ host_name: "hc-220-private-dc", verify_backups: true }],
+  resources: Array.from({ length: 12 }, (_, index) => ({ host_name: `host-${index}`, verify_backups: true })),
 };
 const proposal = { proposal_id: "layout", tool_name: "tasks_create", status: "pending",
   expires_at: "2099-01-01T00:00:00.000Z", reviewed_arguments: { type: "redacted_json", value: arguments_ } };
@@ -35,12 +35,15 @@ try {
     assert.equal(await page.locator("pre,code").count(), 0);
     assert.equal(await page.getByRole("button", { name: "Confirm" }).isEnabled(), true);
     assert.equal(await page.getByRole("button", { name: "Reject" }).isEnabled(), true);
+    assert.equal(await page.locator("details").evaluate(node => node.open), false);
+    assert.ok(await page.locator("article").evaluate(node => node.getBoundingClientRect().height) < 300);
     await page.keyboard.press("Tab");
     assert.equal(await page.locator("summary").evaluate(node => node.matches(":focus-visible")), true);
     await page.keyboard.press("Enter");
+    assert.equal(await page.locator("details").evaluate(node => node.open), true);
+    await page.keyboard.press("Enter");
     assert.equal(await page.locator("details").evaluate(node => node.open), false);
     await page.keyboard.press("Enter");
-    assert.equal(await page.locator("details").evaluate(node => node.open), true);
     const measure = async () => page.evaluate(() => ({
       viewport: globalThis.innerWidth, page: globalThis.document.documentElement.scrollWidth,
       overflowing: Array.from(globalThis.document.querySelectorAll(".hr-details, .hr-details dd, article"))

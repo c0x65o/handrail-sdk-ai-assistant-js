@@ -164,6 +164,11 @@ async function canonicalize(
   if (!turnId || proposed.source.type !== "runtime" || proposed.actor.type !== "assistant") deny();
   const durable = await turnStore.load(conversationId, turnId);
   if (!durable) deny();
+  if (payload.type === "turn.status_changed" && payload.status === "waiting_for_approval") {
+    if (durable.record.status !== "waiting_for_approval" || durable.record.terminal?.status !== "waiting_for_approval" ||
+      durable.record.terminal.pendingToolCallIds.length === 0) deny();
+    return canonical(proposed, { type: "assistant" });
+  }
   if (payload.type === "turn.status_changed" && metadata.checkpoint !== undefined && metadata.frame_type === undefined) {
     const checkpoint = metadata.checkpoint;
     if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) deny();

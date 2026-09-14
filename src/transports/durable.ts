@@ -8,7 +8,7 @@ import type {
 } from "./types.js";
 
 export const DURABLE_APPLICATION_TURN_SCHEMA_VERSION = 1 as const;
-export type DurableApplicationTurnStatus = "pending" | "running" | "completed" | "cancelled" | "failed";
+export type DurableApplicationTurnStatus = "pending" | "running" | "waiting_for_approval" | "completed" | "cancelled" | "failed";
 
 export interface DurableApplicationTurnEvent<TEvent = unknown> {
   readonly sequence: number;
@@ -38,6 +38,8 @@ export interface DurableApplicationTurnRecord<TStoredRequest = unknown, TEvent =
   readonly delegateTurnId: string | null;
   readonly status: DurableApplicationTurnStatus;
   readonly attempt: number;
+  /** Human decisions restart execution without spending crash recovery attempts. */
+  readonly approvalResumes?: number;
   readonly events: readonly DurableApplicationTurnEvent<TEvent>[];
   readonly terminal: TurnObservationResult | null;
   readonly cancellation: DurableApplicationTurnCancellation | null;
@@ -114,6 +116,8 @@ export interface DurableApplicationTurnStatusUpdate {
 export interface DurableApplicationTransport<TEvent, TRequest> extends ConversationTransport<TEvent, TRequest> {
   /** Trusted caller must first verify this turn was canonically admitted and authorized. */
   cancelTurnBeforeStart(input: CancelTurnInput): Promise<TransportResult<AuthoritativeCancelTurnResult>>;
+  /** Trusted caller must authorize the decision and canonically admit this resumption. */
+  resumeApprovalTurn(conversationId: string, turnId: string): Promise<TransportResult<{ readonly status: "started" | "already_running" | "terminal" }>>;
   recoverTurn(conversationId: string, turnId: string): Promise<TransportResult<{ readonly status: "started" | "already_running" | "terminal" }>>;
   /** Starts at most limit turns. Paged stores scan past denied/leased rows to reach eligible work. */
   recoverPending(limit?: number): Promise<readonly { readonly conversationId: string; readonly turnId: string }[]>;
@@ -128,7 +132,7 @@ function identifier(value: string, field: string): string {
 }
 function timestamp(value: number): string { return new Date(value).toISOString(); }
 function terminalStatus(status: DurableApplicationTurnStatus): boolean {
-  return status === "completed" || status === "cancelled" || status === "failed";
+  return status === "completed" || status === "cancelled" || status === "failed" || status === "waiting_for_approval";
 }
 export function durableApplicationTurnStartMatches<TStoredRequest, TEvent>(current: DurableApplicationTurnRecord<TStoredRequest, TEvent>,
   proposed: DurableApplicationTurnRecord<TStoredRequest, TEvent>): boolean {
@@ -253,11 +257,12 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
       if (terminalStatus(record.status)) return null;
       if (record.lease?.ownerId !== workerId) throw new LeaseLostError();
       const status = record.cancellation !== null || result.status === "cancelled" ? "cancelled" :
-        result.status === "completed" ? "completed" : "failed";
+        result.status === "completed" ? "completed" : result.status === "waiting_for_approval" ? "waiting_for_approval" : "failed";
       const checkpoint = record.events.at(-1)?.checkpoint ?? result.checkpoint ?? EMPTY_CHECKPOINT;
       const usage = result.status === "disconnected" ? {} : result.usageReceipt === undefined ? {} : { usageReceipt: result.usageReceipt };
       const terminal: TurnObservationResult = status === "cancelled" ? { status: "cancelled", checkpoint, ...usage } :
-        status === "completed" ? { status: "completed", checkpoint, ...usage } : { status: "failed", checkpoint,
+        status === "completed" ? { status: "completed", checkpoint, ...usage } :
+        result.status === "waiting_for_approval" ? { ...result, checkpoint } : { status: "failed", checkpoint,
           error: result.status === "failed" ? result.error : { code: "unavailable",
             message: "The durable turn worker stopped before completion.", retryable: true }, ...usage };
       return { ...record, status, terminal, lease: null, updatedAt: timestamp(now()) };
@@ -316,7 +321,7 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         if (terminalStatus(record.status)) return null;
         const currentTime = now();
         if (record.lease && record.lease.ownerId !== workerId && Date.parse(record.lease.expiresAt) > currentTime) return null;
-        if (record.attempt >= maximumAttempts) {
+        if (record.attempt - (record.approvalResumes ?? 0) >= maximumAttempts) {
           const checkpoint = record.events.at(-1)?.checkpoint ?? EMPTY_CHECKPOINT;
           return { ...record, status: "failed", lease: null, updatedAt: timestamp(currentTime), terminal: {
             status: "failed", checkpoint, error: { code: "unavailable",
@@ -400,7 +405,7 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         }
         const result = await started.value.observation.result; await settle(conversationId, turnId, result);
         emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "durable_turn",
-          phase: result.status === "completed" ? "succeeded" : result.status === "cancelled" ? "cancelled" : "failed",
+          phase: result.status === "completed" || result.status === "waiting_for_approval" ? "succeeded" : result.status === "cancelled" ? "cancelled" : "failed",
           conversationId, turnId, attempt: claimed.record.attempt,
           ...(result.status === "failed" ? { code: result.error.code, retryable: result.error.retryable } : {}) });
       } finally { stopped = true; void monitoring.catch(() => undefined); }
@@ -536,6 +541,27 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         return { ok: true, value: await observe(current, input.resumeFrom) };
       } catch (cause) { return safeFailure(cause instanceof TypeError ? "invalid_request" : "unavailable",
         cause instanceof TypeError ? cause.message : "The durable turn could not be resumed.", !(cause instanceof TypeError)); }
+    },
+    async resumeApprovalTurn(conversationId, turnId) {
+      try {
+        identifier(conversationId, "conversationId"); identifier(turnId, "turnId");
+        if (options.authorizeRecovery && !await options.authorizeRecovery({ conversationId, turnId })) {
+          return safeFailure("not_found", "The durable turn was not found.", false);
+        }
+        const resumed = await update(conversationId, turnId, record => {
+          if (record.status !== "waiting_for_approval" || record.cancellation !== null) return null;
+          return { ...record, status: "pending", terminal: null, lease: null,
+            approvalResumes: (record.approvalResumes ?? 0) + 1, updatedAt: timestamp(now()) };
+        });
+        if (!resumed) return safeFailure("not_found", "The durable turn was not found.", false);
+        if (terminalStatus(resumed.record.status)) return { ok: true, value: { status: "terminal" } };
+        // A decision can arrive during the worker's settlement callback. Let
+        // that claim finish before starting the next monotonically fenced claim.
+        const previous = running.get(key(conversationId, turnId));
+        if (previous) void previous.then(() => kick(conversationId, turnId));
+        else kick(conversationId, turnId);
+        return { ok: true, value: { status: "started" } };
+      } catch { return safeFailure("unavailable", "Approved work could not be resumed.", true); }
     },
     recoverTurn,
     async recoverPending(limit = 100) {

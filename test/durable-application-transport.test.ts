@@ -1,3 +1,4 @@
+import { createApplicationTurnTransport } from "../src/transports/application-turn.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -275,4 +276,32 @@ describe("createDurableApplicationTransport", () => {
     expect(await started.value.observation.result).toMatchObject({ status: "cancelled" });
     await vi.waitFor(() => expect(cancellationCalls).toBe(1));
   });
+});
+
+
+it("does not recover or poll approval waits, and human resumes do not exhaust the crash budget", async () => {
+  const store = new InMemoryDurableApplicationTurnStore<string, never>();
+  let invocations = 0;
+  const checkpoint = { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null };
+  const worker = (workerId: string) => createDurableApplicationTransport({ store, workerId, maximumAttempts: 1, pollMilliseconds: 25,
+    delegate: createApplicationTurnTransport<never, string>({ execute: async () => {
+      invocations++;
+      return invocations < 5 ? { status: "waiting_for_approval", pendingToolCallIds: [`call-${invocations}`], checkpoint }
+        : { status: "completed", checkpoint };
+    } }), requestCodec: { encode: value => value, decode: value => value, fingerprint: value => value },
+    checkpointForEvent: () => checkpoint });
+  const started = await worker("first").startTurn({ conversationId: "paused", conversationTurnId: "paused" as never,
+    mutationId: "paused", idempotencyKey: "paused", request: "saved" });
+  if (!started.ok) throw new Error(started.error.message);
+  for await (const event of started.value.observation.events) { void event; }
+  expect((await started.value.observation.result).status).toBe("waiting_for_approval");
+  for (let index = 1; index < 5; index++) {
+    const restarted = worker(`worker-${index}`);
+    expect(await restarted.recoverPending()).toEqual([]);
+    expect(invocations).toBe(index);
+    expect((await store.load("paused", "paused"))?.record.lease).toBeNull();
+    await restarted.resumeApprovalTurn("paused", "paused");
+    await vi.waitFor(async () => expect((await store.load("paused", "paused"))?.record.status).toBe(index < 4 ? "waiting_for_approval" : "completed"));
+  }
+  expect((await store.load("paused", "paused"))?.record).toMatchObject({ attempt: 5, approvalResumes: 4 });
 });

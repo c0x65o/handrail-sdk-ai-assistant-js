@@ -17,6 +17,8 @@ export { openaiTranscription, createOpenAITranscriptionRequest, createOpenAIAudi
 export { createAssistantTranscription, createTranscriptionHttpHandler, createTranscriptionUsageRecorder, runRetainedTranscription, runTranscriptionAttempt, validateTranscriptionAudio, type RetainedTranscriptionOptions, type TranscriptionAttemptOptions, type AssistantTranscriptionProvider,
   type TranscriptionHttpServerInput, type AssistantTranscriptionUsage } from "./transcription.js";
 import { reconcileDurableConversationTurn } from "./reconcile-conversation.js";
+import { parseConversationEvent } from "../conversation/events.js";
+import { ConversationEventStoreConflictError } from "../conversation/event-store.js";
 import { replayConversation } from "../conversation/replay.js";
 import { findConversationEvent } from "../conversation/find-event.js";
 import { createAssistantConversationTitles, type AssistantAutomaticTitleOptions,
@@ -147,6 +149,7 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   readonly recoverPendingOnContext?: boolean;
   readonly authorizeConversation?: Parameters<PostgresAssistantPersistence["forScope"]>[1]["authorizeConversation"];
   readonly authorizeApproval?: Parameters<PostgresAssistantPersistence["forScope"]>[1]["authorizeApproval"];
+  /** @deprecated Approval requests do not expire. Ignored. */
   readonly approvalTimeoutMilliseconds?: number;
   /** Optional multi-instance presence fan-out; process-local delivery remains the zero-config default. */
   readonly presence?: LivePresenceDelivery | { readonly pubSub: LivePresencePubSub; readonly channelPrefix?: string };
@@ -206,10 +209,6 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const instructions = Object.freeze(typeof options.instructions === "string"
     ? [options.instructions] : [...(options.instructions ?? [])]);
   const limits = Object.freeze({ ...DEFAULT_LIMITS, ...options.toolLoopLimits });
-  const approvalTimeoutMilliseconds = options.approvalTimeoutMilliseconds ?? 15 * 60_000;
-  if (!Number.isSafeInteger(approvalTimeoutMilliseconds) || approvalTimeoutMilliseconds <= 0) {
-    throw new TypeError("approvalTimeoutMilliseconds must be a positive safe integer");
-  }
   const workerId = identifier(options.workerId ?? `${assistantId}-${process.pid}`, "workerId");
   const bundles = new Map<string, PostgresAssistantPersistenceBundle<TContext>>();
   const applications = new Map<string, Promise<AiApplication<TContext, TContext, unknown>>>();
@@ -300,12 +299,17 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const activityIdentityFor = async (context: TContext, conversationId: string, turnId: string) => {
     const events = bundleFor(context).events;
     let after: Parameters<typeof events.read>[0]["after"];
+    let turnRevision: number | undefined;
     for (;;) {
       const page = await events.read({ conversationId: conversationId as never, limit: 500,
         ...(after === undefined ? {} : { after }) });
-      const admitted = page.entries.find(({ event }) => event.payload.type === "turn.started" && event.payload.turn_id === turnId);
-      if (admitted) return { turnId, turnRevision: Number(admitted.event.revision) };
-      if (!page.hasMore) return { turnId };
+      for (const { event } of page.entries) {
+        if ((event.payload.type === "turn.started" || event.payload.type === "turn.status_changed" &&
+          event.payload.status === "running" && event.actor.type === "system") && event.payload.turn_id === turnId) {
+          turnRevision = Number(event.revision);
+        }
+      }
+      if (!page.hasMore) return { turnId, ...(turnRevision === undefined ? {} : { turnRevision }) };
       if (page.nextCursor === null || after && "cursor" in after && page.nextCursor === after.cursor) {
         throw new TypeError("Activity admission history did not advance");
       }
@@ -319,7 +323,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       // Retain the SDK's versioned projection checkpoint for long histories.
       // Later authorization-checked reads replay only its canonical event tail.
       const replay = await replayConversation({ conversationId: conversationId as never, eventStore: bundle.events });
-      turnId = replay.state.turns.at(-1)?.turn_id;
+      turnId = replay.state.active_turn_id ?? replay.state.turns.at(-1)?.turn_id;
       replay.store.destroy();
     }
     if (turnId === undefined) return;
@@ -345,6 +349,55 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     try { await reconcileFor(context, conversationId, turnId); }
     catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "conversation_reconciliation",
       phase: "failed", conversationId, ...(turnId ? { turnId } : {}), code: "reconciliation_failed", retryable: true, cause }); }
+  };
+  const continueApprovedTurns = async (context: TContext, conversationId: string): Promise<void> => {
+    // Decisions are durable. If another message is running, its settlement (or
+    // the next authorized read after a restart) will dispatch the saved action.
+    await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
+    const bundle = bundleFor(context);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const replay = await replayConversation({ conversationId: conversationId as never, eventStore: bundle.events });
+      const state = replay.state;
+      replay.store.destroy();
+      const proposals = await approvalStoreFor(context).listGroup({ permissionContext: context, groupId: conversationId as never });
+      let conflicted = false;
+      for (const turn of state.turns) {
+        if (state.active_turn_id !== null && state.active_turn_id !== turn.turn_id) continue;
+        if (turn.status !== "waiting_for_approval" && state.active_turn_id !== turn.turn_id) continue;
+        const saved = await bundle.durableTurns.load(conversationId, turn.turn_id);
+        if (saved?.record.status !== "waiting_for_approval" || saved.record.terminal?.status !== "waiting_for_approval" || saved.record.cancellation) continue;
+        const pending = saved.record.terminal.pendingToolCallIds;
+        if (!proposals.some(proposal => proposal.turn_id === turn.turn_id && pending.includes(proposal.tool_call_id) &&
+          proposal.status !== "pending")) continue;
+        if (state.active_turn_id === null) {
+          try {
+            await bundle.events.append({ conversationId: conversationId as never, expectedRevision: state.revision,
+              events: [parseConversationEvent({ version: 1, conversation_id: conversationId,
+                event_id: `approval-resume:${turn.turn_id}:${saved.version}`,
+                revision: (state.revision ?? 0) + 1, occurred_at: new Date().toISOString(),
+                actor: { type: "system" }, source: { type: "runtime" },
+                payload: { type: "turn.status_changed", turn_id: turn.turn_id, status: "running" } })] });
+          } catch (cause) {
+            if (cause instanceof ConversationEventStoreConflictError) { conflicted = true; break; }
+            throw cause;
+          }
+        }
+        // Recover the narrow crash window between canonical admission and
+        // durable wake-up as well as an ordinary new approval decision.
+        const key = executionKeyFor(context);
+        if (!durableTransports.has(key)) await transportFor(context);
+        const outcome = await durableTransports.get(key)!.resumeApprovalTurn(conversationId, turn.turn_id);
+        if (!outcome.ok) throw new Error(outcome.error.message);
+        return;
+      }
+      if (!conflicted) return;
+    }
+    throw new Error("Approval resumption conflicted repeatedly");
+  };
+  const continueApprovalsSafely = async (context: TContext, conversationId: string) => {
+    try { await continueApprovedTurns(context, conversationId); }
+    catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "approval_resumption",
+      phase: "failed", conversationId, code: "approval_resumption_failed", retryable: true, cause }); }
   };
   const transportFor = (context: TContext) => {
     const key = executionKeyFor(context);
@@ -373,7 +426,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           context, persistence: bundle, limits, instructions,
           toolActivity: createToolActivityObserver({ events: bundle.events, report: reportActivity }),
           tools: createAssistantToolRuntime({ context, application, events: bundle.events,
-            proposalStore: approvalStoreFor(context), reportActivity, approvalTimeoutMilliseconds,
+            proposalStore: approvalStoreFor(context), reportActivity,
             authorizeLocation: async (location, signal) => {
               signal.throwIfAborted();
               await catalogFor(context).get({ authorizationContext: context, conversationId: location.conversationId as never });
@@ -408,7 +461,10 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           // both belong to this assistant host. Its cancellation still reaches
           // the original worker through the shared durable turn record.
           workerId: `context-${digest(JSON.stringify([workerId, key]))}`,
-          onTurnStatusChanged: ({ conversationId, turnId }) => reconcileSafely(context, conversationId, turnId),
+          onTurnStatusChanged: async ({ conversationId, turnId, status }) => {
+            await reconcileSafely(context, conversationId, turnId);
+            if (status !== "pending" && status !== "running") await continueApprovalsSafely(context, conversationId);
+          },
           ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
         });
         durableTransports.set(key, durable);
@@ -463,6 +519,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       const page = await catalogFor(input.authorizationContext).list(input);
       for (const descriptor of page.items) {
         await reconcileSafely(input.authorizationContext, descriptor.conversationId);
+        await continueApprovalsSafely(input.authorizationContext, descriptor.conversationId);
         // Also covers imported conversations without a durable turn document.
         void titles.afterActivity(descriptor.conversationId, input.authorizationContext);
       }
@@ -489,7 +546,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     async transition(input: Parameters<ApprovalProposalStore<TContext>["transition"]>[0]) {
       const supplied = input as typeof input & { readonly conversationId?: unknown };
       if (typeof supplied.conversationId !== "string" ||
-        (input.status !== "confirmed" && input.status !== "rejected" && input.status !== "expired")) {
+        (input.status !== "confirmed" && input.status !== "rejected")) {
         throw new ApprovalProposalStoreError("invalid_input", "transition");
       }
       const bundle = bundleFor(input.permissionContext);
@@ -536,13 +593,14 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       const result = await coordinator.decide({ permissionContext: input.permissionContext,
         conversationId: supplied.conversationId as never, proposalId: input.proposalId,
         expectedVersion: input.expectedVersion,
-        decision: input.status === "confirmed" ? "confirm" : input.status === "rejected" ? "reject" : "expire",
+        decision: input.status === "confirmed" ? "confirm" : "reject",
         attribution: { actor: { type: "user", id: input.permissionContext.principalId as never },
           source: { type: "runtime" } }, idempotencyKey: input.idempotencyKey,
         idempotencyFingerprint: input.idempotencyFingerprint,
         ...(input.decisionReason === undefined ? {} : { decisionReason: input.decisionReason }),
         signal: new AbortController().signal });
       if (result.outcome === "accepted" || result.outcome === "already_decided") {
+        await continueApprovalsSafely(input.permissionContext, supplied.conversationId);
         if (decisionReceipt !== undefined) return decisionReceipt;
         // A later, different decision against terminal work does not produce a
         // transition receipt. Return the authorized terminal state, as before,
@@ -622,6 +680,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         // A competing projector or activity-store outage must not block access to
         // already-saved history. The adapter still validates every proposed event.
         await reconcileSafely(context, conversationId);
+        await continueApprovalsSafely(context, conversationId);
         return true;
       },
       ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),

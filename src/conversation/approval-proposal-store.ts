@@ -85,7 +85,8 @@ export interface CreateApprovalProposalInput<TPermissionContext>
   readonly toolCallId: ConversationToolCallId;
   readonly toolName: string;
   readonly reviewedArguments: ConversationApprovalReviewedArguments;
-  readonly expiresAt: ConversationTimestamp;
+  /** @deprecated Approval deadlines are ignored. New proposals have no expiry. */
+  readonly expiresAt?: ConversationTimestamp | null;
   readonly attribution: ConversationEventAttribution;
 }
 
@@ -166,7 +167,7 @@ export interface InMemoryApprovalProposalStoreOptions<TPermissionContext> {
   readonly authorize: ApprovalProposalPermissionCheck<TPermissionContext>;
   readonly clock?: ApprovalProposalStoreClock;
   readonly limits?: Partial<ApprovalProposalStoreLimits>;
-  /** Attribution used when a permitted read observes a pending proposal expiry. */
+  /** @deprecated Reads no longer expire proposals. Ignored. */
   readonly expiryAttribution?: ConversationEventAttribution;
 }
 
@@ -185,7 +186,7 @@ interface CreateApprovalProposalSnapshot<TPermissionContext> {
   readonly toolCallId: ConversationToolCallId;
   readonly toolName: string;
   readonly reviewedArguments: ConversationStateApprovalReviewedArguments;
-  readonly expiresAt: ConversationTimestamp;
+  readonly expiresAt: ConversationTimestamp | null;
   readonly attribution: ConversationEventAttribution;
   readonly idempotencyKey: string;
   readonly idempotencyFingerprint: string;
@@ -207,11 +208,6 @@ interface ProposalTransitionData {
   readonly failureReason?: string;
 }
 
-const DEFAULT_EXPIRY_ATTRIBUTION: ConversationEventAttribution = deepFreeze({
-  actor: { type: "system" },
-  source: { type: "runtime" },
-});
-
 /**
  * Bounded process-local reference adapter for tests and development.
  *
@@ -224,7 +220,6 @@ export class InMemoryApprovalProposalStore<TPermissionContext = unknown>
   readonly #authorizeCheck: ApprovalProposalPermissionCheck<TPermissionContext>;
   readonly #clock: ApprovalProposalStoreClock;
   readonly #limits: Readonly<ApprovalProposalStoreLimits>;
-  readonly #expiryAttribution: ConversationEventAttribution;
   readonly #proposals = new Map<string, ConversationApprovalProposalRecord>();
   readonly #idempotency = new Map<string, IdempotencyRecord>();
   #mutationTail: Promise<void> = Promise.resolve();
@@ -241,11 +236,6 @@ export class InMemoryApprovalProposalStore<TPermissionContext = unknown>
       throw new TypeError("options.clock.now must be a function");
     }
     this.#limits = resolveLimits(options.limits);
-    this.#expiryAttribution = cloneAttribution(
-      options.expiryAttribution ?? DEFAULT_EXPIRY_ATTRIBUTION,
-      "invalid_input",
-      "get",
-    );
   }
 
   async create(
@@ -278,9 +268,6 @@ export class InMemoryApprovalProposalStore<TPermissionContext = unknown>
       }
 
       const now = this.#now("create");
-      if (Date.parse(snapshot.expiresAt) <= Date.parse(now)) {
-        throw storeError("invalid_input", "create");
-      }
       if (snapshot.attribution.actor.type !== "system") {
         throw storeError("invalid_input", "create");
       }
@@ -293,7 +280,7 @@ export class InMemoryApprovalProposalStore<TPermissionContext = unknown>
         reviewed_arguments: snapshot.reviewedArguments,
         status: "pending",
         proposal_version: 1,
-        expires_at: snapshot.expiresAt,
+        expires_at: null,
         created_at: now,
         updated_at: now,
         created_attribution: snapshot.attribution,
@@ -328,7 +315,7 @@ export class InMemoryApprovalProposalStore<TPermissionContext = unknown>
     return this.#serialize(() => {
       const proposal = this.#proposals.get(input.proposalId);
       if (proposal === undefined) return null;
-      return cloneProposal(this.#expireIfDue(proposal, this.#now("get")));
+      return cloneProposal(proposal);
     });
   }
 
@@ -343,11 +330,10 @@ export class InMemoryApprovalProposalStore<TPermissionContext = unknown>
     });
 
     return this.#serialize(() => {
-      const now = this.#now("list_group");
       const proposals: ConversationApprovalProposalRecord[] = [];
       for (const proposal of this.#proposals.values()) {
         if (proposal.group_id !== input.groupId) continue;
-        proposals.push(cloneProposal(this.#expireIfDue(proposal, now)));
+        proposals.push(cloneProposal(proposal));
       }
       proposals.sort(compareProposals);
       return Object.freeze(proposals);
@@ -386,26 +372,8 @@ export class InMemoryApprovalProposalStore<TPermissionContext = unknown>
       if (Date.parse(now) < Date.parse(current.updated_at)) {
         throw storeError("unavailable", "transition");
       }
-      if (
-        current.status === "pending" &&
-        Date.parse(now) >= Date.parse(current.expires_at) &&
-        snapshot.status !== "expired"
-      ) {
-        this.#expireIfDue(current, now);
-        throw storeError("invalid_transition", "transition");
-      }
-      if (
-        snapshot.status === "expired" &&
-        Date.parse(now) < Date.parse(current.expires_at)
-      ) {
-        throw storeError("not_expired", "transition");
-      }
-      if (
-        snapshot.status === "executing" &&
-        Date.parse(now) >= Date.parse(current.expires_at)
-      ) {
-        throw storeError("invalid_transition", "transition");
-      }
+      // Retain historical expired receipts, but never create a new expiry.
+      if (snapshot.status === "expired") throw storeError("invalid_transition", "transition");
       if (
         !isLegalConversationApprovalProposalTransition(current.status, snapshot.status)
       ) {
@@ -469,28 +437,6 @@ export class InMemoryApprovalProposalStore<TPermissionContext = unknown>
     return value;
   }
 
-  #expireIfDue(
-    proposal: ConversationApprovalProposalRecord,
-    now: ConversationTimestamp,
-  ): ConversationApprovalProposalRecord {
-    if (
-      proposal.status !== "pending" ||
-      Date.parse(now) < Date.parse(proposal.expires_at)
-    ) {
-      return proposal;
-    }
-    const expired = transitionProposal(
-      proposal,
-      {
-        status: "expired",
-      },
-      now,
-      this.#expiryAttribution,
-    );
-    this.#proposals.set(expired.proposal_id, expired);
-    return expired;
-  }
-
   #idempotentResult(
     operation: IdempotencyRecord["operation"],
     key: string,
@@ -550,7 +496,7 @@ function snapshotCreateInput<TPermissionContext>(
     toolCallId: input.toolCallId,
     toolName: input.toolName,
     reviewedArguments: cloneReviewedArguments(input.reviewedArguments),
-    expiresAt: input.expiresAt,
+    expiresAt: input.expiresAt ?? null,
     attribution: cloneAttribution(input.attribution, "invalid_input", "create"),
     idempotencyKey: input.idempotencyKey,
     idempotencyFingerprint: input.idempotencyFingerprint,
@@ -591,7 +537,7 @@ function validateCreateInput<TPermissionContext>(
   validateIdentifier(input.toolCallId, "create");
   validateIdentifier(input.toolName, "create");
   validateIdempotency(input, limits, "create");
-  if (!isTimestamp(input.expiresAt)) throw storeError("invalid_input", "create");
+  if (input.expiresAt != null && !isTimestamp(input.expiresAt)) throw storeError("invalid_input", "create");
   if (!isConversationApprovalReviewedArguments(input.reviewedArguments)) {
     throw storeError("invalid_input", "create");
   }
@@ -874,7 +820,7 @@ function createRequestSignature<TPermissionContext>(
     toolCallId: input.toolCallId,
     toolName: input.toolName,
     reviewedArguments: input.reviewedArguments,
-    expiresAt: input.expiresAt,
+    expiresAt: input.expiresAt ?? null,
     attribution: input.attribution,
   });
 }

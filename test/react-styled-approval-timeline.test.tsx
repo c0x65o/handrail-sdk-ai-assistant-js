@@ -1,4 +1,6 @@
 /** @vitest-environment jsdom */
+import { parseConversationEvent } from "../src/conversation/events.js";
+import { reduceConversationEvent } from "../src/conversation/reducer.js";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { createInitialConversationState, type ConversationApprovalProposalRecord, type ConversationState,
@@ -58,4 +60,53 @@ it("retains saved decided cards and failures and prevents decisions for archived
   fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
   fireEvent.click(screen.getByRole("button", { name: "Reject" }));
   expect(f.resources.transitionApproval).not.toHaveBeenCalled();
+});
+
+it("keeps a large pending approval compact without losing its exact review or decisions", async () => {
+  const f = fixture();
+  const value = { fields: Array.from({ length: 12 }, (_, i) => ({ label: `Field ${i}`, amount: "0012.3400" })) };
+  f.resources.listApprovalGroup.mockResolvedValue([{ ...f.proposal, reviewed_arguments: { type: "redacted_json", value } }]);
+  render(<StyledChatPreset state={f.state} approvalResources={f.resources} includeStyles={false} transcription={false}/>);
+  const card = await screen.findByRole("listitem", { name: "Assistant action" });
+  expect(card.querySelector("details")?.open).toBe(false);
+  expect((screen.getByRole("button", { name: "Confirm" }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByText("Action details"));
+  expect(card.querySelector("details")?.open).toBe(true);
+  expect(screen.getByText("Field 11")).toBeTruthy();
+  expect(screen.getAllByText("0012.3400")).toHaveLength(12);
+});
+
+it("requires a successful refresh before another decision after an uncertain response", async () => {
+  const f = fixture();
+  f.resources.transitionApproval.mockRejectedValueOnce(new Error("uncertain"));
+  render(<StyledChatPreset state={f.state} approvalResources={f.resources} includeStyles={false} transcription={false}/>);
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+  await screen.findByRole("button", { name: "Retry approvals" });
+  for (const name of ["Confirm", "Reject"]) {
+    expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
+  }
+  expect(f.resources.transitionApproval).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Retry approvals" }));
+  await waitFor(() => expect((screen.getByRole("button", { name: "Confirm" }) as HTMLButtonElement).disabled).toBe(false));
+});
+
+
+it("rests at a pending approval with no Stop button or decision from typing a comment", async () => {
+  const f = fixture();
+  let state = f.state;
+  for (const [index, payload] of [
+    { type: "turn.started", turn_id: "turn", input_message_ids: ["question"] },
+    { type: "turn.status_changed", turn_id: "turn", status: "waiting_for_approval" },
+  ].entries()) state = reduceConversationEvent(state, parseConversationEvent({ version: 1,
+    conversation_id: "conversation", event_id: `pause-${index}`, revision: index + 1, occurred_at: stamp,
+    actor: { type: "system" }, source: { type: "runtime" }, payload }));
+  f.resources.listApprovalGroup.mockResolvedValue([{ ...f.proposal, expires_at: null }]);
+  const view = render(<StyledChatPreset state={state} approvalResources={f.resources} includeStyles={false} transcription={false}/>);
+  await screen.findByRole("button", { name: "Confirm" });
+  expect(screen.getByText("Approval requested")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+  expect(view.container.querySelector('[data-busy="true"]')).toBeNull();
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "I need more time." } });
+  expect(f.resources.transitionApproval).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Confirm" })).toBeTruthy();
 });

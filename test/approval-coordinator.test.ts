@@ -96,7 +96,7 @@ describe("ApprovalCoordinator", () => {
     expect((await fixture.events.read({ conversationId })).entries).toEqual([]);
   });
 
-  it("expires a due proposal through the optimistic transition and appends its event", async () => {
+  it("refuses expiration without deciding the pending proposal", async () => {
     const fixture = createFixture();
     await fixture.create("expire-me");
     fixture.clock.set("2026-08-29T13:00:00.000Z");
@@ -106,13 +106,8 @@ describe("ApprovalCoordinator", () => {
       attribution: systemAttribution,
     });
 
-    expect(result).toMatchObject({
-      outcome: "accepted",
-      decision: "expired",
-      authorizedVersion: 1,
-      proposalVersion: 2,
-    });
-    expect((await fixture.get("expire-me")).status).toBe("expired");
+    expect(result).toMatchObject({ outcome: "conflict" });
+    expect((await fixture.get("expire-me")).status).toBe("pending");
   });
 
   it("returns the stable result for duplicate requests and rejects idempotency misuse", async () => {

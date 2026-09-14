@@ -19,17 +19,16 @@ describe("host-owned approval observation", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each(["cancel", "expire"])("bounds a hung read on %s and never polls again after its late result", async (outcome) => {
+  it("aborts a hung read and never polls again after its late result", async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
     let resolve!: (value: { status: "pending" }) => void;
     const read = vi.fn(() => new Promise<{ status: "pending" }>((accept) => { resolve = accept; }));
     const result = waitForApplicationApproval({ ...options(), signal: controller.signal, read });
-    const rejected = expect(result).rejects.toThrow(outcome === "cancel" ? "Stopped" : "Approval waiting expired");
+    const rejected = expect(result).rejects.toThrow("Stopped");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(read).toHaveBeenCalledOnce();
-    if (outcome === "cancel") controller.abort(new Error("Stopped"));
-    else await vi.advanceTimersByTimeAsync(8_000);
+    controller.abort(new Error("Stopped"));
     await rejected;
     resolve({ status: "pending" });
     await vi.advanceTimersByTimeAsync(10_000);
@@ -37,9 +36,8 @@ describe("host-owned approval observation", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("does not read an expired or cancelled proposal and rejects invalid polling options", async () => {
+  it("does not read a cancelled proposal and rejects invalid polling options", async () => {
     const read = vi.fn();
-    await expect(waitForApplicationApproval({ ...options(), read, expiresAt: Date.now() - 1 })).rejects.toThrow("expired");
     await expect(waitForApplicationApproval({ ...options(), read, signal: AbortSignal.abort(new Error("Stopped")) })).rejects.toThrow("Stopped");
     await expect(waitForApplicationApproval({ ...options(), read, pollIntervalMs: 0 })).rejects.toThrow(TypeError);
     expect(read).not.toHaveBeenCalled();
@@ -52,27 +50,29 @@ describe("host-owned approval observation", () => {
     expect(read).toHaveBeenCalledOnce();
   });
 
-  it("caps one observation at fifteen minutes even if the proposal expires later", async () => {
+  it("does not time out a saved approval even when an old deadline is supplied", async () => {
     vi.useFakeTimers();
-    const result = waitForApplicationApproval({ ...options(), expiresAt: Date.now() + 86_400_000,
-      read: async () => new Promise<never>(() => undefined) });
-    const rejected = expect(result).rejects.toThrow("Approval waiting expired");
-    await vi.advanceTimersByTimeAsync(15 * 60_000);
-    await rejected;
+    const controller = new AbortController();
+    const read = vi.fn(() => new Promise<never>(() => undefined));
+    const result = waitForApplicationApproval({ expiresAt: Date.now() - 1, signal: controller.signal, read });
+    const rejected = expect(result).rejects.toThrow("Stopped");
+    await vi.advanceTimersByTimeAsync(30 * 24 * 60 * 60_000);
+    expect(read).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
+    controller.abort(new Error("Stopped"));
+    await rejected;
   });
 
-  it("bounds a stalled activity write before the first domain read", async () => {
-    vi.useFakeTimers();
+  it("can abort a stalled activity write before the first domain read", async () => {
+    const controller = new AbortController();
     const observer = createToolActivityObserver({ events: new InMemoryConversationEventStore(),
       report: () => new Promise<never>(() => undefined) });
     const read = vi.fn();
-    const result = observer.waitForApproval({ ...options(), conversationId: "conversation", turnId: "turn", read });
-    const rejected = expect(result).rejects.toThrow("Approval waiting expired");
-    await vi.advanceTimersByTimeAsync(10_000);
+    const result = observer.waitForApproval({ signal: controller.signal, conversationId: "conversation", turnId: "turn", read });
+    const rejected = expect(result).rejects.toThrow("Stopped");
+    controller.abort(new Error("Stopped"));
     await rejected;
     expect(read).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("reports waiting before reading and settlement before returning without recording domain output", async () => {

@@ -76,10 +76,10 @@ it("uses one native ledger identity across recreated runtime instances and rejec
 it.each(["confirm", "reject"] as const)("waits on native %s and reuses retained decisions on recreation", async decision => {
   const h = await setup(true); const signal = new AbortController().signal;
   expect(await h.runtime.execute(call, signal, location)).toMatchObject({ status: "external_approval_required" });
-  const waiting = h.runtime.awaitApproval({ ...location, call, signal });
+  expect(await h.runtime.awaitApproval({ ...location, call, signal })).toMatchObject({ status: "external_approval_required" });
   await h.pendingProposal(); expect(h.effect).not.toHaveBeenCalled();
   expect(await h.decide(decision)).toMatchObject({ outcome: "accepted" });
-  const result = await waiting;
+  const result = await h.runtime.awaitApproval({ ...location, call, signal });
   expect(result).toMatchObject({ status: "completed", result: { is_error: decision === "reject" } });
   expect(h.effect).toHaveBeenCalledTimes(decision === "confirm" ? 1 : 0);
   expect(await (await h.create()).awaitApproval({ ...location, call, signal })).toEqual(result);
@@ -102,14 +102,15 @@ it("refuses missing location and cancellation before producing activity or appro
   expect(await h.events.getLatestRevision(location.conversationId as never)).toBeNull();
 });
 
-it("rechecks host access while waiting and refuses dispatch after access is revoked", async () => {
+it("rechecks host access when a saved approval resumes", async () => {
   const h = await setup(true); const signal = new AbortController().signal;
-  expect(await h.runtime.execute(call, signal, location)).toMatchObject({ status: "external_approval_required" });
-  const waiting = h.runtime.awaitApproval({ ...location, call, signal }).then(value => ({ value }), error => ({ error }));
-  await h.pendingProposal(); h.authorizeLocation.mockRejectedValue(new Error("Revoked"));
-  expect(await waiting).toMatchObject({ error: { message: "Revoked" } });
+  await h.runtime.execute(call, signal, location);
+  expect(await h.runtime.awaitApproval({ ...location, call, signal })).toMatchObject({ status: "external_approval_required" });
+  await h.decide("confirm");
+  h.authorizeLocation.mockRejectedValue(new Error("Revoked"));
+  await expect(h.runtime.awaitApproval({ ...location, call, signal })).rejects.toThrow("Revoked");
   expect(h.effect).not.toHaveBeenCalled();
-  expect((await h.pendingProposal()).status).toBe("pending");
+  expect((await h.pendingProposal()).status).toBe("confirmed");
 });
 
 it("retains a backend receipt when cancellation arrives after mutation dispatch", async () => {
@@ -128,9 +129,9 @@ it("keeps an approved backend result and executed approval after caller cancella
     controller.abort(); expect(execution.signal.aborted).toBe(true);
     return { type: "text", text: "Saved backend result" };
   });
-  const pending = h.runtime.awaitApproval({ ...location, call, signal: controller.signal });
+  await h.runtime.awaitApproval({ ...location, call, signal: controller.signal });
   await h.decide("confirm");
-  expect(await pending).toMatchObject({ status: "completed", result: { is_error: false } });
+  expect(await h.runtime.awaitApproval({ ...location, call, signal: controller.signal })).toMatchObject({ status: "completed", result: { is_error: false } });
   expect((await h.pendingProposal()).status).toBe("executed");
   expect(await (await h.create()).awaitApproval({ ...location, call, signal: new AbortController().signal }))
     .toMatchObject({ status: "completed", result: { is_error: false } });
@@ -159,10 +160,10 @@ it("does not start queued work after caller cancellation when retaining dispatch
 it("keeps a retained terminal approval result readable after its original expiry", async () => {
   const h = await setup(true); const signal = new AbortController().signal;
   await h.runtime.execute(call, signal, location);
-  const waiting = h.runtime.awaitApproval({ ...location, call, signal });
-  await h.decide("confirm"); const result = await waiting;
+  expect(await h.runtime.awaitApproval({ ...location, call, signal })).toMatchObject({ status: "external_approval_required" });
+  await h.decide("confirm"); const result = await h.runtime.awaitApproval({ ...location, call, signal });
   const saved = await h.pendingProposal();
-  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(saved.expires_at) + 1);
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 30 * 24 * 60 * 60_000);
   try { expect(await (await h.create()).awaitApproval({ ...location, call, signal })).toEqual(result); }
   finally { clock.mockRestore(); }
   expect(h.effect).toHaveBeenCalledOnce();
@@ -185,11 +186,10 @@ it("retains the existing deadline for an executor that ignores caller cancellati
 it("reattaches an interrupted approval wait without inventing a terminal tool result", async () => {
   const h = await setup(true); const controller = new AbortController();
   await h.runtime.execute(call, controller.signal, location);
-  const waiting = h.runtime.awaitApproval({ ...location, call, signal: controller.signal })
-    .then(value => ({ value }), error => ({ error }));
+  const waiting = await h.runtime.awaitApproval({ ...location, call, signal: controller.signal });
   const saved = await h.pendingProposal();
   controller.abort();
-  expect(await waiting).toMatchObject({ error: { name: "AbortError" } });
+  expect(waiting).toMatchObject({ status: "external_approval_required" });
   expect((await h.pendingProposal()).status).toBe("pending");
   expect((await h.events.read({ conversationId: location.conversationId as never })).entries
     .some(entry => entry.event.payload.type === "tool_call.result_recorded")).toBe(false);
@@ -204,9 +204,10 @@ it("concurrent approval observers share the original proposal, event and backend
   const h = await setup(true); const signal = new AbortController().signal;
   await h.runtime.execute(call, signal, location);
   const second = await h.create();
-  const waits = [h.runtime.awaitApproval({ ...location, call, signal }), second.awaitApproval({ ...location, call, signal })];
+  const pending = await Promise.all([h.runtime.awaitApproval({ ...location, call, signal }), second.awaitApproval({ ...location, call, signal })]);
+  expect(pending.map(result => result.status)).toEqual(["external_approval_required", "external_approval_required"]);
   await h.decide("confirm");
-  const results = await Promise.all(waits);
+  const results = await Promise.all([h.runtime.awaitApproval({ ...location, call, signal }), second.awaitApproval({ ...location, call, signal })]);
   expect(results[0]).toMatchObject({ status: "completed", result: { is_error: false } });
   expect(results[1]).toEqual(results[0]);
   expect(h.effect).toHaveBeenCalledOnce();
@@ -234,10 +235,10 @@ it("reuses an approved PostgreSQL receipt after recreating the application, ledg
     const h = await setup(true, undefined, () => new PostgresToolExecutionLedger(new PostgresAiPersistence(client), "tenant", context.scopeId));
     const signal = new AbortController().signal;
     expect(await h.runtime.execute(call, signal, location)).toMatchObject({ status: "external_approval_required" });
-    const waiting = h.runtime.awaitApproval({ ...location, call, signal });
+    expect(await h.runtime.awaitApproval({ ...location, call, signal })).toMatchObject({ status: "external_approval_required" });
     await h.pendingProposal();
     expect(await h.decide("confirm")).toMatchObject({ outcome: "accepted" });
-    const result = await waiting;
+    const result = await h.runtime.awaitApproval({ ...location, call, signal });
     expect(result).toMatchObject({ status: "completed", result: { is_error: false } });
     const restarted = await h.create();
     expect(await restarted.execute(call, signal, location)).toMatchObject({ status: "external_approval_required" });

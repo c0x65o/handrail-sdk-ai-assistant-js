@@ -9,7 +9,7 @@ export function resolveConversationActivity(
   remote: ConversationActivityRecord | undefined,
 ): ConversationActivityRecord {
   if (!remote) return localRecord;
-  const latest = state.turns.at(-1);
+  const latest = state.turns.find(turn => turn.turn_id === state.active_turn_id) ?? state.turns.at(-1);
   const local: ConversationActivityRecord = {
     ...localRecord,
     ...(latest ? { turnId: String(latest.turn_id) } : {}),

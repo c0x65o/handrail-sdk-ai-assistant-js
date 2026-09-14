@@ -66,7 +66,7 @@ it.each([undefined, 128])("forwards host eager bound %s through the SDK server p
   const input: Parameters<typeof provider.createTransport>[0] = {
     context: { principalId: "user", tenantId: "tenant", scopeId: "owner", attribution }, instructions: [],
     tools: { definitions, execute, awaitApproval: vi.fn() },
-    persistence: { continuation: new InMemoryOpenAIResponsesContinuationStore(), usageAdmissions: null, usageReceiptSink: null } as unknown as Parameters<typeof provider.createTransport>[0]["persistence"],
+    persistence: { continuation: { forConversation: () => new InMemoryOpenAIResponsesContinuationStore() }, usageAdmissions: null, usageReceiptSink: null } as unknown as Parameters<typeof provider.createTransport>[0]["persistence"],
     limits: { maxIterations: 4, maxTotalToolCalls: 4, maxElapsedMs: 10_000, parallelism: 1 },
     toolActivity: { waitForApproval: async () => { throw new Error("Unexpected approval"); },
       observe: async (_location, run) => (await run(async () => {})).value },

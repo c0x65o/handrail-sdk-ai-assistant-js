@@ -3,7 +3,7 @@
 The standard React approval card, DOM approval review primitives and typed JSON
 tool results display labeled fields and nested numbered lists. They do not dump
 JSON into the transcript. Flutter's standard approval card uses the equivalent
-`HandrailStructuredDetails` widget from the declared Flutter SDK repository.
+`HandrailStructuredDetailsDisclosure` widget from the declared Flutter SDK repository.
 
 Labels split snake case and camel case. Values remain literal and selectable:
 amounts are not rounded, units are not inferred, strings are not interpreted as
@@ -16,11 +16,30 @@ Custom business cards should use the same formatter **after** their existing
 server-authorized review and binding checks:
 
 ```tsx
-import { StructuredDetails } from '@handrail/ai-assistant/react';
+import { StructuredDetailsDisclosure } from '@handrail/ai-assistant/react';
 
 // review is the existing authorized, validated review, not arbitrary tool input.
-<StructuredDetails aria-label="Saved change details" value={review.arguments} />
+<StructuredDetailsDisclosure summary="Saved change details" value={review.arguments} />
 ```
+
+The generic SDK review and typed-result surfaces start large payloads collapsed.
+The shared web/Flutter presentation budget is eight visited values (including
+containers), 800 characters across keys/values, eight embedded newlines, or four
+levels of nesting. Crossing any budget shows a keyboard-accessible disclosure;
+expanding it reveals the complete data, without truncation. Short results remain
+inline. Standard React approval cards retain an Action details disclosure for
+short reviews too. User expansion survives ordinary polling/rerenders.
+
+`StructuredDetails` / `HandrailStructuredDetails` remain the plain field/list
+primitives for hosts that already own a `<details>` / `ExpansionTile`; this avoids
+nested disclosures. Such host disclosures should start closed. Keep the action
+summary, status, completeness warnings and decision controls outside the details.
+
+Approvals belong in the transcript's `renderApproval` slot. `renderVoiceControls`
+is inside the composer toolbar and must contain only voice controls. Do not mount
+a second approval controller there or use `approvals={null}` to bypass the SDK's
+normal timeline resource loader. Preserve domain review/binding checks in the
+custom approval card while the SDK owns catalog polling and versioned decisions.
 
 The formatter does not load a review, decide permission, approve a proposal or
 change its argument binding. Keep incomplete/redacted-review restrictions,
@@ -91,3 +110,27 @@ These are local source and installed-package results. App rollout is still
 pending; this interactive change did not authorize or perform app commits,
 pushes, PRs or deployments. No production data or approval permissions changed.
 The broader assistant cleanup goal remains a separate blocked rollout effort.
+
+### September 14 follow-up: compact reviews and Mills placement
+
+This follow-up adds default collapsed large reviews/results and moves Mills web's
+validated household card from the voice slot into the chronological timeline.
+The previous formatting-only checks did not cover this host placement bug.
+`MillsAssistantRuntime.test.tsx` now mounts the real installed launcher with a
+large pending approval and verifies a single card outside the composer, readable
+full detail expansion, and preservation of history and an unsent draft.
+
+The new shared JS and Flutter disclosure behavior is local source work, **not**
+present in the older public baselines listed above. It needs an authorized SDK
+release, then full public HTTPS Git SHA/lock updates and normal installation in
+consumers. Mills and Aegis host-owned disclosures use the already-public plain
+formatter and can be qualified against their current installed SDK. No source
+alias, dependency substitution, commit, publication or deployment is implied.
+
+Follow-up validation: 42 JS SDK tests, 9 Flutter SDK tests, 25 Mills web tests,
+and 13 Aegis review tests passed. JS SDK typecheck/build, Flutter scoped analysis,
+Mills full TypeScript and Aegis scoped UI TypeScript passed. Browser fixtures
+passed six SDK light/dark layouts plus Mills at 390px and 1280px. Mills composer
+height remained 124px / 107px respectively in both collapsed and expanded states;
+the typed draft stayed intact. These are local component/fixture results, not
+production provider or deployment qualification.

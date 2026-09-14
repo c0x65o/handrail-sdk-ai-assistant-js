@@ -971,7 +971,7 @@ function observeGatewayTurnDiagnostics<TEvent>(
 ): void {
   void observation.result.then((result) => {
     emitAiDiagnostic(sink, { domain: "gateway", operation,
-      phase: result.status === "completed" ? "succeeded" :
+      phase: result.status === "completed" || result.status === "waiting_for_approval" ? "succeeded" :
         result.status === "cancelled" ? "cancelled" : "failed",
       conversationId, turnId, durationMs: Date.now() - startedAt,
       ...(result.status === "failed"

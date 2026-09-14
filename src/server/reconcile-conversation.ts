@@ -17,7 +17,7 @@ function storedObservation(record: DurableApplicationTurnRecord<ChatRequest, Str
   const frames = record.events.map(({ event }) => parseStreamEvent(event));
   const last = frames.at(-1);
   const expected = record.status === "completed" ? "response.completed" : record.status === "cancelled" ? "response.cancelled" : "response.error";
-  if (last?.type !== expected) {
+  if (record.status !== "waiting_for_approval" && last?.type !== expected) {
     if (record.status === "completed") throw new TypeError("A completed durable turn is missing its completion frame");
     if (last && terminalFrame(last)) frames.pop();
     // Worker failure or authoritative cancellation can finish before a provider terminal frame.
@@ -77,6 +77,7 @@ export async function reconcileDurableConversationTurn(input: {
         throw cause;
       }
     }
+    if (turn.status === "waiting_for_approval" && record.status === "waiting_for_approval") return true;
     if (turn.status === "completed" || turn.status === "cancelled" || turn.status === "failed") {
       if (turn.status !== record.status) throw new TypeError("Canonical and durable terminal outcomes disagree");
       return true;

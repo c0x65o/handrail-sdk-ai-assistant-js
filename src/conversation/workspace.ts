@@ -48,7 +48,7 @@ function statusOf(runtime: ConversationRuntime<unknown>): ConversationWorkspaceT
   const latest = state.turns.at(-1);
   if (latest === undefined) return "idle";
   if (latest.status === "failed") return "error";
-  if (latest.status === "completed" || latest.status === "cancelled") return "completed";
+  if (latest.status === "completed" || latest.status === "cancelled" || latest.status === "waiting_for_approval") return "completed";
   return "running";
 }
 

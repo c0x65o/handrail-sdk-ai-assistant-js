@@ -342,15 +342,18 @@ describe("ApprovalReview primitives", () => {
     expect(button.hasAttribute("disabled")).toBe(false);
   });
 
-  it("disables expired and non-pending restart-loaded proposals", () => {
+  it("ignores legacy timestamps while disabling historical expired and non-pending proposals", () => {
     render(<Harness {...options([
       proposal("expired-local", { expiresAt: "2026-08-29T11:59:59.000Z" }),
+      proposal("expired", { status: "expired", version: 2 }),
       proposal("confirmed", { status: "confirmed", version: 2 }),
       proposal("executed", { status: "executed", version: 4 }),
     ])} />);
+    expect(screen.getByRole("button", { name: "Confirm tool_expired-local" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Reject tool_expired-local" }).hasAttribute("disabled")).toBe(false);
     for (const name of [
-      "Confirm tool_expired-local",
-      "Reject tool_expired-local",
+      "Confirm tool_expired",
+      "Reject tool_expired",
       "Confirm tool_confirmed",
       "Reject tool_confirmed",
       "Confirm tool_executed",

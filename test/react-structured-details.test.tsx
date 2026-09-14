@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { StructuredDetails, ToolResult } from "../src/react/index.js";
+import { StructuredDetails, StructuredDetailsDisclosure, shouldCollapseStructuredDetails, ToolResult } from "../src/react/index.js";
 import type { ConversationToolResultRecord } from "../src/conversation/state.js";
 
 afterEach(cleanup);
@@ -42,4 +42,45 @@ it("formats typed JSON tool results and preserves ordinary text and custom busin
   view.rerender(<ToolResult result={result}><p>Business review card</p></ToolResult>);
   expect(screen.getByText("Business review card")).toBeTruthy();
   expect(screen.queryByText("Verify backups")).toBeNull();
+});
+
+const largeReview = { fields: Array.from({ length: 12 }, (_, index) => ({
+  label: `Field ${index + 1}`, value: `Exact value ${index + 1}`, amount: "0012.3400",
+})) };
+
+it("starts large details closed and preserves the chosen state across refreshed values", async () => {
+  const view = render(<StructuredDetailsDisclosure value={largeReview} summary="Saved details"/>);
+  const details = view.container.querySelector("details")!;
+  expect(details.open).toBe(false);
+  fireEvent.click(screen.getByText("Saved details"));
+  await waitFor(() => expect(details.open).toBe(true));
+  expect(screen.getByText("Exact value 12")).toBeTruthy();
+  expect(screen.getAllByText("0012.3400")).toHaveLength(12);
+  view.rerender(<StructuredDetailsDisclosure value={structuredClone(largeReview)} summary="Saved details"/>);
+  expect(details.open).toBe(true);
+  fireEvent.click(screen.getByText("Saved details"));
+  await waitFor(() => expect(details.open).toBe(false));
+  view.rerender(<StructuredDetailsDisclosure value={structuredClone(largeReview)} summary="Saved details"/>);
+  expect(details.open).toBe(false);
+});
+
+it("keeps short results readable and collapses long, multiline, nested and many-field data", () => {
+  const short = { payee: "Vendor", amount: "0012.3400" };
+  expect(shouldCollapseStructuredDetails(short)).toBe(false);
+  const view = render(<StructuredDetailsDisclosure value={short}/>);
+  expect(view.container.querySelector("details")).toBeNull();
+  for (const value of [largeReview, "x".repeat(801), "line\n".repeat(9), { a: { b: { c: { d: { e: 0 } } } } }]) {
+    expect(shouldCollapseStructuredDetails(value)).toBe(true);
+  }
+});
+
+it("collapses large typed tool results without hiding their completion text", () => {
+  const result: ConversationToolResultRecord = { is_error: false, recorded_at: "2026-09-14T12:00:00.000Z" as never,
+    attribution: { actor: { type: "tool" }, source: { type: "runtime" } },
+    content: [{ type: "text", text: "Saved successfully." }, { type: "json", value: largeReview }],
+  };
+  const { container } = render(<ToolResult result={result}/>);
+  expect(screen.getByText("Saved successfully.")).toBeTruthy();
+  expect(container.querySelector("details")?.open).toBe(false);
+  expect(screen.getByText("Exact value 12")).toBeTruthy();
 });

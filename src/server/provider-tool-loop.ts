@@ -55,7 +55,7 @@ export interface ProviderToolLoopTransportOptions {
     readonly turnId: string;
     readonly call: Pick<ResponseToolCallEvent, "tool_call_id" | "name" | "arguments">;
     readonly signal: AbortSignal;
-  }) => Promise<ProviderToolLoopExecutionResult>;
+  }) => Promise<ProviderToolLoopExecutionResult | ProviderToolLoopApprovalResult>;
   /** One trusted host preparation before provider work, using server-owned turn location. */
   readonly prepareRequest?: (input: { readonly request: ChatRequest; readonly conversationId: string;
     readonly turnId: string; readonly mutationId: string; readonly signal: AbortSignal }) => ChatRequest | Promise<ChatRequest>;
@@ -208,6 +208,7 @@ export function createProviderToolLoopTransport(
             break;
           }
           const results: ApplicationToolResult[] = [];
+          const pendingToolCallIds: string[] = [];
           for (let offset = 0; offset < discovered.length; offset += options.limits.parallelism) {
             budget.signal.throwIfAborted();
             const batch = discovered.slice(offset, offset + options.limits.parallelism);
@@ -236,11 +237,15 @@ export function createProviderToolLoopTransport(
               }
               const approved = await budget.withApprovalWait(() => options.awaitApproval!({ conversationId: turn.conversationId,
                 turnId: turn.turnId, call: batch[index]!, signal: budget.signal }));
-              results.push(approved.result);
+              if (approved.status === "external_approval_required") pendingToolCallIds.push(approved.toolCallId);
+              else results.push(approved.result);
             }
             if (finalResult.status !== "completed") break;
           }
           if (finalResult.status !== "completed") break;
+          if (pendingToolCallIds.length > 0) return { status: "waiting_for_approval", pendingToolCallIds,
+            checkpoint: { lastAppliedEventId: `${rootRequestId}:${sequence - 1}`,
+              lastAppliedCursor: `${rootRequestId}:${sequence - 1}`, lastAppliedRevision: sequence - 1 } };
           request = parseChatRequest({ ...request, protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
             continuation_of: context.request_id, tools: options.tools, tool_results: results });
         }

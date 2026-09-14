@@ -1058,9 +1058,9 @@ describe("reduceConversationEvent", () => {
     const state = replay([...base, ...observations]);
     expect(state.revision).toBe(12);
     expect(state.approval_proposals[0]).toMatchObject({
-      status: "confirmed",
-      proposal_version: 2,
-      updated_at: "2026-08-27T12:00:07.000Z",
+      status: "executing",
+      proposal_version: 3,
+      updated_at: "2026-08-27T12:00:21Z",
       decision_attribution: { actor: { type: "user", id: "owner-valid" } },
     });
   });

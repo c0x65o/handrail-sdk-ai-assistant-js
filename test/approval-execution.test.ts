@@ -206,7 +206,7 @@ function execute(
 }
 
 describe("approval execution", () => {
-  it("never executes pending, rejected, expired, tampered, or unauthorized proposals", async () => {
+  it("never executes pending, rejected, attempted expiry, tampered, or unauthorized proposals", async () => {
     const cases = [
       "pending",
       "rejected",
@@ -263,7 +263,7 @@ describe("approval execution", () => {
       );
       expect(f.invoke, state).not.toHaveBeenCalled();
       expect(outcome.status, state).toBe(
-        state === "pending" ? "external_approval_required" : "completed",
+        (state === "pending" || state === "expired") ? "external_approval_required" : "completed",
       );
     }
   });

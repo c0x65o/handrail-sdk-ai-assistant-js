@@ -41,7 +41,7 @@ import type {
 } from "../presence/controller.js";
 import type { AssistantActivity, PresenceParticipantSummary } from "../presence/types.js";
 import { ConversationContext } from "./context.js";
-import { StructuredDetails } from "./structured-details.js";
+import { StructuredDetailsDisclosure } from "./structured-details.js";
 import {
   PrimitiveContext,
   type PrimitiveContextValue,
@@ -210,6 +210,7 @@ function statusLabel(status: StreamStatusValue): string {
   switch (status) {
     case "queued": return "Queued";
     case "running": return "Responding";
+    case "waiting_for_approval": return "Approval requested";
     case "waiting_for_tool_result": return "Waiting for a tool result";
     case "completed": return "Complete";
     case "cancelled": return "Cancelled";
@@ -528,7 +529,7 @@ export const ToolResult = forwardRef<HTMLDivElement, ToolResultProps>(
       <div {...props} ref={forwardedRef}>
         {children ?? result.content.map((part, index) => (
           part.type === "text" ? <span key={index}>{part.text}</span>
-            : <StructuredDetails key={index} value={part.value}/>
+            : <StructuredDetailsDisclosure key={index} value={part.value}/>
         ))}
       </div>
     );
@@ -613,6 +614,8 @@ export const LiveRegion = forwardRef<HTMLDivElement, LiveRegionProps>(
         setAnnouncement("Response started.");
       } else if (resolvedStatus === "waiting_for_tool_result") {
         setAnnouncement("Waiting for a tool result.");
+      } else if (resolvedStatus === "waiting_for_approval") {
+        setAnnouncement("Approval requested. You can respond when ready.");
       } else {
         setAnnouncement("");
       }

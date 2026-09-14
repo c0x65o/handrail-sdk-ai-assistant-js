@@ -5,8 +5,8 @@ export type ApplicationApprovalObservation<T> =
 
 export interface ApplicationApprovalWaitOptions<T> {
   readonly signal: AbortSignal;
-  /** Absolute expiry from the persisted proposal; retries must retain this deadline. */
-  readonly expiresAt: number;
+  /** @deprecated Approval requests do not expire. Ignored. */
+  readonly expiresAt?: number;
   /** Read authoritative domain state. Throw for missing, rejected, or failed actions. */
   readonly read: (signal: AbortSignal) => Promise<ApplicationApprovalObservation<T>>;
   readonly pollIntervalMs?: number;
@@ -20,23 +20,21 @@ export class ApplicationApprovalWaitExpiredError extends Error {
 }
 
 /**
- * Bounded, abortable observation of an already-persisted host action. Does not
+ * @deprecated Provider turns must persist waiting_for_approval and return instead.
+ * Explicitly abortable observation of an already-persisted host action. Does not
  * create, approve, execute, cancel, or retry mutations. Hosts must expose the
  * proposal before calling and retain their own authorization/execution ledger.
  * Ending observation does not revoke a proposal or undo an action in progress.
  */
 export async function waitForApplicationApproval<T>(options: ApplicationApprovalWaitOptions<T>): Promise<T> {
   const interval = options.pollIntervalMs ?? 500;
-  if (!Number.isFinite(options.expiresAt) || !Number.isInteger(interval) || interval < 10 || interval > 10_000) {
-    throw new TypeError("Approval waiting requires a finite expiry and a polling interval from 10 to 10000 ms");
+  if (!Number.isInteger(interval) || interval < 10 || interval > 10_000) {
+    throw new TypeError("Approval waiting requires a polling interval from 10 to 10000 ms");
   }
   options.signal.throwIfAborted();
-  const remaining = Math.min(options.expiresAt - Date.now(), 15 * 60_000);
-  if (remaining <= 0) throw new ApplicationApprovalWaitExpiredError();
   const controller = new AbortController();
   const abortFromParent = () => controller.abort(options.signal.reason);
   options.signal.addEventListener("abort", abortFromParent, { once: true });
-  const timer = setTimeout(() => controller.abort(new ApplicationApprovalWaitExpiredError()), remaining);
   // One abort listener bounds both slow reads and idle polling. Losing reads
   // remain handled, but can never publish a late result or launch another poll.
   let rejectAborted!: (reason: unknown) => void;
@@ -56,7 +54,6 @@ export async function waitForApplicationApproval<T>(options: ApplicationApproval
       await Promise.race([new Promise<void>((resolve) => { pollTimer = setTimeout(resolve, interval); }), aborted]);
     }
   } finally {
-    clearTimeout(timer);
     clearTimeout(pollTimer);
     options.signal.removeEventListener("abort", abortFromParent);
     controller.signal.removeEventListener("abort", onAbort);

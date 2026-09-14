@@ -193,7 +193,7 @@ function hasValidCitationProjection(
 function isTurn(value: Record<string, unknown>): boolean {
   return isIdentifier(value.turn_id) &&
     (value.continuation_of_turn_id === null || isIdentifier(value.continuation_of_turn_id)) &&
-    ["queued", "running", "waiting_for_tool_result", "completed", "cancelled", "failed"]
+    ["queued", "running", "waiting_for_tool_result", "waiting_for_approval", "completed", "cancelled", "failed"]
       .includes(String(value.status)) &&
     identifierArray(value.input_message_ids) !== null &&
     identifierArray(value.output_message_ids) !== null &&
@@ -319,10 +319,9 @@ function isApprovalProposal(value: Record<string, unknown>): boolean {
       "failed",
     ]) ||
     !isPositiveSafeInteger(value.proposal_version) ||
-    !isConversationTimestamp(value.expires_at) ||
+    !(value.expires_at === null || isConversationTimestamp(value.expires_at)) ||
     !isConversationTimestamp(value.created_at) ||
     !isConversationTimestamp(value.updated_at) ||
-    Date.parse(value.expires_at) <= Date.parse(value.created_at) ||
     Date.parse(value.updated_at) < Date.parse(value.created_at) ||
     !isAttribution(value.created_attribution) ||
     value.created_attribution.actor.type !== "system" ||

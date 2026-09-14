@@ -33,6 +33,7 @@ export interface AssistantToolRuntimeOptions<TContext extends { readonly scopeId
   readonly reportActivity?: (conversationId: string, turnId: string, update: ApplicationToolActivityUpdate) => Promise<void>;
   readonly activityForToolCall?: (input: Location & { readonly context: TContext; readonly toolCallId: string;
     readonly toolName: string; readonly arguments: JsonObject }) => ApplicationToolActivityUpdate | null | Promise<ApplicationToolActivityUpdate | null>;
+  /** @deprecated Approval requests do not expire. Ignored. */
   readonly approvalTimeoutMilliseconds?: number;
   readonly diagnostics?: AiDiagnosticSink;
 }
@@ -52,15 +53,6 @@ function approvalError(call: Pick<ResponseToolCallEvent, "tool_call_id" | "name"
   const result: ApplicationToolResult = Object.freeze({ tool_call_id: call.tool_call_id, name: call.name,
     content, is_error: true });
   return Object.freeze({ status: "completed", result });
-}
-
-async function wait(milliseconds: number, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return false;
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(true); }, milliseconds);
-    const onAbort = () => { clearTimeout(timeout); resolve(false); };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 async function recordProposalCreated(
@@ -107,8 +99,6 @@ export function createAssistantToolRuntime<TContext extends { readonly scopeId: 
   const { context, application } = options;
   const definitions = application.discover({ context });
   const reportActivity = options.reportActivity ?? (async () => {});
-  const approvalTimeoutMilliseconds = options.approvalTimeoutMilliseconds ?? 15 * 60_000;
-  if (!Number.isSafeInteger(approvalTimeoutMilliseconds) || approvalTimeoutMilliseconds < 1) throw new TypeError("Invalid approval timeout");
   const authorize = async (location: Location | undefined, signal: AbortSignal) => {
     signal.throwIfAborted();
     if (!location?.conversationId || !location.turnId) throw new TypeError("Saved tool execution location is required");
@@ -191,12 +181,12 @@ export function createAssistantToolRuntime<TContext extends { readonly scopeId: 
             groupId: conversationId as never, turnId: turnId as never,
             toolCallId: call.tool_call_id as never, toolName: call.name,
             reviewedArguments: { type: "opaque_reference", argument_ref: reference as never },
-            expiresAt: new Date(Date.now() + approvalTimeoutMilliseconds).toISOString() as never,
+            expiresAt: null,
             attribution: SYSTEM_ATTRIBUTION, idempotencyKey: `approval:${identity}`,
             idempotencyFingerprint: `approval:${identity}` });
         } catch (error) {
           // Concurrent observers may choose different creation times. Load the
-          // winning immutable proposal; never reset its expiry on reconnection.
+          // winning immutable proposal; never replace it on reconnection.
           if (!(error instanceof ApprovalProposalStoreError) || error.code !== "idempotency_conflict") throw error;
           proposal = await load();
           if (!proposal) throw error;
@@ -205,9 +195,8 @@ export function createAssistantToolRuntime<TContext extends { readonly scopeId: 
       if (proposal.group_id !== conversationId || proposal.turn_id !== turnId || proposal.tool_call_id !== call.tool_call_id ||
         proposal.tool_name !== call.name || proposal.reviewed_arguments.type !== "opaque_reference" ||
         proposal.reviewed_arguments.argument_ref !== reference) throw new ApprovalProposalStoreError("idempotency_conflict", "create");
-      const expiresAt = Date.parse(proposal.expires_at);
       await recordProposalCreated(options.events, conversationId, proposal);
-      while (!signal.aborted) {
+      {
         await authorize({ conversationId, turnId }, signal);
         const retained = await proposalStore.get({ permissionContext: context, proposalId });
         if (retained === null) return finishError("Tool approval is unavailable.");
@@ -229,13 +218,11 @@ export function createAssistantToolRuntime<TContext extends { readonly scopeId: 
             attribution: SYSTEM_ATTRIBUTION, conversationId: conversationId as never, turnId: turnId as never });
         }
         if (retained.status === "failed") return finishError("Approved tool execution failed.");
-        if (Date.now() >= expiresAt) return finishError("Tool approval expired.");
-        if (!await wait(Math.min(250, expiresAt - Date.now()), signal)) break;
+        signal.throwIfAborted();
+        // Persisted pending work ends this invocation. An explicit decision may
+        // resume the saved turn; no provider, lease or timer waits for a human.
+        return { status: "external_approval_required", toolCallId: call.tool_call_id, name: call.name };
       }
-      // Losing one observer does not decide the retained proposal or create a
-      // terminal tool result. A fresh authorized observer may resume this wait.
-      signal.throwIfAborted();
-      return finishError("Tool approval expired.");
     },
   });
 }

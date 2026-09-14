@@ -520,7 +520,8 @@ describe("durable conversation event contract", () => {
     expect(() => parseConversationEvent(event({
       ...created,
       expires_at: "2026-08-27T12:00:00Z",
-    }))).toThrow(/expires_at.*later than occurred_at/);
+    }))).not.toThrow();
+    expect(() => parseConversationEvent(event({ ...created, expires_at: null }))).not.toThrow();
   });
 
   it("requires non-empty event and conversation identifiers and a revision", () => {

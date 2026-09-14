@@ -961,7 +961,7 @@ export function useConversationComposer<TRequest = undefined>(
         onAccepted: accept,
       });
       if (!isCurrent()) return outcome;
-      if (outcome.status !== "completed") {
+      if (outcome.status !== "completed" && outcome.status !== "waiting_for_approval") {
         setOperationErrors([outcome.error === undefined
           ? {
               source: "send",

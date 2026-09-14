@@ -288,6 +288,17 @@ describe("headless chat primitives", () => {
       .toContain("private delta");
 
     rerender(
+      <ChatRoot state={conversationState({ messages: delta.messages,
+        turns: [turn("waiting_for_approval", { remote_may_still_be_running: false })] })}>
+        <StreamStatus data-testid="stream-status" />
+        <LiveRegion data-testid="live" />
+      </ChatRoot>,
+    );
+    await waitFor(() => expect(screen.getByTestId("live").textContent)
+      .toBe("Approval requested. You can respond when ready."));
+    expect(screen.getByTestId("stream-status").getAttribute("aria-busy")).toBe("false");
+
+    rerender(
       <ChatRoot state={conversationState({ messages: delta.messages, turns: [turn("completed")] })}>
         <LiveRegion data-testid="live" />
       </ChatRoot>,

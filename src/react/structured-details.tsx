@@ -1,4 +1,4 @@
-import type { HTMLAttributes, ReactNode } from "react";
+import { useState, type HTMLAttributes, type ReactNode } from "react";
 import type { ConversationStateJsonValue } from "../conversation/state.js";
 
 /** Format field names only. Values (including money, dates and IDs) stay exact. */
@@ -19,6 +19,50 @@ export function StructuredDetails({ value, className, ...props }: StructuredDeta
   return <div {...props} className={["hr-details", className].filter(Boolean).join(" ")}>
     <DetailValue value={value} depth={0}/>
   </div>;
+}
+
+/** Presentation budget, not a data limit. Expanded reviews always retain every value. */
+export function shouldCollapseStructuredDetails(value: ConversationStateJsonValue): boolean {
+  let rows = 0;
+  let characters = 0;
+  let lines = 0;
+  function visit(item: ConversationStateJsonValue, depth: number): boolean {
+    if (++rows > 8 || depth > 4) return true;
+    if (item !== null && typeof item === "object") {
+      const entries = Array.isArray(item) ? item.map(value => ["", value] as const) : Object.entries(item);
+      for (const [key, child] of entries) {
+        characters += key.length;
+        if (characters > 800 || visit(child, depth + 1)) return true;
+      }
+    } else {
+      const text = String(item ?? "");
+      characters += text.length;
+      lines += text.split("\n").length - 1;
+    }
+    return characters > 800 || lines > 8;
+  }
+  return visit(value, 0);
+}
+
+export interface StructuredDetailsDisclosureProps extends StructuredDetailsProps {
+  readonly summary?: ReactNode;
+  /** Keep a disclosure for short reviews as well. */
+  readonly always?: boolean;
+  /** Override the initial state; user toggles survive polling/rerenders. */
+  readonly defaultOpen?: boolean;
+}
+
+/** Generic SDK review/result presentation. Use StructuredDetails inside host-owned disclosures. */
+export function StructuredDetailsDisclosure({ value, summary = "Details", always = false, defaultOpen,
+  ...props }: StructuredDetailsDisclosureProps): ReactNode {
+  const [chosenOpen, setChosenOpen] = useState<boolean | null>(null);
+  const large = shouldCollapseStructuredDetails(value);
+  if (!always && !large) return <StructuredDetails {...props} value={value}/>;
+  return <details className="hr-details-disclosure" open={chosenOpen ?? defaultOpen ?? !large}
+    onToggle={event => setChosenOpen(event.currentTarget.open)}>
+    <summary>{summary}</summary>
+    <StructuredDetails {...props} value={value}/>
+  </details>;
 }
 
 function DetailValue({ value, depth }: { readonly value: ConversationStateJsonValue; readonly depth: number }): ReactNode {
@@ -42,6 +86,7 @@ function DetailValue({ value, depth }: { readonly value: ConversationStateJsonVa
 
 /** Included in handrailChatPresetCss; headless DOM consumers can bundle it too. */
 export const HANDRAIL_STRUCTURED_DETAILS_CSS = `
+.hr-details-disclosure{min-inline-size:0;max-inline-size:100%}.hr-details-disclosure>summary{cursor:pointer;overflow-wrap:anywhere}.hr-details-disclosure[open]>.hr-details{margin-block-start:.65rem}
 .hr-details{min-inline-size:0;max-inline-size:100%;overflow-wrap:anywhere;white-space:normal;line-height:1.5}
 .hr-details__fields{display:grid;gap:.65rem;margin:0;padding:0}
 .hr-details__field{display:flex;flex-wrap:wrap;gap:.2rem 1rem;min-inline-size:0}

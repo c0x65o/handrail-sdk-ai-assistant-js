@@ -159,13 +159,8 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
         },
         executeTool: async ({ conversationId, turnId, call, signal }) =>
           input.tools.execute(call, signal, { conversationId, turnId }),
-        awaitApproval: async ({ conversationId, turnId, call, signal }) => {
-          const outcome = await input.tools.awaitApproval({ conversationId, turnId, call, signal });
-          return outcome.status === "completed" ? outcome : { status: "completed" as const, result: {
-            tool_call_id: call.tool_call_id, name: call.name,
-            content: [{ type: "text" as const, text: "Tool approval remains pending." }], is_error: true,
-          } };
-        },
+        awaitApproval: ({ conversationId, turnId, call, signal }) =>
+          input.tools.awaitApproval({ conversationId, turnId, call, signal }),
         ...(input.persistence.usageReceiptSink === null ? {} : {
           captureUsage: input.persistence.usageReceiptSink.capture,
           captureUsageForDurableExecution: false,

@@ -268,13 +268,11 @@ export function approvalProposalStoreConformanceCases(
           store.transition(
             transitionInput("proposal-expire", 1, "expired", "expire-early"),
           ),
-          "not_expired",
+          "invalid_transition",
         );
         clock.set("2026-08-29T13:00:00.000Z");
-        const expired = await store.transition(
-          transitionInput("proposal-expire", 1, "expired", "expire-due"),
-        );
-        equal(expired.status, "expired");
+        await rejectsWithCode(store.transition(
+          transitionInput("proposal-expire", 1, "expired", "expire-due")), "invalid_transition");
 
         await rejectsWithCode(
           store.transition(
@@ -431,18 +429,23 @@ export function approvalProposalStoreConformanceCases(
       },
     },
     {
-      name: "expires pending proposals from the injectable clock",
+      name: "retains pending proposals indefinitely and accepts a later decision",
       run: async () => {
         const clock = mutableClock();
         const store = allowedStore(createStore, clock);
         await store.create(createInput("proposal-clock", "create-clock"));
         clock.set("2026-08-29T13:00:00.000Z");
 
-        const expired = await getRequired(store, "proposal-clock");
-        equal(expired.status, "expired");
-        equal(expired.proposal_version, 2);
-        equal(expired.decision_at, "2026-08-29T13:00:00.000Z");
-        equal(expired.decision_attribution?.actor.type, "system");
+        const pending = await getRequired(store, "proposal-clock");
+        equal(pending.status, "pending");
+        equal(pending.expires_at, null);
+        equal(pending.proposal_version, 1);
+        equal(pending.decision_at, null);
+        clock.set("2036-08-29T13:00:00.000Z");
+        const confirmed = await store.transition(transitionInput("proposal-clock", 1, "confirmed", "late-decision"));
+        equal(confirmed.status, "confirmed");
+        const executed = await store.transition(transitionInput("proposal-clock", 2, "executing", "late-execution"));
+        equal(executed.status, "executing");
       },
     },
   ];

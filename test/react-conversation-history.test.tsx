@@ -5,7 +5,7 @@ import { ConversationWorkspace, ConversationRuntimeRegistry, InMemoryConversatio
   InMemoryConversationEventStore, createConversationRuntime, type ConversationCatalogDescriptor, type ConversationId } from "../src/index.js";
 import { useConversationHistory } from "../src/react/conversation-history.js";
 import { InMemoryConversationActivityStore } from "../src/conversation/activity.js";
-import { HandrailChatWorkspace } from "../src/react-styled/index.js";
+import { HandrailAssistantWorkspace, HandrailChatWorkspace } from "../src/react-styled/index.js";
 import { createAttachmentUploader } from "../src/attachments/uploader.js";
 
 const disposables: Array<() => Promise<void>> = [];
@@ -54,6 +54,22 @@ it("loads all catalog pages, limits background previews, and filters active/arch
   expect(result.current.visible.map((row) => row.conversationId)).toEqual([f.descriptors[0]!.conversationId]);
   const opened = result.current.descriptors.find((row) => f.workspace.getSnapshot().threads.some((thread) => thread.conversationId === row.conversationId))!;
   expect(result.current.preview(opened)).toMatch(/^Saved preview/u);
+});
+
+it("shows the complete assistant's saved threads by default and keeps compact history opt-in", async () => {
+  const f = await fixture(1);
+  const client = { workspace: f.workspace, catalog: f.catalog, activity: f.activity,
+    capabilities: { attachments: false }, resources: {}, presenceControllerFor: () => null,
+    markActivityRead: async () => undefined };
+  const props = { client: client as never, authorizationContext: f.authorizationContext,
+    autoTitle: false, approvals: false as const };
+  const view = render(<HandrailAssistantWorkspace {...props}/>);
+  await waitFor(() => expect(view.getByRole("button", { name: /^Thread 1/u })).toBeTruthy());
+  expect(view.getByRole("complementary", { name: "Conversation history" })).toBeTruthy();
+  expect(view.queryByText("Threads")).toBeNull();
+  view.rerender(<HandrailAssistantWorkspace {...props} historyLayout="compact"/>);
+  expect(view.queryByRole("complementary", { name: "Conversation history" })).toBeNull();
+  expect(view.getByText("Threads").closest("details")?.open).toBe(false);
 });
 
 it("preserves the latest selection when an older history request finishes later", async () => {

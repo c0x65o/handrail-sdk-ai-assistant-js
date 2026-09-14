@@ -180,7 +180,7 @@ export interface ConversationApprovalProposalRecord {
   readonly reviewed_arguments: ConversationStateApprovalReviewedArguments;
   readonly status: ConversationApprovalProposalStatus;
   readonly proposal_version: number;
-  readonly expires_at: ConversationTimestamp;
+  readonly expires_at: ConversationTimestamp | null;
   readonly created_at: ConversationTimestamp;
   readonly updated_at: ConversationTimestamp;
   readonly created_attribution: ConversationEventAttribution;

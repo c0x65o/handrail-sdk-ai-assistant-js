@@ -34,7 +34,7 @@ import type {
   ConversationEventAttribution,
 } from "../conversation/state.js";
 import type { PrimitiveRender } from "./primitives.js";
-import { StructuredDetails, structuredDetailLabel } from "./structured-details.js";
+import { StructuredDetailsDisclosure, structuredDetailLabel } from "./structured-details.js";
 
 export interface ApprovalReviewLoadInput<TPermissionContext> {
   readonly conversationId: ConversationId;
@@ -127,7 +127,7 @@ export interface UseApprovalReviewOptions<TPermissionContext> {
   /** Persisted rows used during SSR and before the first host refresh. */
   readonly initialProposals?: readonly ConversationApprovalProposalRecord[];
   readonly loadProposals: ApprovalReviewProposalLoader<TPermissionContext>;
-  /** Injectable stable clock for SSR and expiry policy. */
+  /** @deprecated Pending approval reviews do not expire. Ignored. */
   readonly now?: () => ConversationTimestamp;
   readonly onDecisionResult?: (
     proposal: ConversationApprovalProposalRecord,
@@ -265,12 +265,6 @@ function safeResult(result: ApprovalDecisionResult): ApprovalReviewDecisionState
   }
 }
 
-function currentTimestamp(now: (() => ConversationTimestamp) | undefined): number {
-  const value = now?.() ?? new Date().toISOString() as ConversationTimestamp;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : Date.now();
-}
-
 /** Host-loaded, provider-neutral approval review controller. */
 export function useApprovalReview<TPermissionContext>(
   options: UseApprovalReviewOptions<TPermissionContext>,
@@ -291,7 +285,6 @@ export function useApprovalReview<TPermissionContext>(
   const [isRefreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<ApprovalReviewLoadError | null>(null);
   const [states, setStates] = useState<Readonly<Record<string, ApprovalReviewDecisionState>>>({});
-  const [nowValue, setNowValue] = useState(() => currentTimestamp(options.now));
   const mounted = useRef(false);
   const generation = useRef(0);
   const loadRequest = useRef(0);
@@ -350,7 +343,6 @@ export function useApprovalReview<TPermissionContext>(
       if (!mounted.current || controller.signal.aborted ||
         generation.current !== requestGeneration || loadRequest.current !== request) return;
       applyProposals(rows);
-      setNowValue(currentTimestamp(requestOptions.now));
     } catch {
       if (!mounted.current || controller.signal.aborted ||
         generation.current !== requestGeneration || loadRequest.current !== request) return;
@@ -372,7 +364,6 @@ export function useApprovalReview<TPermissionContext>(
     identityOwners.current.clear();
     applyProposals(initial);
     setError(null);
-    setNowValue(currentTimestamp(options.now));
     void refresh();
     return () => {
       mounted.current = false;
@@ -409,23 +400,9 @@ export function useApprovalReview<TPermissionContext>(
     };
   }, [options.conversationId, options.permissionContext, options.subscribe, refresh]);
 
-  useEffect(() => {
-    const expiries = proposals
-      .filter((proposal) => proposal.status === "pending")
-      .map((proposal) => Date.parse(proposal.expires_at))
-      .filter((timestamp) => Number.isFinite(timestamp) && timestamp > nowValue);
-    const nextExpiry = Math.min(...expiries);
-    if (!Number.isFinite(nextExpiry)) return;
-    const timer = globalThis.setTimeout(() => {
-      setNowValue(currentTimestamp(optionsRef.current.now));
-    }, Math.min(Math.max(nextExpiry - nowValue, 0) + 1, 2_147_483_647));
-    return () => globalThis.clearTimeout(timer);
-  }, [nowValue, proposals]);
-
-  const isExpired = useCallback((proposal: ConversationApprovalProposalRecord): boolean => {
-    const expires = Date.parse(proposal.expires_at);
-    return Number.isFinite(expires) && expires <= nowValue;
-  }, [nowValue]);
+  // Historical expired records remain terminal; pending reviews have no timer.
+  const isExpired = useCallback((proposal: ConversationApprovalProposalRecord): boolean =>
+    proposal.status === "expired", []);
 
   const stateFor = useCallback((proposal: ConversationApprovalProposalRecord) =>
     statesRef.current[proposalKey(proposal)] ?? IDLE_STATE, []);
@@ -734,7 +711,7 @@ export interface ApprovalReviewItemProps
 function defaultReviewedArguments(proposal: ConversationApprovalProposalRecord): ReactNode {
   const reviewed = proposal.reviewed_arguments;
   return reviewed.type === "redacted_json"
-    ? <StructuredDetails aria-label={`Reviewed arguments for ${proposal.tool_name}`} value={reviewed.value}/>
+    ? <StructuredDetailsDisclosure aria-label={`Reviewed arguments for ${proposal.tool_name}`} value={reviewed.value}/>
     : <p>
       <span>Opaque argument reference: </span>
       <code>{reviewed.argument_ref}</code>
@@ -756,7 +733,6 @@ export const ApprovalReviewItem = forwardRef<HTMLLIElement, ApprovalReviewItemPr
         <dt>Proposal</dt><dd>{proposal.proposal_id}</dd>
         {proposal.group_id === null ? null : <><dt>Group</dt><dd>{proposal.group_id}</dd></>}
         <dt>Version</dt><dd>{proposal.proposal_version}</dd>
-        <dt>Expires</dt><dd>{proposal.expires_at}</dd>
         <dt>Created</dt><dd>{proposal.created_at}</dd>
         <dt>Updated</dt><dd>{proposal.updated_at}</dd>
         <dt>Created by</dt><dd>{proposal.created_attribution.actor.type}</dd>
