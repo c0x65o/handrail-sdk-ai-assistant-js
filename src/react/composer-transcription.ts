@@ -13,7 +13,7 @@ export interface ComposerTranscriptionOptions {
   readonly onBusyChange?: (busy: boolean) => void;
 }
 
-/** Shared recording, latest-draft insertion, submission blocking and cleanup. */
+/** Shared recording, latest-draft insertion, finish-and-send and cleanup. */
 export function useComposerTranscription(options: ComposerTranscriptionOptions & {
   readonly conversationId: string;
   readonly composer: ConversationComposerResult;
@@ -22,6 +22,7 @@ export function useComposerTranscription(options: ComposerTranscriptionOptions &
   const latest = useRef(options.composer);
   latest.current = options.composer;
   const release = useRef<(() => void) | null>(null);
+  const completion = useRef<((success: boolean) => void) | null>(null);
   const [attempt, setAttempt] = useState(0);
   const onBusyChange = useRef(options.onBusyChange);
   onBusyChange.current = options.onBusyChange;
@@ -41,28 +42,40 @@ export function useComposerTranscription(options: ComposerTranscriptionOptions &
   const active = controls.busy || controls.status === "recording";
   const blocked = Boolean(options.disabled || options.composer.isSending);
   useEffect(() => {
-    if (!active) { release.current?.(); release.current = null; }
+    if (!active) {
+      release.current?.(); release.current = null;
+      completion.current?.(controls.status === "success"); completion.current = null;
+    }
   }, [active, controls.status, attempt]);
   useEffect(() => {
     options.onBusyChange?.(active);
   }, [active, options.onBusyChange]);
   useEffect(() => () => {
     release.current?.(); release.current = null;
+    completion.current?.(false); completion.current = null;
     onBusyChange.current?.(false);
   }, [options.conversationId]);
   useEffect(() => {
     if (blocked && active) void controls.cancel();
   }, [blocked, active, controls.cancel]);
+  const acquireBlock = () => {
+    const finished = new Promise<boolean>((resolve) => { completion.current = resolve; });
+    release.current = options.composer.acquireSubmissionBlock(async () => {
+      // stop() also joins an explicit Stop already in progress. The completion
+      // promise covers automatic capture limits and transcription retries too.
+      void controls.stop();
+      return finished;
+    });
+    setAttempt((value) => value + 1);
+  };
   const start = async () => {
     if (blocked || release.current || !controls.canStart) return;
-    release.current = options.composer.acquireSubmissionBlock();
-    setAttempt((value) => value + 1);
+    acquireBlock();
     await controls.start();
   };
   const retry = async () => {
     if (blocked || release.current || !controls.canRetry) return;
-    release.current = options.composer.acquireSubmissionBlock();
-    setAttempt((value) => value + 1);
+    acquireBlock();
     await controls.retry();
   };
   return { ...controls, active, canStart: controls.canStart && !blocked,

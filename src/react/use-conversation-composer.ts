@@ -195,8 +195,13 @@ export interface ConversationComposerResult {
   readonly setDraft: (draft: string) => void;
   readonly attachments: readonly ConversationComposerAttachment[];
   readonly errors: readonly ConversationComposerError[];
-  /** Blocks every submit path until the returned idempotent release function is called. */
-  readonly acquireSubmissionBlock: () => () => void;
+  /**
+   * Blocks every submit path until the returned idempotent release function is called.
+   * An optional preparation lets Send finish draft input (such as transcription),
+   * even for an empty draft. It must release its block and return true to proceed.
+   * False or rejection abandons that send; ordinary blocks always prevent preparation.
+   */
+  readonly acquireSubmissionBlock: (prepare?: () => Promise<boolean>) => () => void;
   readonly canSend: boolean;
   readonly isSending: boolean;
   readonly submit: (
@@ -509,11 +514,13 @@ export function useConversationComposer<TRequest = undefined>(
   const [isSending, setIsSending] = useState(false);
   const sendingRef = useRef(false);
   const pendingCancellation = useRef<{ scope: object; requested: boolean } | null>(null);
-  const submissionBlocks = useRef(new Set<symbol>());
+  const submissionBlocks = useRef(new Map<symbol, (() => Promise<boolean>) | undefined>());
   const [submissionBlockCount, setSubmissionBlockCount] = useState(0);
-  const acquireSubmissionBlock = useCallback(() => {
+  const preparingSubmission = useRef<object | null>(null);
+  const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
+  const acquireSubmissionBlock = useCallback((prepare?: () => Promise<boolean>) => {
     const token = Symbol("composer task");
-    submissionBlocks.current.add(token);
+    submissionBlocks.current.set(token, prepare);
     setSubmissionBlockCount(submissionBlocks.current.size);
     return () => {
       if (submissionBlocks.current.delete(token)) {
@@ -590,6 +597,8 @@ export function useConversationComposer<TRequest = undefined>(
     setDraftState("");
     sendingRef.current = false;
     setIsSending(false);
+    preparingSubmission.current = null;
+    setIsPreparingSubmission(false);
     setOperationErrors([]);
     previous.presence?.stopTyping("conversation_switch");
     if (conversationId !== null) presence?.switchConversation(conversationId);
@@ -682,7 +691,9 @@ export function useConversationComposer<TRequest = undefined>(
   );
   const uploadsReady = attachments.every((attachment) => attachment.status === "ready");
   const hasContent = draft.trim().length > 0 || attachments.length > 0;
-  const canSend = submissionBlockCount === 0 && !isSending && activeTurnId === null && hasContent && uploadsReady;
+  const canPrepare = submissionBlockCount > 0 && [...submissionBlocks.current.values()].every((prepare) => prepare !== undefined);
+  const canSend = (submissionBlockCount === 0 || canPrepare) && !isPreparingSubmission && !isSending &&
+    activeTurnId === null && (hasContent || canPrepare) && uploadsReady;
 
   const updateDraft = useCallback((nextDraft: string): void => {
     draftRevision.current += 1;
@@ -901,6 +912,31 @@ export function useConversationComposer<TRequest = undefined>(
     event?: FormEvent<Element>,
   ): Promise<ConversationRuntimeTurnResult | null> => {
     event?.preventDefault();
+    if (preparingSubmission.current !== null || sendingRef.current || store.getSnapshot().active_turn_id !== null) return null;
+    const preparations = [...submissionBlocks.current.values()];
+    if (preparations.some((prepare) => prepare === undefined)) return null;
+    if (preparations.length > 0) {
+      const items = new Map(uploader.getSnapshot().items.map((item) => [item.id, item]));
+      if (ownedRef.current.some((entry) => items.get(entry.id)?.status !== "ready")) return null;
+      const scope = lifecycleRef.current;
+      const pending = {};
+      preparingSubmission.current = pending;
+      setIsPreparingSubmission(true);
+      try {
+        for (const prepare of preparations) {
+          if (!await prepare!() || lifecycleRef.current !== scope) return null;
+        }
+      } catch {
+        // The input control owns its recoverable error and retained draft.
+        return null;
+      } finally {
+        if (preparingSubmission.current === pending) {
+          preparingSubmission.current = null;
+          setIsPreparingSubmission(false);
+        }
+      }
+    }
+    // Preparation may have changed the draft, attachments, or active turn.
     const currentOwned = ownedRef.current;
     const currentItems = new Map(
       uploader.getSnapshot().items.map((item) => [item.id, item]),

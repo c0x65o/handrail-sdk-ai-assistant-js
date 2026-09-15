@@ -1,6 +1,6 @@
 {
   "name": "@handrail/ai-assistant",
-  "version": "0.2.46",
+  "version": "0.2.47",
   "description": "Provider-neutral TypeScript primitives and runtime tooling for building AI applications with Handrail.",
   "license": "UNLICENSED",
   "type": "module",

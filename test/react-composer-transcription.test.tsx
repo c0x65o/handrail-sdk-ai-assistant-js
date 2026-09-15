@@ -1,14 +1,19 @@
 /** @vitest-environment jsdom */
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
 import { BrowserAudioCaptureError, type BrowserAudioCaptureController, type BrowserAudioCaptureListener,
   type BrowserAudioCaptureState } from "../src/browser/audio.js";
 import { useComposerTranscription } from "../src/react/composer-transcription.js";
 import { StandardChatComposer } from "../src/react-styled/composer.js";
 import type { ConversationComposerResult } from "../src/react/use-conversation-composer.js";
 import { TranscriptionOperationError } from "../src/transcription.js";
+import { createAttachmentUploader, createConversationStore, type ConversationId,
+  type ConversationRuntime } from "../src/index.js";
+import { ConversationProvider, useConversationComposer } from "../src/react/index.js";
 
-afterEach(cleanup);
+const disposals: (() => void)[] = [];
+afterEach(() => { cleanup(); disposals.splice(0).forEach((dispose) => dispose()); });
 const format = { media_type: "audio/webm", container: "webm" } as const;
 class Capture implements BrowserAudioCaptureController {
   state: BrowserAudioCaptureState = { status: "idle" };
@@ -36,7 +41,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-it("records once, keeps submission blocked, and inserts into the latest edited draft without sending", async () => {
+it("records once and Stop inserts into the latest edited draft without sending", async () => {
   const capture = new Capture(), input = composer(), pending = deferred<string>();
   const transcribe = vi.fn(() => pending.promise);
   const { result, rerender } = renderHook(({ draft }) => useComposerTranscription({
@@ -55,6 +60,155 @@ it("records once, keeps submission blocked, and inserts into the latest edited d
   expect(input.setDraft).toHaveBeenCalledWith("Edited while transcribing dictated words");
   expect(input.submit).not.toHaveBeenCalled();
   expect(input.release).toHaveBeenCalledOnce();
+});
+
+function interactiveComposer(initialDraft = "") {
+  const capture = new Capture();
+  const pending = deferred<string>();
+  const transcribe = vi.fn<Parameters<typeof useComposerTranscription>[0]["transcribe"]>(() => pending.promise);
+  const store = createConversationStore("thread" as ConversationId);
+  const sendMessage = vi.fn<ConversationRuntime<unknown>["sendMessage"]>().mockResolvedValue({
+    turnId: "turn" as never, status: "completed", requestId: null, traceId: null, outcome: "stop", usageReceipts: [],
+    checkpoint: { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null },
+  });
+  const runtime = { store, getSnapshot: store.getSnapshot, sendMessage } as unknown as ConversationRuntime<unknown>;
+  const uploader = createAttachmentUploader<Blob>({ upload: async () => { throw new Error("Unused"); } });
+  disposals.push(() => uploader.dispose());
+  let input!: ConversationComposerResult;
+  let autoStop!: Parameters<NonNullable<Parameters<typeof useComposerTranscription>[0]["createCaptureController"]>>[0]["onResult"];
+  function Host({ conversationId = "thread", disabled = false }) {
+    input = useConversationComposer({ uploader, initialDraft, conversationId: conversationId as ConversationId });
+    return <StandardChatComposer composer={input} conversationId={conversationId} canStop={disabled}
+      transcription={{ transcribe, createCaptureController: ({ onResult }) => { autoStop = onResult; return capture; } }}/>;
+  }
+  function View({ conversationId = "thread", disabled = false }) {
+    return <StrictMode><ConversationProvider runtime={runtime}><Host conversationId={conversationId} disabled={disabled}/></ConversationProvider></StrictMode>;
+  }
+  const view = render(<View/>);
+  return { capture, pending, transcribe, sendMessage, view, View, input: () => input,
+    autoStop: async () => { autoStop(await capture.stop()); } };
+}
+
+it("returns to the reusable microphone after Stop without a cancel X or success notice", async () => {
+  const { pending, sendMessage } = interactiveComposer("Draft");
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  expect(screen.queryByRole("button", { name: "Cancel voice input" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Stop voice recording" }));
+  await act(async () => { pending.resolve("words"); });
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveProperty("value", "Draft words"));
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(sendMessage).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  expect(screen.getByRole("button", { name: "Stop voice recording" })).toBeTruthy();
+});
+
+it.each(["button", "Enter", "form", "direct"])("finishes recording and sends the latest combined draft once via %s", async (path) => {
+  const { capture, pending, transcribe, sendMessage, view, input } = interactiveComposer();
+  expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  const send = screen.getByRole("button", { name: "Send message" });
+  expect(send).toHaveProperty("disabled", false);
+  act(() => {
+    if (path === "button") { fireEvent.click(send); fireEvent.click(send); }
+    else if (path === "Enter") fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    else if (path === "form") fireEvent.submit(view.container.querySelector("form")!);
+    else void input().submit();
+    void input().submit();
+  });
+  await waitFor(() => expect(transcribe).toHaveBeenCalledOnce());
+  expect(send).toHaveProperty("disabled", true);
+  expect(sendMessage).not.toHaveBeenCalled();
+  expect(capture.stop).toHaveBeenCalledOnce();
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Edited draft" } });
+  await act(async () => { pending.resolve("dictated words"); });
+  await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
+  expect(sendMessage.mock.calls[0]![0].content).toBe("Edited draft dictated words");
+  expect(screen.getByRole("textbox")).toHaveProperty("value", "");
+  expect(screen.getByRole("button", { name: "Start voice input" })).toHaveProperty("disabled", false);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it.each(["Stop", "automatic limit"])("can send while transcription is already pending after %s", async (stop) => {
+  const { capture, pending, transcribe, sendMessage, autoStop } = interactiveComposer("Draft");
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  if (stop === "Stop") fireEvent.click(screen.getByRole("button", { name: "Stop voice recording" }));
+  else await act(autoStop);
+  await waitFor(() => expect(transcribe).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await act(async () => { pending.resolve("words"); });
+  await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
+  expect(capture.stop).toHaveBeenCalledOnce();
+  expect(transcribe).toHaveBeenCalledOnce();
+});
+
+it("keeps the draft on transcription failure and does not auto-send a later retry", async () => {
+  const { transcribe, sendMessage } = interactiveComposer("Draft");
+  transcribe.mockRejectedValueOnce(new TranscriptionOperationError("service_unavailable"));
+  transcribe.mockResolvedValueOnce("retried words");
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Retry transcription" })).toBeTruthy());
+  expect(sendMessage).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox")).toHaveProperty("value", "Draft");
+  fireEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveProperty("value", "Draft retried words"));
+  expect(sendMessage).not.toHaveBeenCalled();
+  expect(transcribe.mock.calls[0]![0].idempotencyKey).toBe(transcribe.mock.calls[1]![0].idempotencyKey);
+});
+
+it.each(["switch", "unmount", "response"])("abandons a pending transcribe-and-send on %s", async (action) => {
+  const { pending, transcribe, sendMessage, view, View } = interactiveComposer("Draft");
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(transcribe).toHaveBeenCalledOnce());
+  if (action === "switch") view.rerender(<View conversationId="other"/>);
+  else if (action === "unmount") view.unmount();
+  else view.rerender(<View disabled/>);
+  await act(async () => { pending.resolve("late words"); });
+  expect(sendMessage).not.toHaveBeenCalled();
+  if (action !== "unmount") expect(screen.getByRole("textbox")).toHaveProperty("value", action === "switch" ? "" : "Draft");
+});
+
+it("respects other submission blocks before capture finishes and after the transcript arrives", async () => {
+  const { capture, pending, transcribe, sendMessage, input } = interactiveComposer("Draft");
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  let release!: () => void;
+  act(() => { release = input().acquireSubmissionBlock(); });
+  expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
+  await act(async () => { expect(await input().submit()).toBeNull(); });
+  expect(capture.stop).not.toHaveBeenCalled();
+  act(release);
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(transcribe).toHaveBeenCalledOnce());
+  act(() => { release = input().acquireSubmissionBlock(); });
+  await act(async () => { pending.resolve("words"); });
+  expect(sendMessage).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox")).toHaveProperty("value", "Draft words");
+  act(release);
+  expect(sendMessage).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
+});
+
+it("does not send an empty message when no speech is returned", async () => {
+  const { pending, sendMessage } = interactiveComposer();
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await act(async () => { pending.resolve(" "); });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start voice input" })).toHaveProperty("disabled", false));
+  expect(sendMessage).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
+});
+
+it("keeps the combined transcript when sending fails", async () => {
+  const { pending, sendMessage } = interactiveComposer("Draft");
+  sendMessage.mockRejectedValueOnce(new Error("Offline"));
+  fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await act(async () => { pending.resolve("words"); });
+  await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
+  expect(screen.getByRole("textbox")).toHaveProperty("value", "Draft words");
+  expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", false);
 });
 
 it.each(["switch", "unmount", "cancel"])("aborts transcription and ignores a late result after %s", async (action) => {
