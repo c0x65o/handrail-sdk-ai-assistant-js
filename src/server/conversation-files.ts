@@ -45,6 +45,9 @@ export interface ConversationFileStorageOptions {
    * uploads created with this policy are eligible; old rows are never adopted. */
   readonly maintenanceScopeId?: string;
   readonly now?: () => number;
+  /** New uploads bound to an already authorized conversation. This makes draft
+   * deletion atomic with that conversation without changing legacy upload keys. */
+  readonly boundConversationId?: string;
   /** Freeze these when adapting existing storage. Changing identities needs an explicit migration. */
   readonly identity?: {
     readonly uploadScopeId?: string;
@@ -64,6 +67,9 @@ const unavailable = () => new AttachmentStagingError("unavailable");
  */
 export function createConversationFileStorage(options: ConversationFileStorageOptions) {
   const { persistence, tenantId, principalId, limits } = options;
+  if (options.boundConversationId !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/u.test(options.boundConversationId)) {
+    throw new TypeError("Invalid bound conversation identity.");
+  }
   for (const limit of [limits.maximumFiles, limits.maximumBytesPerFile, limits.maximumTotalBytes]) {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new TypeError("Conversation file limits must be positive safe integers.");
   }
@@ -77,7 +83,8 @@ export function createConversationFileStorage(options: ConversationFileStorageOp
   if (typeof maintenanceScopeId !== "string" || !maintenanceScopeId || maintenanceScopeId.length > 256) throw new TypeError("Invalid file maintenance scope.");
   class ManagedStagingMetadata extends PostgresAttachmentStagingMetadataStore {
     override create(record: StagedAttachmentRecord) {
-      const managed = { ...record, retention: { version: 1, scopeId: maintenanceScopeId } };
+      const managed = { ...record, retention: { version: 1, scopeId: maintenanceScopeId },
+        ...(options.boundConversationId ? { draftConversationId: options.boundConversationId } : {}) };
       return super.create(managed);
     }
   }
@@ -89,6 +96,10 @@ export function createConversationFileStorage(options: ConversationFileStorageOp
     ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
   });
   const staging = stagingFor(persistence);
+  const authorize = async (conversationId: string) => {
+    if (options.boundConversationId !== undefined && options.boundConversationId !== conversationId) throw new AttachmentStagingError("forbidden");
+    await options.authorizeConversation(conversationId);
+  };
   const validFileMetadata = (fileName: unknown, mediaType: unknown, byteSize: unknown) =>
     typeof fileName === "string" && fileName.length > 0 && fileName.length <= 180 &&
     typeof mediaType === "string" && limits.acceptedMediaTypes.includes(mediaType) &&
@@ -118,6 +129,10 @@ export function createConversationFileStorage(options: ConversationFileStorageOp
     if (!data || data.byteLength !== file.byteSize || digest(data) !== file.sha256) throw unavailable();
     return data;
   };
+  const reference = (file: RetainedConversationFile): AttachmentReference => ({
+    attachment_id: file.attachmentId, content_ref: file.contentRef,
+    media_type: file.mediaType as AttachmentReference["media_type"], byte_size: file.byteSize, filename: file.fileName,
+  });
   const retain = (conversationId: string, attachmentId: string, contentRef: string, input: ConversationFileInput, staged: StagedAttachmentRecord) => {
     const file = validate(input);
     const scopeId = savedScope(conversationId);
@@ -155,13 +170,36 @@ export function createConversationFileStorage(options: ConversationFileStorageOp
     });
   };
   return Object.freeze({
+    /** Protected draft/saved read for high-level intake and preview. A saved file
+     * wins over staging; this never extends expiry or adopts another namespace. */
+    async read(conversationId: string, attachmentId: string): Promise<{
+      reference: AttachmentReference; file: ConversationFileInput; retained: boolean;
+    }> {
+      await authorize(conversationId);
+      const retained = await saved(conversationId, attachmentId);
+      let result;
+      if (retained) {
+        result = { reference: reference(retained), file: { fileName: retained.fileName,
+          mediaType: retained.mediaType, data: await bytes(retained) }, retained: true };
+      } else {
+        const staged = await staging.download({ ownerScopeId: uploadScope, conversationId: uploadScope, attachmentId });
+        result = { reference: { attachment_id: staged.record.attachmentId, content_ref: staged.record.contentRef,
+          media_type: staged.record.mediaType as AttachmentReference["media_type"], byte_size: staged.record.byteSize,
+          filename: staged.record.filename ?? "attachment" }, file: { fileName: staged.record.filename ?? "attachment",
+          mediaType: staged.record.mediaType, data: staged.bytes }, retained: false };
+      }
+      await authorize(conversationId);
+      return result;
+    },
     async stage(input: ConversationFileInput & { readonly idempotencyKey: string }): Promise<AttachmentReference> {
       if (!/^[A-Za-z0-9._:-]{1,128}$/u.test(input.idempotencyKey)) throw invalid();
       const file = validate(input), idempotencyKey = input.idempotencyKey;
       const fingerprint = digest(JSON.stringify([file.fileName, file.mediaType, file.data.byteLength, digest(file.data)]));
+      if (options.boundConversationId) await authorize(options.boundConversationId);
       // Blob allocation and metadata claim share one transaction: a failed or
       // lost stage cannot leave an undiscoverable new binary orphan.
       return persistence.client.transaction(async client => {
+        if (options.boundConversationId) await assertPostgresConversationWritable(client, tenantId, options.boundConversationId);
         await lockPostgresConversation(client, tenantId, uploadScope);
         await assertPostgresAttachmentUploadNotExpired(client, tenantId, uploadScope, uploadScope, idempotencyKey, fingerprint);
         return stagingFor(new PostgresAiPersistence(client)).stage({
@@ -170,7 +208,7 @@ export function createConversationFileStorage(options: ConversationFileStorageOp
       });
     },
     async materialize(conversationId: string, references: readonly AttachmentReference[]): Promise<readonly ConversationFileInput[]> {
-      await options.authorizeConversation(conversationId);
+      await authorize(conversationId);
       if (references.length > limits.maximumFiles) throw invalid();
       const parsed = references.map(reference => {
         if (!/^att_[A-Za-z0-9][A-Za-z0-9._-]{0,251}$/u.test(reference.attachment_id) ||
@@ -195,15 +233,15 @@ export function createConversationFileStorage(options: ConversationFileStorageOp
           file.byteSize !== reference.byte_size || file.fileName !== reference.filename) throw invalid();
         result.push({ fileName: file.fileName, mediaType: file.mediaType, data: await bytes(file) });
       }
-      await options.authorizeConversation(conversationId);
+      await authorize(conversationId);
       return result;
     },
     async download(conversationId: string, attachmentId: string): Promise<ConversationFileInput> {
-      await options.authorizeConversation(conversationId);
+      await authorize(conversationId);
       const file = await saved(conversationId, attachmentId);
       if (!file) throw new AttachmentStagingError("not_found");
       const data = await bytes(file);
-      await options.authorizeConversation(conversationId);
+      await authorize(conversationId);
       return { fileName: file.fileName, mediaType: file.mediaType, data };
     },
   });

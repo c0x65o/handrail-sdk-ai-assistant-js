@@ -22,6 +22,14 @@ export interface ConversationSyncTemporarilyUnavailable {
   readonly retryAfterMilliseconds?: number;
 }
 
+/** The mutation was not admitted and cannot succeed unchanged. Keep the draft
+ * for user correction, but do not reconnect or automatically retry this batch. */
+export interface ConversationSyncMutationRejected {
+  readonly status: "rejected";
+  readonly code: "invalid_mutation" | "attachment_expired" | "attachment_unavailable" | "attachment_changed" | "attachment_invalid";
+  readonly message: string;
+}
+
 /**
  * The requested revision can no longer be resumed incrementally.
  *
@@ -35,6 +43,7 @@ export interface ConversationSyncSnapshotRequired {
 
 export type ConversationSyncOperationFailure =
   | ConversationSyncUnauthorized
+  | ConversationSyncMutationRejected
   | ConversationSyncTemporarilyUnavailable;
 
 export interface PullSnapshotInput {

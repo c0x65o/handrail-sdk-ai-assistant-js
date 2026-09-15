@@ -21,7 +21,7 @@ import { ToolRegistry, type ToolRegistration } from "./registry.js";
 import type { ToolDiscoveryQuery } from "./registry.js";
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 import type { ConversationActivityProgress } from "../conversation/activity.js";
-import { runToolWithRecovery, ToolFailureError, ToolRecoveryError, type ToolRecoveryPolicy } from "./recovery.js";
+import { runToolWithRecovery, ToolFailureError, ToolRecoveryError, normalizeToolFailure, type ToolRecoveryPolicy } from "./recovery.js";
 
 export interface ApplicationToolCall {
   readonly tool_call_id: string;
@@ -840,7 +840,12 @@ export class BoundedToolExecutor<
         signal: controller.signal, toolCallId, executionKey,
       })), controller.signal);
       if (decision?.outcome === "allow" && !controller.signal.aborted) return undefined;
-    } catch {
+    } catch (error) {
+      if (error instanceof ToolFailureError && !controller.signal.aborted) {
+        const failure = normalizeToolFailure(error.failure);
+        return result(toolCallId, name, [{ type: "text", text: failure.message },
+          { type: "json", value: { type: "handrail.tool_failure.v1", category: failure.category, code: failure.code } }], true);
+      }
       // Fail closed without exposing resolver errors or protected receipt contents.
     } finally {
       clearTimeout(timeout);
@@ -1126,6 +1131,11 @@ export class BoundedToolExecutor<
               { type: "text", text: error.failure.message },
               { type: "json", value: { ...error.summary } },
             ], true);
+          } else if (error instanceof ToolFailureError) {
+            failureReason = "tool_execution_failed";
+            const failure = normalizeToolFailure(error.failure);
+            executionResult = result(toolCallId, name, [{ type: "text", text: failure.message },
+              { type: "json", value: { type: "handrail.tool_failure.v1", category: failure.category, code: failure.code } }], true);
           } else if (error instanceof InvalidOutput) {
             failureReason = "invalid_tool_output";
             executionResult = errorResult(

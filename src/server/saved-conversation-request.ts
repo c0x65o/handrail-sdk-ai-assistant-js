@@ -2,20 +2,95 @@ import { assertConversationAttachmentMatches, conversationAttachmentKind } from 
 import { awaitWithSignal } from "../await-signal.js";
 import type { ConversationAttachmentReference } from "../conversation/events.js";
 import type { ConversationMessageRecord } from "../conversation/state.js";
+import type { ConversationEventStore } from "../conversation/event-store.js";
+import { replayConversation } from "../conversation/replay.js";
 import { AI_RUNTIME_PROTOCOL_LIMITS, parseChatRequest, type AttachmentReference, type ChatRequest } from "../protocol.js";
 
 export class SavedConversationPreparationError extends Error {
-  constructor(readonly code: "saved_input_unavailable" | "attachment_limit" | "attachment_changed") {
+  constructor(readonly code: "saved_input_unavailable" | "attachment_limit" | "attachment_changed" | "attachment_unsupported") {
     super(code === "saved_input_unavailable" ? "The saved user input is unavailable."
       : code === "attachment_limit" ? "The selected files exceed this request's attachment limits."
-        : "A resolved file does not match its saved reference.");
+        : code === "attachment_unsupported" ? "The selected file is not supported by this provider."
+          : "A resolved file does not match its saved reference.");
   }
+}
+
+/** Storage adapters may report a genuinely missing/expired saved file with this
+ * error. Never use it for permission denial, corrupt metadata or service outages. */
+export class SavedConversationFileUnavailableError extends Error {
+  readonly code = "attachment_unavailable";
+  constructor(readonly reason: "expired" | "not_found") {
+    super(reason === "expired" ? "The selected file's upload expired. Upload the file again."
+      : "The selected file is no longer available. Upload the file again.");
+  }
+}
+
+export interface SavedConversationTurnInput {
+  readonly request: ChatRequest;
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly mutationId: string;
+  readonly signal: AbortSignal;
+}
+
+export interface SavedConversationPreparerOptions extends Omit<SavedConversationRequestOptions,
+  "request" | "messages" | "inputMessageIds" | "turnId" | "signal" | "resolveAttachment"> {
+  readonly eventStore: ConversationEventStore;
+  /** Must consult current identity and conversation permissions on every call.
+   * Called before replay, before each file read, and after asynchronous reads. */
+  readonly authorize: (input: SavedConversationTurnInput) => void | Promise<void>;
+  readonly resolveAttachment: (input: SavedConversationTurnInput & {
+    readonly attachment: Readonly<ConversationAttachmentReference>; readonly messageId: string;
+  }) => Promise<AttachmentReference>;
+}
+
+/** Drop-in preparation for server provider loops. Admission and message IDs come
+ * from canonical saved events, never the browser's reconstructed chat request.
+ * Hosts supply authorization/storage, while the SDK owns replay and revalidation.
+ * The caller still owns durable execution/cancellation after preparation returns. */
+export function createSavedConversationRequestPreparer(options: SavedConversationPreparerOptions) {
+  const { eventStore, authorize, resolveAttachment, ...limits } = options;
+  return async (input: SavedConversationTurnInput) => {
+    const { signal } = input;
+    const authorizeNow = () => awaitWithSignal(signal, () => authorize(input));
+    const load = async () => {
+      const replay = await replayConversation({ conversationId: input.conversationId as never,
+        eventStore, checkpointPolicy: false });
+      try {
+        const state = replay.state;
+        const turn = state.turns.find(candidate => candidate.turn_id === input.turnId);
+        if (state.replay_error !== null || state.active_turn_id !== input.turnId || !turn ||
+          !turn.remote_may_still_be_running || turn.cancellation_status !== null ||
+          !["queued", "running"].includes(turn.status)) {
+          throw new SavedConversationPreparationError("saved_input_unavailable");
+        }
+        return { messages: state.messages, inputMessageIds: turn.input_message_ids };
+      } finally { replay.store.destroy(); }
+    };
+    await authorizeNow();
+    const before = await awaitWithSignal(signal, load);
+    const fingerprint = JSON.stringify(before);
+    const prepared = await prepareSavedConversationRequest({ ...limits, ...input, ...before,
+      resolveAttachment: async (attachment, messageId) => {
+        await authorizeNow();
+        return resolveAttachment({ ...input, attachment, messageId });
+      } });
+    // History or permissions can change while bytes/storage metadata are loading.
+    // Ignore unrelated activity revisions but refuse any changed message input.
+    await authorizeNow();
+    const after = await awaitWithSignal(signal, load);
+    if (JSON.stringify(after) !== fingerprint) throw new SavedConversationPreparationError("saved_input_unavailable");
+    signal.throwIfAborted();
+    return prepared;
+  };
 }
 
 export interface SavedConversationFile {
   readonly messageId: string;
   readonly attachment: Readonly<ConversationAttachmentReference>;
   readonly included: boolean;
+  /** Set only after an authorized storage read establishes its absence/expiry. */
+  readonly unavailableReason?: "expired" | "not_found";
 }
 
 export interface SavedConversationRequestOptions {
@@ -38,6 +113,8 @@ export interface SavedConversationRequestOptions {
   readonly maximumImages?: number;
   readonly maximumDocuments?: number;
   readonly maximumDocumentsPerMessage?: number;
+  readonly supportedDocumentMediaTypes?: readonly string[];
+  readonly maximumDocumentBytes?: number;
 }
 
 /** Common provider input construction from saved messages. Bounds historical
@@ -61,6 +138,7 @@ export async function prepareSavedConversationRequest(options: SavedConversation
   const perMessageDocuments = bounded(options.maximumDocumentsPerMessage,
     AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerMessage, AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerMessage);
   const messageLimit = bounded(options.maximumHistoricalMessages, 20);
+  const documentByteLimit = bounded(options.maximumDocumentBytes, Number.MAX_SAFE_INTEGER);
   const textLimit = bounded(options.maximumHistoricalTextCharacters, 24_000);
   const inputs = new Set(options.inputMessageIds);
   if (inputs.size === 0 || inputs.size !== options.inputMessageIds.length) throw new SavedConversationPreparationError("saved_input_unavailable");
@@ -75,7 +153,8 @@ export async function prepareSavedConversationRequest(options: SavedConversation
   const history = snapshot.slice(0, lastInput + 1).filter(message =>
     (message.role === "user" || message.role === "assistant") &&
     (inputs.has(message.message_id) || message.turn_id !== options.turnId));
-  const files = history.filter(message => message.role === "user").flatMap(message => message.attachments.map(attachment => ({
+  const files: { messageId: string; attachment: Readonly<ConversationAttachmentReference>; included: boolean;
+    unavailableReason?: "expired" | "not_found" }[] = history.filter(message => message.role === "user").flatMap(message => message.attachments.map(attachment => ({
     messageId: String(message.message_id), attachment, included: false,
   })));
   const explicit = options.historicalAttachmentIds === undefined ? null : new Set(options.historicalAttachmentIds);
@@ -87,6 +166,11 @@ export async function prepareSavedConversationRequest(options: SavedConversation
   const select = (file: typeof files[number], required: boolean) => {
     const kind = conversationAttachmentKind(file.attachment);
     if (selectedIds.has(file.attachment.attachment_id)) return;
+    if (kind === "document" && (file.attachment.size_bytes! > documentByteLimit ||
+      options.supportedDocumentMediaTypes && !options.supportedDocumentMediaTypes.includes(file.attachment.media_type))) {
+      if (required) throw new SavedConversationPreparationError("attachment_unsupported");
+      return;
+    }
     const counts = messageCounts.get(file.messageId) ?? { image: 0, document: 0 };
     const totalLimit = kind === "image" ? imageLimit : documentLimit;
     const perMessage = kind === "image" ? AI_RUNTIME_PROTOCOL_LIMITS.imageAttachmentsPerMessage : perMessageDocuments;
@@ -118,8 +202,21 @@ export async function prepareSavedConversationRequest(options: SavedConversation
     signal.throwIfAborted();
     const content = [...(texts.get(message.message_id) ?? [])] as ChatRequest["messages"][number]["content"];
     for (const file of files.filter(file => file.messageId === message.message_id && file.included)) {
-      const resolved = await awaitWithSignal(signal, () =>
-        options.resolveAttachment(Object.freeze({ ...file.attachment }), file.messageId, signal));
+      let resolved: AttachmentReference;
+      try {
+        resolved = await awaitWithSignal(signal, () =>
+          options.resolveAttachment(Object.freeze({ ...file.attachment }), file.messageId, signal));
+      } catch (error) {
+        signal.throwIfAborted();
+        if (!(error instanceof SavedConversationFileUnavailableError) || inputs.has(file.messageId) ||
+          explicit?.has(file.attachment.attachment_id)) throw error;
+        file.included = false;
+        file.unavailableReason = error.reason;
+        content.push({ type: "text", text: "A file previously attached to this message is no longer available" +
+          (error.reason === "expired" ? " because its upload expired." : ".") +
+          " Its contents were not included. Ask the user to upload it again if needed." });
+        continue;
+      }
       signal.throwIfAborted();
       let canonical;
       try { canonical = assertConversationAttachmentMatches(file.attachment, resolved); }

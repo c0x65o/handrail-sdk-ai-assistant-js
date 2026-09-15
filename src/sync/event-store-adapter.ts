@@ -21,6 +21,7 @@ import {
 import { replayConversation } from "../conversation/replay.js";
 import type { ConversationState } from "../conversation/state.js";
 import { jsonValuesEqual } from "../json-equality.js";
+import { ConversationSyncMutationRejectedError } from "./rejection.js";
 import type {
   AppendMutationsInput,
   AppendMutationsResult,
@@ -347,6 +348,7 @@ export function createEventStoreConversationSyncAdapter<TAuthorizationContext>(
         }
       });
     } catch (error) {
+      if (error instanceof ConversationSyncMutationRejectedError) return error.toResult();
       return error instanceof TypeError ? denied() : unavailable();
     }
   };

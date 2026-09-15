@@ -1975,7 +1975,8 @@ export interface PostgresAssistantPersistence {
 
 const DEFAULT_ASSISTANT_ATTACHMENT_LIMITS: AttachmentStagingLimits = Object.freeze({
   maximumBytes: 20 * 1024 * 1024,
-  acceptedMediaTypes: Object.freeze(["image/*", "application/pdf", "text/plain"]),
+  acceptedMediaTypes: Object.freeze(["image/*", "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"]),
   ttlMilliseconds: 60 * 60 * 1_000,
   cleanupBatchSize: 100,
 });

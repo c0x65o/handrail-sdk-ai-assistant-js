@@ -71,13 +71,14 @@ const UNKNOWN: ToolFailure = { category: "bug", code: "unclassified_tool_failure
 const TIMEOUT: ToolFailure = { category: "transient", code: "tool_timeout", message: "The tool did not respond before its deadline." };
 const CANCELLED: ToolFailure = { category: "cancelled", code: "tool_cancelled", message: "The operation was cancelled." };
 
-function checkedFailure(value: ToolFailure | undefined): ToolFailure {
+export function normalizeToolFailure(value: ToolFailure | undefined): ToolFailure {
   if (!value || !CATEGORIES.has(value.category) || !/^[a-zA-Z0-9_.:-]{1,100}$/.test(value.code)
     || typeof value.message !== "string" || value.message.length < 1 || value.message.length > 1_000
     || /\bbearer\s|\bsk-[a-z0-9_-]{8,}|-----BEGIN .*PRIVATE KEY/i.test(value.message)) return UNKNOWN;
   return Object.freeze({ category: value.category, code: value.code, message: value.message,
     ...(Number.isFinite(value.retryAfterMs) && value.retryAfterMs! >= 0 ? { retryAfterMs: value.retryAfterMs } : {}) });
 }
+const checkedFailure = normalizeToolFailure;
 
 function integer(value: number, name: string, minimum: number, maximum: number): number {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new TypeError(`Invalid ${name}`);

@@ -1,10 +1,10 @@
 import { AttachmentStagingError } from "../attachments/staging.js";
+import { AI_RUNTIME_DOCUMENT_MIME_TYPES, AI_RUNTIME_IMAGE_MIME_TYPES, AI_RUNTIME_DOCUMENT_EXTENSIONS } from "../protocol.js";
+import { DOCX_MEDIA_TYPE, hasDocxSignature } from "./docx-content.js";
 
 /** Signature checks for common assistant inputs; provider/domain parsing remains separate. */
 export const STANDARD_ATTACHMENT_MEDIA_TYPES = [
-  "image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel",
-  "text/csv", "text/tab-separated-values",
+  ...AI_RUNTIME_IMAGE_MIME_TYPES, ...AI_RUNTIME_DOCUMENT_MIME_TYPES,
 ] as const;
 export type StandardAttachmentMediaType = typeof STANDARD_ATTACHMENT_MEDIA_TYPES[number];
 export type AttachmentContentFailure = "file_count" | "total_size" | "file_size" | "unsupported_type" | "type_mismatch";
@@ -63,6 +63,7 @@ function intendedAttachmentMediaType(
   }
   if (!["", "application/octet-stream", "text/plain"].includes(declaredMediaType)) return null;
   const lowerName = fileName.toLowerCase();
+  if (lowerName.endsWith(".docx")) return DOCX_MEDIA_TYPE;
   if (lowerName.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   if (lowerName.endsWith(".xls")) return "application/vnd.ms-excel";
   if (lowerName.endsWith(".csv")) return "text/csv";
@@ -80,6 +81,7 @@ function mediaTypeFromSignature(
   if (header.startsWith("GIF87a") || header.startsWith("GIF89a")) return "image/gif";
   if (header.startsWith("RIFF") && header.slice(8, 12) === "WEBP") return "image/webp";
   if (data.subarray(0, 5).toString("ascii") === "%PDF-") return "application/pdf";
+  if (intendedMediaType === DOCX_MEDIA_TYPE && hasDocxSignature(data)) return DOCX_MEDIA_TYPE;
   if (
     intendedMediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" &&
     data.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) &&
@@ -109,11 +111,7 @@ function safeAttachmentFileName(value: string, mediaType: StandardAttachmentMedi
     "image/jpeg": ".jpg",
     "image/webp": ".webp",
     "image/gif": ".gif",
-    "application/pdf": ".pdf",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-    "application/vnd.ms-excel": ".xls",
-    "text/csv": ".csv",
-    "text/tab-separated-values": ".tsv",
+    ...AI_RUNTIME_DOCUMENT_EXTENSIONS,
   }[mediaType];
   const leaf = value.split(/[/\\]/).at(-1) ?? "";
   const cleaned = [...leaf.normalize("NFKC")]
@@ -122,7 +120,6 @@ function safeAttachmentFileName(value: string, mediaType: StandardAttachmentMedi
     .trim()
     .slice(0, 170);
   if (!cleaned) return `attachment${extension}`;
-  const withoutKnownExtension = cleaned.replace(/\.(?:png|jpe?g|webp|gif|pdf|xlsx?|csv|tsv)$/i, "");
+  const withoutKnownExtension = cleaned.replace(/\.(?:png|jpe?g|webp|gif|pdf|docx?|xlsx?|csv|tsv)$/i, "");
   return `${withoutKnownExtension || "attachment"}${extension}`.slice(0, 180);
 }
-

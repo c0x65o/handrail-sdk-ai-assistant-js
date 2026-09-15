@@ -9,6 +9,7 @@ import { createApplicationTurnTransport } from "../transports/application-turn.j
 import type { ConversationTransport, DurableTurnExecutionIdentity, TurnObservationResult } from "../transports/types.js";
 import type { NormalizedUsageReceipt } from "../usage.js";
 import { projectProviderUsageToReceipt } from "../usage.js";
+import { SavedConversationPreparationError, SavedConversationFileUnavailableError } from "./saved-conversation-request.js";
 
 export interface ProviderToolLoopExecutionResult {
   readonly status: "completed";
@@ -127,6 +128,11 @@ export function createProviderToolLoopTransport(
             if (turn.signal.aborted) return { status: "cancelled", checkpoint };
             if (budget.signal.aborted) return { status: "failed", checkpoint, error: { code: "timeout",
               message: "Conversation preparation exceeded its time limit. Try again.", retryable: true } };
+            if (cause instanceof SavedConversationPreparationError || cause instanceof SavedConversationFileUnavailableError) {
+              return { status: "failed", checkpoint, error: {
+                code: cause instanceof SavedConversationFileUnavailableError ? "not_found" : "invalid_request",
+                message: cause.message, retryable: false } };
+            }
             const status = cause && typeof cause === "object" && "status" in cause ? Number(cause.status) : 0;
             const code = status === 401 ? "unauthenticated" : status === 403 ? "forbidden" : status === 404 ? "not_found" : "unavailable";
             return { status: "failed", checkpoint, error: { code,

@@ -6,6 +6,7 @@ import { recordPostgresAttachmentUploadExpiry } from "./attachment-expiry-receip
 interface ManagedStaging extends StagedAttachmentRecord {
   readonly retention: { readonly version: 1; readonly scopeId: string };
   readonly retainedConversationId?: string;
+  readonly draftConversationId?: string;
 }
 interface Candidate extends Record<string, unknown> {
   tenant_id: string; scope_id: string; record_id: string; version: string; payload: ManagedStaging;
@@ -29,6 +30,8 @@ function valid(row: Candidate, scope: string, before: string): boolean {
     /^[1-9][0-9]*$/u.test(row.version) && Number.isSafeInteger(Number(row.version)) && !!value && typeof value === "object" &&
     value.retention?.version === 1 && value.retention.scopeId === scope &&
     value.ownerScopeId === row.scope_id && value.conversationId === row.scope_id &&
+    (value.draftConversationId === undefined || identity(value.draftConversationId) &&
+      (value.retainedConversationId === undefined || value.retainedConversationId === value.draftConversationId)) &&
     value.contentRef === row.record_id && /^ref_[A-Za-z0-9._-]+$/u.test(value.contentRef) &&
     value.blobKey === `attachments/${value.contentRef}` && identity(value.attachmentId) &&
     identity(value.idempotencyKey) && identity(value.mediaType) && Number.isSafeInteger(value.byteSize) && value.byteSize > 0 &&
@@ -64,8 +67,9 @@ async function cleanupBatch(options: PostgresConversationFileStagingCleanupOptio
     if (!valid(candidate, options.maintenanceScopeId, before)) { counts.blocked++; continue; }
     const outcome = await options.persistence.client.transaction(async client => {
       const value = candidate.payload;
-      // Stage admission and expiry share the upload identity lock. Retained
-      // materialization/deletion take the real conversation before its blobs.
+      // Bound drafts match admission/deletion's order: real conversation first.
+      // Existing unbound adapters retain their original upload identity lock.
+      if (value.draftConversationId) await lockPostgresConversation(client, candidate.tenant_id, value.draftConversationId);
       await lockPostgresConversation(client, candidate.tenant_id, value.conversationId);
       if (value.retainedConversationId) await lockPostgresConversation(client, candidate.tenant_id, value.retainedConversationId);
       await lockPostgresAttachmentBlob(client, candidate.tenant_id, value.blobKey);

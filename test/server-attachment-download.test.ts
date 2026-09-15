@@ -1,5 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { postgresFromClient, type PostgresSqlClient } from "../src/postgres/index.js";
 import { createHandrailAssistant, openaiResponses, type HandrailAssistantAuthorizationContext } from "../src/server/assistant.js";
@@ -18,13 +19,63 @@ const persistence = postgresFromClient({ query: adapt(database).query,
 beforeAll(async () => { await persistence.persistence.migrate(); });
 afterAll(async () => { await database.close(); });
 
-it("provides shared PDF defaults with an opt-out and preserves explicit provider format settings", () => {
+it("provides shared PDF/DOCX defaults with an opt-out and preserves explicit provider format settings", () => {
   const options = { model: "fixture", request: async function* () { yield { type: "response.completed" }; } };
   expect(openaiResponses(options).metadata.capabilities.document_input).toMatchObject({ supported: true,
-    capability: { supported_mime_types: ["application/pdf"], max_document_count: 2, max_document_bytes: 20 * 1024 * 1024 } });
+    capability: { supported_mime_types: ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+      max_document_count: 2, max_document_bytes: 20 * 1024 * 1024 } });
   expect(openaiResponses({ ...options, document_input: false }).metadata.capabilities.document_input).toEqual({ supported: false });
   const custom = { supported_mime_types: ["text/csv"] as const, max_document_count: 2, max_document_bytes: 1_000, requires_host_resolution: true };
   expect(openaiResponses({ ...options, document_input: custom }).metadata.capabilities.document_input).toEqual({ supported: true, capability: custom });
+});
+
+it("uploads and reads original DOCX bytes through the default authenticated assistant, including retry and restart", async () => {
+  const defaults = postgresFromClient({ query: adapt(database).query,
+    transaction: operation => database.transaction(tx => operation(adapt(tx as unknown as Pick<PGlite, "query">))) });
+  const context = { tenantId: "docx-tenant", scopeId: "alice", principalId: "alice", attribution: {
+    organization: { id: "org", source: "server_derived", trust: "authoritative" },
+    project: { id: "project", source: "server_derived", trust: "authoritative" },
+    service_environment: { id: "env", source: "server_derived", trust: "authoritative" },
+    known_user: { id: "alice", source: "server_derived", trust: "authoritative" },
+    session: { id: null, source: "server_derived", trust: "authoritative" },
+    automation: { id: null, source: "server_derived", trust: "authoritative" },
+  } } as const satisfies HandrailAssistantAuthorizationContext;
+  const bundle = defaults.forScope<HandrailAssistantAuthorizationContext>(context, { createConversationId: () => randomUUID() as never });
+  const created = await bundle.catalog.create({ authorizationContext: context, idempotencyKey: "docx-conversation" as never });
+  const conversationId = created.descriptor.conversationId;
+  const bytes = readFileSync(new URL("./fixtures/documents/invoice.docx", import.meta.url));
+  const mediaType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const make = () => createHandrailAssistant({ id: "docx", persistence: defaults, attachmentCleanup: false,
+    authorize: request => {
+      if (!request.headers.has("x-user")) throw new Error("unauthenticated");
+      return { ...context, scopeId: request.headers.get("x-user")!, principalId: request.headers.get("x-user")! };
+    }, provider: openaiResponses({ model: "test", request: async function* () {} }) });
+  const assistant = await make();
+  const upload = async (source: Uint8Array, key: string) => {
+    const form = new FormData();
+    form.set("conversationId", conversationId); form.set("idempotencyKey", key);
+    form.set("file", new Blob([new Uint8Array(source)], { type: mediaType }), "invoice.docx");
+    return assistant.handle(new Request("https://app.test/ai/attachments", { method: "POST", headers: { "x-user": "alice" }, body: form }));
+  };
+  try {
+    const caps = await (await assistant.handle(new Request("https://app.test/ai/capabilities", { headers: { "x-user": "alice" } }))).json();
+    expect(caps.value.attachments.acceptedMediaTypes).toContain(mediaType);
+    const first = await upload(bytes, "docx-upload");
+    expect(first.status).toBe(200);
+    const stored = await first.json();
+    expect(stored.value).toMatchObject({ media_type: mediaType, byte_size: bytes.length, filename: "invoice.docx" });
+    expect(await (await upload(bytes, "docx-upload")).json()).toEqual(stored);
+    expect((await upload(new Uint8Array([1, 2, 3]), "invalid-docx")).status).toBe(400);
+    const reopened = await make();
+    try {
+      const url = `https://app.test/ai/attachments/content?conversationId=${conversationId}&attachmentId=${stored.value.attachment_id}`;
+      const response = await reopened.handle(new Request(url, { headers: { "x-user": "alice" } }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe(mediaType);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+      expect((await reopened.handle(new Request(url, { headers: { "x-user": "bob" } }))).status).toBe(404);
+    } finally { reopened.stopBackgroundWorkers(); }
+  } finally { assistant.stopBackgroundWorkers(); }
 });
 
 it("authorizes saved reads by account, tenant and conversation, independently of uploads, without extending retention", async () => {

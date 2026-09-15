@@ -4,6 +4,10 @@ export { createTrackedOpenAIResponsesRequest, type TrackedOpenAIResponsesRequest
 export { retainProviderInvocation, type ProviderInvocationOperationStore } from "./provider-invocations.js";
 export { createConversationFileStorage, type ConversationFileStorageOptions, type ConversationFileInput,
   type RetainedConversationFile } from "./conversation-files.js";
+export { createSavedFileHandles, type SavedFileHandles, type SavedFileHandlesOptions,
+  type SavedFileHandleEntry, type SavedFileLocation } from "./saved-file-handles.js";
+export { createSavedFileTools, openedSavedFileSelection, SAVED_FILE_LIST_TOOL, SAVED_FILE_OPEN_TOOL,
+  type SavedFileToolOptions, type OpenedSavedFile } from "./saved-file-tools.js";
 import { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
 import { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
 export { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
@@ -12,6 +16,10 @@ export { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { createToolActivityObserver, type HandrailAssistantToolObserver } from "./tool-observer.js";
 import { createHash } from "node:crypto";
 import { AttachmentStagingError } from "../attachments/staging.js";
+import { createAttachmentContentValidator, STANDARD_ATTACHMENT_MEDIA_TYPES } from "./attachment-content.js";
+import { createAssistantConversationFiles, assistantConversationFileMaintenanceScope, type AssistantConversationFiles } from "./assistant-conversation-files.js";
+import { startPostgresConversationFileStagingCleanupWorker } from "../postgres/conversation-file-staging.js";
+export { createAssistantConversationFiles, type AssistantConversationFiles, type AssistantConversationFilesOptions } from "./assistant-conversation-files.js";
 import { composerApprovalModeFromRequest } from "../composer-approval.js";
 import { createAssistantTranscription, type AssistantTranscriptionProvider } from "./transcription.js";
 import { DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY } from "../transcription-http.js";
@@ -60,7 +68,8 @@ export { waitForApplicationApproval, ApplicationApprovalWaitExpiredError,
   type ApplicationApprovalWaitOptions, type ApplicationApprovalObservation } from "./application-approval-wait.js";
 export type { ApplicationToolAdmission } from "../tools/executor.js";
 export type { HandrailAssistantToolObserver } from "./tool-observer.js";
-export { openaiResponses, createOpenAIResponsesRequest, DEFAULT_ASSISTANT_DOCUMENT_INPUT, type HandrailOpenAIResponsesOptions } from "./openai-responses.js";
+export { openaiResponses, createOpenAIResponsesRequest, DEFAULT_ASSISTANT_DOCUMENT_INPUT,
+  type HandrailOpenAIResponsesOptions, type HandrailSavedConversationOptions } from "./openai-responses.js";
 export { createProviderToolLoopTransport, type ProviderToolLoopTransportOptions } from "./provider-tool-loop.js";
 export type { AssistantAutomaticTitleOptions, AssistantTitleProviderRequest, AssistantExternalTitleUserTexts } from "./conversation-titles.js";
 
@@ -72,15 +81,27 @@ export interface HandrailAssistantAuthorizationContext extends ApplicationGatewa
   readonly attribution: AuthoritativeAttribution;
 }
 
+export interface HandrailAssistantProviderScope<TContext extends HandrailAssistantAuthorizationContext> {
+  readonly context: TContext;
+  readonly persistence: PostgresAssistantPersistenceBundle<TContext>;
+  readonly conversationFiles?: AssistantConversationFiles;
+  /** Uses the configured catalog, including a host's existing catalog adapter. */
+  readonly authorizeConversation?: (conversationId: string) => Promise<void>;
+}
+export interface HandrailAssistantToolSupport<TContext extends HandrailAssistantAuthorizationContext> {
+  readonly plugins: readonly ToolPlugin<ApplicationToolExecutor<TContext>, TContext, TContext, TContext>[];
+  readonly admission?: ApplicationToolAdmission<TContext>;
+}
+
 export interface HandrailAssistantProvider<TContext extends HandrailAssistantAuthorizationContext> {
   readonly metadata: ProviderAdapterMetadata;
   readonly transcription?: AssistantTranscriptionProvider<TContext>;
   /** Text-only generation hook. The SDK owns completion triggers, persistence, and usage attribution. */
   generateTitle?(input: AssistantTitleProviderRequest<TContext>): Promise<string>;
+  /** SDK provider tools share the assistant's normal durable execution boundary. */
+  createToolSupport?(input: HandrailAssistantProviderScope<TContext>): HandrailAssistantToolSupport<TContext> | Promise<HandrailAssistantToolSupport<TContext>>;
   /** SDK-owned provider packages return this transport with their bounded tool loop already installed. */
-  createTransport(input: {
-    readonly context: TContext;
-    readonly persistence: PostgresAssistantPersistenceBundle<TContext>;
+  createTransport(input: HandrailAssistantProviderScope<TContext> & {
     readonly instructions: readonly string[];
     readonly toolActivity: HandrailAssistantToolObserver;
     readonly tools: AssistantToolRuntime;
@@ -126,6 +147,10 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   readonly createConversationId?: () => string;
   /** Disable SDK byte intake while a migrating host retains its authorized upload route. Defaults to true. */
   readonly attachmentUpload?: boolean;
+  /** Explicit policy for new SDK uploads. Conversation retention atomically
+   * retains files with admitted user messages. Temporary preserves legacy TTL.
+   * Existing storage is never adopted or rewritten when this option changes. */
+  readonly attachmentRetention?: "conversation" | "temporary";
   /** Idle expiry for new SDK-managed uploads. Defaults to one bounded service
    * worker; false is for hosts that schedule the SDK cleanup explicitly. */
   readonly attachmentCleanup?: false | { readonly intervalMs?: number; readonly batchSize?: number };
@@ -260,6 +285,12 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const catalogFor = (context: TContext) => options.conversationCatalogFor?.({
     context, persistence: bundleFor(context),
   }) ?? bundleFor(context).catalog;
+  const filesFor = (context: TContext) => options.attachmentRetention === "conversation"
+    ? createAssistantConversationFiles({ persistence: bundleFor(context).persistence,
+      tenantId: context.tenantId, scopeId: context.scopeId, principalId: context.principalId, assistantId,
+      limits: options.persistence.attachmentLimits, authorizeConversation: async conversationId => {
+        await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
+      } }) : undefined;
   const titles = createAssistantConversationTitles({ assistantId, catalogFor, bundleFor, provider: options.provider,
     ...(options.externalTitleUserTextsFor === undefined ? {} : { externalUserTextsFor: options.externalTitleUserTextsFor }),
     ...(options.automaticTitles === undefined ? {} : { automatic: options.automaticTitles }),
@@ -267,15 +298,35 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const approvalStoreFor = (context: TContext) => options.approvalStoreFor?.({
     context, persistence: bundleFor(context),
   }) ?? bundleFor(context).approvals;
+  const providerScopeFor = (context: TContext): HandrailAssistantProviderScope<TContext> => {
+    const bundle = bundleFor(context), conversationFiles = filesFor(context);
+    return { context, persistence: conversationFiles ? { ...bundle, events: conversationFiles.events } : bundle,
+      ...(conversationFiles ? { conversationFiles } : {}), authorizeConversation: async conversationId => {
+        await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
+      } };
+  };
+  const toolSupports = new Map<string, Promise<HandrailAssistantToolSupport<TContext>>>();
+  const toolSupportFor = (context: TContext) => {
+    const key = executionKeyFor(context);
+    let support = toolSupports.get(key);
+    if (!support) {
+      support = Promise.resolve(options.provider.createToolSupport?.(providerScopeFor(context)) ?? { plugins: [] });
+      toolSupports.set(key, support);
+    }
+    return support;
+  };
   const applicationFor = (context: TContext) => {
     const key = executionKeyFor(context);
     let application = applications.get(key);
     if (!application) {
       const bundle = bundleFor(context);
-      application = createAiApplication({
-        plugins: options.tools ?? [], installContext: context,
+      application = toolSupportFor(context).then(support => createAiApplication({
+        plugins: [...(options.tools ?? []), ...support.plugins], installContext: context,
         policy: options.toolPolicy ?? (() => ({ outcome: "allow" })),
-        ...(options.toolAdmission === undefined ? {} : { toolAdmission: options.toolAdmission }),
+        ...(options.toolAdmission === undefined && support.admission === undefined ? {} : { toolAdmission: async input => {
+          if (options.toolAdmission && (await options.toolAdmission(input)).outcome !== "allow") return { outcome: "deny" as const };
+          return support.admission ? support.admission(input) : { outcome: "allow" as const };
+        } }),
         approvalPolicy: options.approvalPolicy ?? (async ({ location, signal }) => {
           // Read the admitted request, including during recovery. A later UI
           // preference cannot alter an already running turn. This is only the
@@ -300,7 +351,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           },
         }),
         ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
-      });
+      }));
       applications.set(key, application);
     }
     return application;
@@ -442,7 +493,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           }
         };
         return options.provider.createTransport({
-          context, persistence: bundle, limits, instructions,
+          ...providerScopeFor(context), limits, instructions,
           toolActivity: createToolActivityObserver({ events: bundle.events, report: reportActivity }),
           tools: createAssistantToolRuntime({ context, application, events: bundle.events,
             proposalStore: approvalStoreFor(context), reportActivity,
@@ -655,7 +706,10 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     try { await ownsConversation(context, conversationId); }
     catch { return new Response(null, { status: 404, headers }); }
     try {
-      const { record, bytes } = await bundleFor(context).attachments.download({ ownerScopeId: context.scopeId, conversationId, attachmentId });
+      const files = filesFor(context);
+      const download = files ? await files.download(conversationId, attachmentId) : undefined;
+      const { record, bytes } = download ? { record: { filename: download.file.fileName, mediaType: download.file.mediaType }, bytes: download.file.data }
+        : await bundleFor(context).attachments.download({ ownerScopeId: context.scopeId, conversationId, attachmentId });
       const filename = (record.filename ?? "attachment").replace(/[^A-Za-z0-9._ -]/gu, "_").slice(0, 180) || "attachment";
       return new Response(new Uint8Array(bytes), { headers: { ...headers, "content-type": record.mediaType,
         "content-length": String(bytes.byteLength), "content-disposition": `attachment; filename="${filename}"` } });
@@ -674,24 +728,47 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         return new Response(null, { status: 400 });
       }
       await ownsConversation(context, conversationId);
+      if (file.size < 1 || file.size > options.persistence.attachmentLimits.maximumBytes) throw new AttachmentStagingError("invalid_input");
       const bytes = new Uint8Array(await file.arrayBuffer());
+      let mediaType = file.type;
+      let filename = typeof (file as File).name === "string" ? (file as File).name : "attachment";
+      // Preserve explicitly allowed legacy text storage. Protocol file formats
+      // use the same signature/size/filename validation as host storage adapters.
+      if (mediaType !== "text/plain" || /\.(?:docx|xlsx?|csv|tsv)$/iu.test(filename)) {
+        const limits = options.persistence.attachmentLimits;
+        const acceptedMediaTypes = STANDARD_ATTACHMENT_MEDIA_TYPES.filter(type => limits.acceptedMediaTypes.some(
+          accepted => accepted === type || accepted.endsWith("/*") && type.startsWith(accepted.slice(0, -1))));
+        if (acceptedMediaTypes.length === 0) throw new AttachmentStagingError("invalid_input");
+        const validated = createAttachmentContentValidator({ maximumFiles: 1, maximumBytesPerFile: limits.maximumBytes,
+          maximumTotalBytes: limits.maximumBytes, acceptedMediaTypes })([{ fileName: filename, declaredMediaType: mediaType, data: bytes }])[0]!;
+        mediaType = validated.mediaType;
+        filename = validated.fileName;
+      }
       const fingerprint = createHash("sha256").update(bytes).digest("hex");
-      const reference = await bundleFor(context).attachments.stage({ ownerScopeId: context.scopeId, conversationId,
-        idempotencyKey, fingerprint, mediaType: file.type,
-        ...(typeof (file as File).name === "string" ? { filename: (file as File).name } : {}), bytes });
+      const files = filesFor(context);
+      const reference = files ? await files.stage(conversationId, { idempotencyKey, fileName: filename, mediaType, data: bytes })
+        : await bundleFor(context).attachments.stage({ ownerScopeId: context.scopeId, conversationId,
+          idempotencyKey, fingerprint, mediaType, filename, bytes });
       return new Response(JSON.stringify({ ok: true, value: reference }), {
         headers: { "content-type": "application/json; charset=utf-8" },
       });
-    } catch {
-      return new Response(JSON.stringify({ ok: false, error: { code: "forbidden", message: "Attachment upload denied." } }),
-        { status: 403, headers: { "content-type": "application/json; charset=utf-8" } });
+    } catch (error) {
+      const code = error instanceof AttachmentStagingError ? error.code
+        : error instanceof ConversationCatalogError ? "forbidden" : "unavailable";
+      const status = { invalid_input: 400, forbidden: 403, not_found: 404, expired: 410, conflict: 409, unavailable: 503 }[code];
+      const message = { invalid_input: "The attachment is invalid or its file type is not supported.",
+        forbidden: "Attachment upload denied.", not_found: "The attachment was not found.",
+        expired: "The attachment upload expired. Select the file again.",
+        conflict: "This upload does not match its saved file.", unavailable: "Attachment storage is unavailable. Try again." }[code];
+      return new Response(JSON.stringify({ ok: false, error: { code, message, retryable: code === "unavailable" } }),
+        { status, headers: { "content-type": "application/json; charset=utf-8" } });
     }
   };
   const synchronization = createConversationSynchronizationHttpHandler<TContext>({
     adapterFor: (context) => createDurableApplicationConversationSync({
       authorizationContext: context,
       principalId: context.principalId,
-      eventStore: bundleFor(context).events,
+      eventStore: filesFor(context)?.events ?? bundleFor(context).events,
       turnStore: bundleFor(context).durableTurns as never,
       authorizeConversation: async (conversationId) => {
         await ownsConversation(context, conversationId);
@@ -743,7 +820,10 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             ? { ...(transcriptionProvider.capability ?? DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY), url: "transcriptions" } : false,
           attachments: options.attachmentUpload === false ? false : {
             maximumFiles: 16, maximumBytesPerFile: options.persistence.attachmentLimits.maximumBytes,
-            acceptedMediaTypes: options.persistence.attachmentLimits.acceptedMediaTypes, uploadUrl: "attachments" },
+            acceptedMediaTypes: options.attachmentRetention === "conversation" ? STANDARD_ATTACHMENT_MEDIA_TYPES.filter(type =>
+              options.persistence.attachmentLimits.acceptedMediaTypes.some(accepted => accepted === type ||
+                accepted.endsWith("/*") && type.startsWith(accepted.slice(0, -1)))) : options.persistence.attachmentLimits.acceptedMediaTypes,
+            uploadUrl: "attachments" },
           documentInput: options.provider.metadata.capabilities.document_input.supported
           ? options.provider.metadata.capabilities.document_input.capability : false,
           assistant: { id: assistantId, version: HANDRAIL_ASSISTANT_VERSION,
@@ -783,13 +863,20 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   });
   await usageDelivery.ready;
   let attachmentCleanup: ReturnType<NonNullable<PostgresAssistantPersistence["startAttachmentCleanupWorker"]>> | undefined;
+  let retainedDraftCleanup: ReturnType<typeof startPostgresConversationFileStagingCleanupWorker> | undefined;
   try {
     if (options.attachmentCleanup !== false) attachmentCleanup = options.persistence.startAttachmentCleanupWorker?.({
       ...options.attachmentCleanup,
       ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
     });
-  } catch (error) { usageDelivery.stop(); throw error; }
-  const stopBackgroundWorkers = async () => { usageDelivery.stop(); await attachmentCleanup?.stop(); };
+    if (options.attachmentCleanup !== false && options.attachmentRetention === "conversation") {
+      retainedDraftCleanup = startPostgresConversationFileStagingCleanupWorker({ persistence: options.persistence.persistence,
+        maintenanceScopeId: assistantConversationFileMaintenanceScope(assistantId), ...options.attachmentCleanup,
+        onResult: () => {}, onError: () => emitAiDiagnostic(options.diagnostics, { domain: "attachment", operation: "retained_draft_cleanup",
+          phase: "failed", code: "unavailable", retryable: true }) });
+    }
+  } catch (error) { usageDelivery.stop(); await attachmentCleanup?.stop(); throw error; }
+  const stopBackgroundWorkers = async () => { usageDelivery.stop(); await attachmentCleanup?.stop(); await retainedDraftCleanup?.stop(); };
   return Object.freeze({
     version: HANDRAIL_ASSISTANT_VERSION,
     id: assistantId,
@@ -808,5 +895,6 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     stopUsageWorker: stopBackgroundWorkers,
   });
 }
-export { prepareSavedConversationRequest, SavedConversationPreparationError,
-  type SavedConversationRequestOptions, type SavedConversationFile } from "./saved-conversation-request.js";
+export { prepareSavedConversationRequest, createSavedConversationRequestPreparer, SavedConversationPreparationError, SavedConversationFileUnavailableError,
+  type SavedConversationRequestOptions, type SavedConversationFile,
+  type SavedConversationPreparerOptions, type SavedConversationTurnInput } from "./saved-conversation-request.js";

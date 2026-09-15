@@ -1,10 +1,16 @@
 import { expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import documentFixtures from './fixtures/documents/manifest.json' with { type: 'json' };
 import { AI_RUNTIME_PROTOCOL_VERSION, type AttachmentReference, type AuthoritativeAttribution, type ChatRequest } from '../src/protocol.js';
 import type { PostgresAssistantPersistenceBundle } from '../src/postgres/index.js';
 import { InMemoryOpenAIResponsesContinuationStore } from '../src/providers/openai-responses.js';
 import { openaiResponses, type HandrailOpenAIResponsesOptions } from '../src/server/openai-responses.js';
 import type { HandrailAssistantAuthorizationContext, HandrailAssistantProvider } from '../src/server/assistant.js';
 import type { AssistantToolRuntime } from '../src/server/assistant-tool-runtime.js';
+import { InMemoryConversationEventStore, parseConversationEvent } from '../src/index.js';
+import { AttachmentStagingError } from '../src/attachments/staging.js';
+import { SavedConversationPreparationError, SavedConversationFileUnavailableError } from '../src/server/saved-conversation-request.js';
 
 const attribution: AuthoritativeAttribution = {
   organization: { id: 'org', source: 'server_derived', trust: 'authoritative' },
@@ -19,7 +25,8 @@ const bytes = Uint8Array.from([1, 2, 3, 4]);
 const request: ChatRequest = { protocol_version: AI_RUNTIME_PROTOCOL_VERSION, messages: [{ role: 'user', content: [{ type: 'text', text: 'Client text' }] }],
   tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, continuation_of: null, correlation_hints: {} };
 async function setup(options: Partial<HandrailOpenAIResponsesOptions> = {}, mediaType = 'application/pdf', maxElapsedMs = 10_000,
-  withApprovalContext?: AssistantToolRuntime['withApprovalContext']) {
+  withApprovalContext?: AssistantToolRuntime['withApprovalContext'],
+  savedPersistence: Record<string, unknown> = {}) {
   const providerRequest = vi.fn<NonNullable<HandrailOpenAIResponsesOptions['request']>>(async function* () {
     yield { type: 'response.output_text.delta', delta: 'Read authorized content.' };
     yield { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Read authorized content.' }] }],
@@ -40,7 +47,7 @@ async function setup(options: Partial<HandrailOpenAIResponsesOptions> = {}, medi
     },
   });
   const persistence = { continuation, usageAdmissions: null, usageReceiptSink: null,
-    attachments: { resolve } } as unknown as PostgresAssistantPersistenceBundle<HandrailAssistantAuthorizationContext>;
+    attachments: { resolve }, ...savedPersistence } as unknown as PostgresAssistantPersistenceBundle<HandrailAssistantAuthorizationContext>;
   const input = { context, persistence, instructions: [], tools: { definitions: [], execute: vi.fn(), awaitApproval: vi.fn(),
     ...(withApprovalContext ? { withApprovalContext } : {}) },
     limits: { maxIterations: 4, maxTotalToolCalls: 4, maxElapsedMs, parallelism: 1 },
@@ -175,4 +182,124 @@ it('enforces document count across saved history before provider dispatch', asyn
   const value = withAttachment('application/pdf', 'document');
   expect(await h.run({ ...value, messages: [...value.messages, ...value.messages, ...value.messages] })).toMatchObject({ status: 'failed' });
   expect(h.providerRequest).not.toHaveBeenCalled();
+});
+
+async function savedHistory(mediaType: 'image/png' | 'application/pdf', count: number) {
+  const events = new InMemoryConversationEventStore();
+  let revision = 0;
+  const append = async (payload: Record<string, unknown>) => {
+    const event = parseConversationEvent({ version: 1, conversation_id: 'conversation-1', event_id: `saved-${revision + 1}`,
+      revision: revision + 1, occurred_at: '2026-09-15T12:00:00Z', actor: { type: 'user' }, source: { type: 'runtime' }, payload });
+    await events.append({ conversationId: 'conversation-1' as never, expectedRevision: (revision || null) as never, events: [event] });
+    revision++;
+  };
+  for (let index = 0; index < count; index++) {
+    await append({ type: 'message.created', message_id: `old-${index}`, role: 'user', content: [{ type: 'text', text: 'Old file' }] });
+    await append({ type: 'message.attachment_referenced', message_id: `old-${index}`, attachment: {
+      attachment_id: `att_${index}`, media_type: mediaType, size_bytes: 4,
+      ...(mediaType === 'application/pdf' ? { kind: 'document' } : {}),
+    } });
+  }
+  await append({ type: 'message.created', message_id: 'current', role: 'user', content: [{ type: 'text', text: 'Compare those files' }] });
+  await append({ type: 'turn.started', turn_id: 'turn-1', input_message_ids: ['current'] });
+  const get = vi.fn(async () => ({}));
+  const download = vi.fn(async ({ attachmentId }: { attachmentId: string }) => ({
+    record: { attachmentId, contentRef: `ref_${attachmentId}`, mediaType, byteSize: 4 }, bytes,
+  }));
+  const resolve = vi.fn(async () => ({ record: { mediaType }, bytes }));
+  return { events, catalog: { get }, attachments: { download, resolve } };
+}
+
+it.each([{ media: 'image/png', count: 9, included: 8, type: 'input_image' },
+  { media: 'application/pdf', count: 5, included: 2, type: 'input_file' }] as const)(
+  'uses SDK canonical history to bound $count saved $media files at provider input', async ({ media, count, included, type }) => {
+    const persistence = await savedHistory(media, count);
+    const h = await setup({ savedConversation: true }, media, 10_000, undefined, persistence);
+    expect(await h.run()).toMatchObject({ status: 'completed' });
+    const body = h.providerRequest.mock.calls[0]![0];
+    expect(JSON.stringify(body)).not.toContain('Client text');
+    const parts = body.input.flatMap(item => 'content' in item && Array.isArray(item.content) ? item.content : []);
+    expect(parts.filter(part => part !== null && typeof part === 'object' && !Array.isArray(part) && part.type === type)).toHaveLength(included);
+    expect(JSON.stringify(body)).toContain('Compare those files');
+    expect(persistence.attachments.download).toHaveBeenCalledTimes(included);
+    expect(persistence.catalog.get).toHaveBeenCalledTimes(included * 3 + 2);
+  });
+
+it('stops provider dispatch when fresh SDK history authorization fails after file reads', async () => {
+  const persistence = await savedHistory('image/png', 1);
+  persistence.catalog.get.mockResolvedValueOnce({}).mockResolvedValueOnce({})
+    .mockRejectedValue(Object.assign(new Error('private ownership detail'), { status: 403 }));
+  const h = await setup({ savedConversation: true }, 'image/png', 10_000, undefined, persistence);
+  expect(await h.run()).toMatchObject({ status: 'failed', error: { code: 'forbidden' } });
+  expect(h.providerRequest).not.toHaveBeenCalled();
+});
+
+it('rejects competing host and SDK history builders', () => {
+  expect(() => openaiResponses({ model: 'test-model', savedConversation: true,
+    prepareRequest: ({ request: value }) => value, request: async function* () {} })).toThrow('not both');
+});
+
+it.each(['expired', 'not_found'] as const)('continues text follow-ups with an accurate omission notice for a %s prior SDK upload', async code => {
+  const persistence = await savedHistory('image/png', 1);
+  persistence.attachments.download.mockRejectedValue(new AttachmentStagingError(code));
+  const h = await setup({ savedConversation: true }, 'image/png', 10_000, undefined, persistence);
+  expect(await h.run()).toMatchObject({ status: 'completed' });
+  expect(JSON.stringify(h.providerRequest.mock.calls[0]![0])).toContain('Its contents were not included');
+  expect(persistence.attachments.resolve).not.toHaveBeenCalled();
+});
+
+it.each([new SavedConversationPreparationError('attachment_limit'), new SavedConversationPreparationError('attachment_changed'),
+  new SavedConversationPreparationError('attachment_unsupported'), new SavedConversationFileUnavailableError('expired')])(
+  'reports the safe shared preparation failure $code without starting provider work', async error => {
+    const h = await setup({ prepareRequest: () => { throw error; } });
+    expect(await h.run()).toMatchObject({ status: 'failed', error: {
+      code: error instanceof SavedConversationFileUnavailableError ? 'not_found' : 'invalid_request', message: error.message, retryable: false } });
+    expect(h.providerRequest).not.toHaveBeenCalled();
+  });
+
+it.each(['forbidden', 'unavailable', 'invalid_input'] as const)('does not skip an optional prior file on SDK storage failure %s', async code => {
+  const persistence = await savedHistory('image/png', 1);
+  persistence.attachments.download.mockRejectedValue(new AttachmentStagingError(code));
+  const h = await setup({ savedConversation: true }, 'image/png', 10_000, undefined, persistence);
+  expect(await h.run()).toMatchObject({ status: 'failed' });
+  expect(h.providerRequest).not.toHaveBeenCalled();
+});
+
+it('rechecks current ownership after provider byte resolution, before dispatch', async () => {
+  const persistence = await savedHistory('image/png', 1);
+  persistence.attachments.resolve.mockImplementation(async () => {
+    persistence.catalog.get.mockRejectedValue(Object.assign(new Error('revoked during read'), { status: 403 }));
+    return { record: { mediaType: 'image/png' }, bytes };
+  });
+  const h = await setup({ savedConversation: true }, 'image/png', 10_000, undefined, persistence);
+  expect(await h.run()).toMatchObject({ status: 'failed' });
+  expect(h.providerRequest).not.toHaveBeenCalled();
+});
+
+it.each(documentFixtures)('prepares Flutter-verified $filename saved references and original bytes for provider input', async fixture => {
+  const events = new InMemoryConversationEventStore();
+  const bytes = readFileSync(new URL(`./fixtures/documents/${fixture.filename}`, import.meta.url));
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(fixture.sha256);
+  await events.append({ conversationId: 'conversation-1' as never, expectedRevision: null,
+    events: [
+      { type: 'message.created', message_id: 'flutter-upload', role: 'user', content: [{ type: 'text', text: 'Read uploaded file' }] },
+      { type: 'message.attachment_referenced', message_id: 'flutter-upload', attachment: fixture.saved },
+      { type: 'message.created', message_id: 'followup', role: 'user', content: [{ type: 'text', text: 'What was the total?' }] },
+      { type: 'turn.started', turn_id: 'turn-1', input_message_ids: ['followup'] },
+    ].map((payload, index) => parseConversationEvent({ version: 1, conversation_id: 'conversation-1', revision: index + 1,
+      event_id: `flutter-${index}`, occurred_at: '2026-09-15T12:00:00Z', actor: { type: 'user' }, source: { type: 'runtime' }, payload })) });
+  const persistence = { events, catalog: { get: vi.fn(async () => ({})) }, attachments: {
+    download: async () => ({ bytes, record: { attachmentId: fixture.uploaded.attachment_id, contentRef: fixture.uploaded.content_ref,
+      mediaType: fixture.uploaded.media_type, byteSize: bytes.length, filename: fixture.filename } }),
+    resolve: async () => ({ bytes, record: { mediaType: fixture.uploaded.media_type } }),
+  } };
+  const h = await setup({ savedConversation: true, document_input: { supported_mime_types: ['application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'], max_document_count: 2,
+    max_document_bytes: 20 * 1024 * 1024, requires_host_resolution: true } }, fixture.uploaded.media_type,
+  10_000, undefined, persistence);
+  expect(await h.run()).toMatchObject({ status: 'completed' });
+  const body = JSON.stringify(h.providerRequest.mock.calls[0]![0]);
+  expect(body).toContain(`data:${fixture.uploaded.media_type};base64,${bytes.toString('base64')}`);
+  expect(body).toContain('What was the total?');
+  expect(body).not.toContain('Client text');
 });

@@ -270,6 +270,7 @@ describe("chat request protocol", () => {
     expect(AI_RUNTIME_IMAGE_MIME_TYPES.every((type) => !type.includes("*"))).toBe(true);
     expect(AI_RUNTIME_DOCUMENT_MIME_TYPES).toEqual([
       "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.ms-excel",
       "text/csv",

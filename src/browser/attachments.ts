@@ -4,6 +4,7 @@ import type {
 } from "../attachments/types.js";
 import {
   AI_RUNTIME_DOCUMENT_MIME_TYPES,
+  AI_RUNTIME_DOCUMENT_EXTENSIONS,
   AI_RUNTIME_IMAGE_MIME_TYPES,
   AI_RUNTIME_PROTOCOL_LIMITS,
   type DocumentMimeType,
@@ -661,14 +662,7 @@ function safePdfFilename(
 }
 
 function documentExtension(mediaType: DocumentMimeType): string {
-  const extensions: Record<DocumentMimeType, string> = {
-    "application/pdf": ".pdf",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-    "application/vnd.ms-excel": ".xls",
-    "text/csv": ".csv",
-    "text/tab-separated-values": ".tsv",
-  };
-  return extensions[mediaType] ?? ".bin";
+  return AI_RUNTIME_DOCUMENT_EXTENSIONS[mediaType] ?? ".bin";
 }
 
 function pdfRejection(

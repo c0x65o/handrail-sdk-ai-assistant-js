@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryConversationEventStore,
+  ConversationSyncMutationRejectedError,
   createEventStoreConversationSyncAdapter,
   parseConversationEvent,
   type ConversationClientMutationId,
@@ -52,6 +53,15 @@ function adapter(store: InMemoryConversationEventStore, userId: string, clientId
 }
 
 describe("event-store conversation synchronization adapter", () => {
+  it("returns a permanent, safe mutation rejection without pretending permission was denied", async () => {
+    const store = new InMemoryConversationEventStore();
+    vi.spyOn(store, "append").mockRejectedValue(new ConversationSyncMutationRejectedError("attachment_expired"));
+    const sync = adapter(store, "user", "browser").sync;
+    const result = await sync.appendMutations({ conversationId, expectedRevision: null, mutations: [proposal("expired", 1)] });
+    expect(result).toEqual({ status: "rejected", code: "attachment_expired",
+      message: "A file upload expired before the message was saved. Select the file again." });
+    expect((await store.read({ conversationId })).entries).toHaveLength(0);
+  });
   it("returns a conflict when history advances during validation, but still denies invalid current batches", async () => {
     const store = new InMemoryConversationEventStore();
     const writer = adapter(store, "user", "writer");

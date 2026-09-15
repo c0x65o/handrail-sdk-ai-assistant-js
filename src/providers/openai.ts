@@ -2,6 +2,7 @@ import {
   AI_RUNTIME_ATTACHMENT_ID_GRAMMAR,
   AI_RUNTIME_CONTENT_REFERENCE_GRAMMAR,
   AI_RUNTIME_DOCUMENT_MIME_TYPES,
+  AI_RUNTIME_DOCUMENT_EXTENSIONS,
   AI_RUNTIME_PROTOCOL_LIMITS,
   AI_RUNTIME_PROTOCOL_VERSION,
   type ApplicationToolResult,
@@ -477,14 +478,7 @@ function documentFilename(
   attachmentId: string,
   mediaType: (typeof AI_RUNTIME_DOCUMENT_MIME_TYPES)[number],
 ): string {
-  const extension: Record<(typeof AI_RUNTIME_DOCUMENT_MIME_TYPES)[number], string> = {
-    "application/pdf": ".pdf",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-    "application/vnd.ms-excel": ".xls",
-    "text/csv": ".csv",
-    "text/tab-separated-values": ".tsv",
-  };
-  const suffix = extension[mediaType]!;
+  const suffix = AI_RUNTIME_DOCUMENT_EXTENSIONS[mediaType];
   return `${attachmentId.slice(0, 251 - suffix.length)}${suffix}`;
 }
 

@@ -68,11 +68,22 @@ export const AI_RUNTIME_IMAGE_MIME_TYPES = [
  */
 export const AI_RUNTIME_DOCUMENT_MIME_TYPES = [
   "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.ms-excel",
   "text/csv",
   "text/tab-separated-values",
 ] as const;
+
+/** Canonical fallback filenames shared by browser intake and provider adapters. */
+export const AI_RUNTIME_DOCUMENT_EXTENSIONS: Readonly<Record<typeof AI_RUNTIME_DOCUMENT_MIME_TYPES[number], string>> = Object.freeze({
+  "application/pdf": ".pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.ms-excel": ".xls",
+  "text/csv": ".csv",
+  "text/tab-separated-values": ".tsv",
+});
 
 export const AI_RUNTIME_ATTACHMENT_ID_GRAMMAR =
   "^att_[A-Za-z0-9][A-Za-z0-9._-]{0,251}$" as const;

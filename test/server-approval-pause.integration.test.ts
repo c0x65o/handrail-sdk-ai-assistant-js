@@ -112,7 +112,7 @@ it.each([['confirmed', 'complete'], ['rejected', 'complete'], ['confirmed', 'run
   });
   const diagnostics = vi.fn();
   const create = () => createHandrailAssistant({ id: 'test', authorize: () => context, persistence, tools: [plugin], diagnostics, automaticTitles: false,
-    provider: openaiResponses({ model: 'fixture', request: providerRequest, supportsToolSearch: false }) });
+    provider: openaiResponses({ model: 'fixture', request: providerRequest, supportsToolSearch: false, savedConversation: true }) });
   let assistant = await create();
   const post = (path: string, value: unknown) => assistant.handle(new Request(`https://app.test/${path}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) }));

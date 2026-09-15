@@ -528,7 +528,7 @@ export function createConversationSyncCoordinator<
     started = false;
     generation += 1;
     closeConnection();
-    if (failure?.status === "unauthorized") {
+    if (failure?.status === "unauthorized" || failure?.status === "rejected") {
       await rejectPending(failure);
       await rebuildView();
     }
@@ -614,7 +614,7 @@ export function createConversationSyncCoordinator<
               if (update.hasMore) {
                 const failure = await catchUp();
                 if (failure !== null) {
-                  if (failure.status === "unauthorized") {
+                  if (failure.status === "unauthorized" || failure.status === "rejected") {
                     await failPermanently(failure, failure);
                   } else scheduleReconnect(failure, failure);
                 }
@@ -627,7 +627,7 @@ export function createConversationSyncCoordinator<
           } else if (update.status === "snapshot_required") {
             const failure = await pullAndInstallSnapshot();
             if (failure !== null) scheduleReconnect(failure, failure);
-          } else if (update.status === "unauthorized") {
+          } else if (update.status === "unauthorized" || update.status === "rejected") {
             await failPermanently(update, update);
           } else {
             scheduleReconnect(update, update);
@@ -650,7 +650,7 @@ export function createConversationSyncCoordinator<
     publishState(reconnecting ? "reconnecting" : "connecting", null);
     const catchUpFailure = await catchUp();
     if (catchUpFailure !== null) {
-      if (catchUpFailure.status === "unauthorized") {
+      if (catchUpFailure.status === "unauthorized" || catchUpFailure.status === "rejected") {
         await failPermanently(catchUpFailure, catchUpFailure);
       } else scheduleReconnect(catchUpFailure, catchUpFailure);
       return;
@@ -668,7 +668,7 @@ export function createConversationSyncCoordinator<
       return connect(activeGeneration, reconnecting);
     }
     if (subscribed.status !== "subscribed") {
-      if (subscribed.status === "unauthorized") {
+      if (subscribed.status === "unauthorized" || subscribed.status === "rejected") {
         await failPermanently(subscribed, subscribed);
       } else scheduleReconnect(subscribed, subscribed);
       return;
@@ -678,7 +678,7 @@ export function createConversationSyncCoordinator<
     void consume(subscribed.subscription, activeGeneration);
     const pushFailure = await flushPendingOrFailProtocol();
     if (pushFailure !== null) {
-      if (pushFailure.status === "unauthorized") {
+      if (pushFailure.status === "unauthorized" || pushFailure.status === "rejected") {
         await failPermanently(pushFailure, pushFailure);
       } else scheduleReconnect(pushFailure, pushFailure);
     }
@@ -752,7 +752,7 @@ export function createConversationSyncCoordinator<
       if (!started || state.status !== "online") return;
       const failure = await flushPendingOrFailProtocol();
       if (failure === null) return;
-      if (failure.status === "unauthorized") {
+      if (failure.status === "unauthorized" || failure.status === "rejected") {
         await failPermanently(failure, failure);
       } else scheduleReconnect(failure, failure);
     });
@@ -762,7 +762,7 @@ export function createConversationSyncCoordinator<
     if (!started || state.status !== "online") return;
     const failure = await flushPendingOrFailProtocol();
     if (failure === null) return;
-    if (failure.status === "unauthorized") {
+    if (failure.status === "unauthorized" || failure.status === "rejected") {
       await failPermanently(failure, failure);
     } else scheduleReconnect(failure, failure);
   });

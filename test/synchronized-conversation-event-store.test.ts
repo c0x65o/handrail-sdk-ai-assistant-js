@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryConversationEventStore,
   createEventStoreConversationSyncAdapter,
@@ -51,6 +51,17 @@ function authoritativeAdapter(store: InMemoryConversationEventStore, allowRuntim
 }
 
 describe("synchronized conversation event store", () => {
+  it("does not retry a rejected expired upload and preserves its correction message", async () => {
+    const adapter = authoritativeAdapter(new InMemoryConversationEventStore());
+    const append = vi.fn(async () => ({ status: "rejected" as const, code: "attachment_expired" as const,
+      message: "A file upload expired before the message was saved. Select the file again." }));
+    const remote = createSynchronizedConversationEventStore({ adapter: { ...adapter, appendMutations: append } });
+    await expect(remote.append({ conversationId, expectedRevision: null,
+      events: [localEvent({ eventId: "expired", revision: 1, source: "runtime", step: 1 })] })).rejects.toMatchObject({
+      retryable: false, message: "A file upload expired before the message was saved. Select the file again.",
+    });
+    expect(append).toHaveBeenCalledOnce();
+  });
   it("returns server-authored envelopes and converges another device on the same log", async () => {
     const authority = new InMemoryConversationEventStore();
     const adapter = authoritativeAdapter(authority);

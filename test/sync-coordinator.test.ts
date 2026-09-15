@@ -1234,9 +1234,10 @@ describe("createConversationSyncCoordinator", () => {
     await sync.destroy();
   });
 
-  it("drops non-retryable rejected mutations and reports the rejection", async () => {
+  it.each(["unauthorized", "rejected"] as const)("drops non-retryable %s mutations and reports the rejection", async status => {
     const adapter = new FakeAuthoritativeAdapter();
-    adapter.rejectAppends = true;
+    vi.spyOn(adapter, "appendMutations").mockResolvedValue(status === "unauthorized" ? { status, message: "denied" }
+      : { status, code: "attachment_expired", message: "Select the file again." });
     const rejected = vi.fn();
     const sync = createConversationSyncCoordinator({
       conversationId,
@@ -1257,7 +1258,7 @@ describe("createConversationSyncCoordinator", () => {
     expect(rejected).toHaveBeenCalledOnce();
     expect(rejected.mock.calls[0]?.[0]).toMatchObject({
       mutation: { mutationId: "rejected" },
-      failure: { status: "unauthorized" },
+      failure: { status },
     });
     await sync.destroy();
   });

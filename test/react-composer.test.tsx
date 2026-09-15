@@ -4,11 +4,17 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as clipboardImages from "../src/browser/clipboard-image.js";
+import { createSavedConversationRequestPreparer } from "../src/server/saved-conversation-request.js";
+import { createAttachmentContentValidator } from "../src/server/attachment-content.js";
+import { createOpenAIResponsesProviderAdapter, type OpenAIResponsesProviderOptions } from "../src/providers/openai-responses.js";
 
 import {
   AttachmentUploadAdapterError,
   createAttachmentUploader,
   createConversationStore,
+  InMemoryConversationEventStore,
+  parseConversationEvent,
+  parseChatRequest,
   type AttachmentReference,
   type AttachmentUploadRequest,
   type ConversationId,
@@ -475,7 +481,7 @@ describe("useConversationComposer", () => {
     }), { wrapper: wrapper(runtime) });
 
     expect(result.current.getFileInputProps().accept).toBe(
-      "image/jpeg,image/png,image/gif,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values",
+      "image/jpeg,image/png,image/gif,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values",
     );
     const pickedPdf = file("picked.pdf", "application/pdf", "pdf");
     const pickedImage = file("picked.png", "image/png", "image");
@@ -973,6 +979,94 @@ it("accepts PDF documents with the default composer intake", async () => {
   await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
   expect(result.current.attachments[0]?.kind).toBe("document");
   expect(result.current.errors).toEqual([]);
+});
+
+it.each([
+  ["invoice.png", "image/png", "input_image"],
+  ["invoice.pdf", "application/pdf", "input_file"],
+  ["invoice-scan.pdf", "application/pdf", "input_file"],
+  ["invoice.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "input_file"],
+] as const)("carries real %s bytes from composer output through saved events to provider input on a follow-up", async (filename, mediaType, inputType) => {
+  const bytes = process.getBuiltinModule("fs").readFileSync(`${process.cwd()}/test/fixtures/documents/${filename}`);
+  const { runtime, sendMessage } = fakeRuntime();
+  let uploaded: AttachmentReference | undefined;
+  const uploader = createAttachmentUploader<Blob>({ async upload(request) {
+    const received = await new Promise<Uint8Array>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(request.source);
+    });
+    expect(Buffer.from(received)).toEqual(bytes);
+    const [validated] = createAttachmentContentValidator()([{ data: received, fileName: filename, declaredMediaType: mediaType }]);
+    expect(validated?.mediaType).toBe(mediaType);
+    uploaded = reference(request);
+    return uploaded;
+  } });
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, attachmentIntake: { previews: false } }), { wrapper: wrapper(runtime) });
+  try {
+    act(() => result.current.getFileInputProps().onChange({ currentTarget: {
+      files: fileList(new File([new Uint8Array(bytes)], filename, { type: mediaType })), value: "",
+    } } as never));
+    await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
+    await act(async () => { await result.current.submit(); });
+    const durable = JSON.parse(JSON.stringify(sendMessage.mock.calls[0]![0].attachments![0]));
+    expect(durable.kind).toBe(mediaType.startsWith("image/") ? "image" : "document");
+    expect(durable).not.toHaveProperty("content_ref");
+    const eventStore = new InMemoryConversationEventStore();
+    const payloads = [
+      { type: "message.created", message_id: "original", role: "user", content: [{ type: "text", text: "Read this file" }] },
+      { type: "message.attachment_referenced", message_id: "original", attachment: durable },
+      { type: "message.created", message_id: "follow-up", role: "user", content: [{ type: "text", text: "What was the total?" }] },
+      { type: "turn.started", turn_id: "follow-up-turn", input_message_ids: ["follow-up"] },
+    ];
+    await eventStore.append({ conversationId: "conversation_composer" as never, expectedRevision: null,
+      events: payloads.map((payload, index) => parseConversationEvent({ version: 1,
+        conversation_id: "conversation_composer", event_id: `saved-${index}`, revision: index + 1,
+        occurred_at: "2026-09-15T12:00:00Z", actor: { type: "user" }, source: { type: "runtime" }, payload })) });
+    const prepare = createSavedConversationRequestPreparer({ eventStore, authorize: async () => {},
+      resolveAttachment: async ({ attachment }) => {
+        expect(attachment.attachment_id).toBe(uploaded!.attachment_id);
+        return uploaded!;
+      } });
+    const signal = new AbortController().signal;
+    const prepared = await prepare({ conversationId: "conversation_composer", turnId: "follow-up-turn", mutationId: "follow-up",
+      signal, request: parseChatRequest({ protocol_version: "handrail.ai-runtime.v1", continuation_of: null,
+        messages: [{ role: "user", content: [{ type: "text", text: "untrusted" }] }], tools: [], tool_results: [],
+        generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} }) });
+    const network = vi.fn<OpenAIResponsesProviderOptions["request"]>(async function* () {
+      yield { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } } };
+    });
+    const adapter = createOpenAIResponsesProviderAdapter({ model: "fixture", request: network, supportsToolSearch: false,
+      document_input: { supported_mime_types: ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+        max_document_count: 2, max_document_bytes: 20 * 1024 * 1024, requires_host_resolution: true } });
+    const stream = adapter.invoke({ ...prepared.request, signal,
+      resolve_attachment_reference: async () => ({ media_type: mediaType, bytes: new Uint8Array(bytes) }),
+      context: { request_id: "fixture", trace_id: "fixture", correlation_hints: {}, attribution: {
+        organization: { id: "org", source: "server_derived", trust: "authoritative" },
+        project: { id: "project", source: "server_derived", trust: "authoritative" },
+        service_environment: { id: "env", source: "server_derived", trust: "authoritative" },
+        known_user: { id: null, source: "server_derived", trust: "authoritative" },
+        session: { id: null, source: "server_derived", trust: "authoritative" },
+        automation: { id: null, source: "server_derived", trust: "authoritative" },
+      } } });
+    for await (const event of stream) { void event; }
+    expect(network).toHaveBeenCalledOnce();
+    const body = JSON.stringify(network.mock.calls[0]![0]);
+    expect(body).toContain(inputType);
+    expect(body).toContain(`data:${mediaType};base64,${bytes.toString("base64")}`);
+    expect(body).toContain("What was the total?");
+    expect(body).not.toContain("untrusted");
+  } finally { unmount(); uploader.dispose(); }
+});
+
+it("explains how to replace an unsupported legacy Word file", () => {
+  const { runtime } = fakeRuntime();
+  const uploader = immediateUploader();
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader }), { wrapper: wrapper(runtime) });
+  act(() => result.current.getFileInputProps().onChange({ currentTarget: { files: fileList(file("old.doc", "application/msword", "legacy")) } } as never));
+  expect(result.current.errors[0]?.message).toContain("Save the file as .docx or PDF");
+  unmount(); uploader.dispose();
 });
 
 it("prepares large pasted images before upload, blocks premature sends and uses prepared metadata", async () => {

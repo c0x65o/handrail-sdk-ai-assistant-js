@@ -14,6 +14,17 @@ All endpoints are relative to an application-owned mount path. Every request mus
 - `POST /turns/start` accepts `StartTurnInput` and streams `started`, `event`, then exactly one `terminal` SSE frame.
 - `POST /turns/resume` accepts the conversation/turn IDs and last event ID, opaque cursor, and revision. Replayed events must be idempotent.
 - `POST /turns/cancel` requests authoritative cancellation using a distinct mutation and idempotency key. Closing an SSE connection only disconnects that device.
+- `POST /synchronization` admits canonical message mutations before provider work.
+  A successful HTTP envelope can contain a synchronization failure in `value`:
+  `unauthorized` means access was denied; `temporarily_unavailable` permits a
+  bounded retry; `rejected` means the batch was not admitted and must be corrected.
+  A rejection includes a fixed safe `code` and `message`, such as
+  `attachment_expired` with an instruction to select the file again. Do not start
+  the turn, acknowledge the send, or automatically retry a rejected batch. Keep
+  the user's composer draft available for correction. Rejection callbacks receive
+  the original pending mutations before they are removed from the resend queue.
+  Adopt a Flutter client revision that understands `rejected` before enabling
+  retained-file admission; older Flutter clients label this unknown result retryable.
 
 Each `event` frame contains `{type:"event", event, checkpoint}`. Canonical `StreamEvent` values represent text, citations, tool calls/results, approvals, attachments, errors, usage, cancellation, and completion. Presence uses separate `handrail.live-presence.v1` ephemeral frames and must never be appended to the conversation event log.
 

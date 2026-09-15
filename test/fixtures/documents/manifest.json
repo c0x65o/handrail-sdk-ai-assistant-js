@@ -1,0 +1,74 @@
+[
+  {
+    "filename": "invoice.png",
+    "sha256": "6c10af9e08055b2c0510150b7df0706367cc711b444ad827f0a159f7df2ff3da",
+    "uploaded": {
+      "attachment_id": "att_invoice_png",
+      "content_ref": "ref_att_invoice_png",
+      "media_type": "image/png",
+      "byte_size": 21013,
+      "filename": "invoice.png"
+    },
+    "saved": {
+      "kind": "image",
+      "attachment_id": "att_invoice_png",
+      "media_type": "image/png",
+      "size_bytes": 21013,
+      "filename": "invoice.png"
+    }
+  },
+  {
+    "filename": "invoice.pdf",
+    "sha256": "748a3a335bb8eabe0c7652bc5477e9f3ab60550ef4e10811763e8ecf2cf13528",
+    "uploaded": {
+      "attachment_id": "att_invoice_pdf",
+      "content_ref": "ref_att_invoice_pdf",
+      "media_type": "application/pdf",
+      "byte_size": 18883,
+      "filename": "invoice.pdf"
+    },
+    "saved": {
+      "kind": "document",
+      "attachment_id": "att_invoice_pdf",
+      "media_type": "application/pdf",
+      "size_bytes": 18883,
+      "filename": "invoice.pdf"
+    }
+  },
+  {
+    "filename": "invoice-scan.pdf",
+    "sha256": "5b52b4bd32a48d8f099396c6a186ce01c43863996c21863e9fd9883553c4558e",
+    "uploaded": {
+      "attachment_id": "att_invoice-scan_pdf",
+      "content_ref": "ref_att_invoice-scan_pdf",
+      "media_type": "application/pdf",
+      "byte_size": 20444,
+      "filename": "invoice-scan.pdf"
+    },
+    "saved": {
+      "kind": "document",
+      "attachment_id": "att_invoice-scan_pdf",
+      "media_type": "application/pdf",
+      "size_bytes": 20444,
+      "filename": "invoice-scan.pdf"
+    }
+  },
+  {
+    "filename": "invoice.docx",
+    "sha256": "58d84071cd01ad05c620e91b3d399213a1ae776bd85df24c199a90e610df3116",
+    "uploaded": {
+      "attachment_id": "att_invoice_docx",
+      "content_ref": "ref_att_invoice_docx",
+      "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "byte_size": 930,
+      "filename": "invoice.docx"
+    },
+    "saved": {
+      "kind": "document",
+      "attachment_id": "att_invoice_docx",
+      "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size_bytes": 930,
+      "filename": "invoice.docx"
+    }
+  }
+]

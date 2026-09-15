@@ -793,7 +793,9 @@ export function useConversationComposer<TRequest = undefined>(
         ? `The selected attachment is ${formatAttachmentBytes(rejection.byteSize)}; the limit is ${formatAttachmentBytes(
           rejection.mediaType?.startsWith("image/") ? maxImageFileBytes : maxDocumentFileBytes,
         )}.${rejection.mediaType?.startsWith("image/") ? " For a pasted image, try attaching the original file." : ""}`
-        : INTAKE_MESSAGES[rejection.reason],
+        : rejection.reason === "unsupported_type" && (rejection.mediaType === "application/msword" || /\.doc$/iu.test(rejection.filename ?? ""))
+          ? "Legacy Word (.doc) files are not supported. Save the file as .docx or PDF and attach it again."
+          : INTAKE_MESSAGES[rejection.reason],
       retryable: false as const,
       ...(rejection.fingerprint === undefined
         ? {}

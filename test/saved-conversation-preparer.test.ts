@@ -1,0 +1,86 @@
+import { expect, it, vi } from "vitest";
+import { InMemoryConversationEventStore, parseConversationEvent, type ConversationId } from "../src/index.js";
+import { createSavedConversationRequestPreparer, type SavedConversationPreparerOptions } from "../src/server/saved-conversation-request.js";
+import type { ChatRequest } from "../src/protocol.js";
+
+const conversationId = "saved-files" as ConversationId;
+const request: ChatRequest = { protocol_version: "handrail.ai-runtime.v1", continuation_of: null,
+  messages: [{ role: "user", content: [{ type: "text", text: "Client history must not win" }] }],
+  tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} };
+async function fixture() {
+  const eventStore = new InMemoryConversationEventStore();
+  let revision = 0;
+  const append = async (payload: Record<string, unknown>) => {
+    const event = parseConversationEvent({ version: 1, conversation_id: conversationId,
+      event_id: `event-${revision + 1}`, revision: revision + 1, occurred_at: "2026-09-15T12:00:00Z",
+      actor: { type: "user" }, source: { type: "runtime" }, payload });
+    await eventStore.append({ conversationId, expectedRevision: (revision || null) as never, events: [event] });
+    revision++;
+  };
+  await append({ type: "message.created", message_id: "saved-input", role: "user", content: [{ type: "text", text: "Read this image" }] });
+  await append({ type: "message.attachment_referenced", message_id: "saved-input",
+    attachment: { attachment_id: "att_image", media_type: "image/png", size_bytes: 4 } });
+  await append({ type: "turn.started", turn_id: "saved-turn", input_message_ids: ["saved-input"] });
+  const authorize = vi.fn<SavedConversationPreparerOptions["authorize"]>(async () => {});
+  const resolveAttachment = vi.fn<SavedConversationPreparerOptions["resolveAttachment"]>(async () => ({
+    attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4,
+  }));
+  const prepare = createSavedConversationRequestPreparer({ eventStore, authorize, resolveAttachment });
+  const controller = new AbortController();
+  const run = () => prepare({ request, conversationId, turnId: "saved-turn", mutationId: "mutation", signal: controller.signal });
+  return { run, append, authorize, resolveAttachment, controller };
+}
+
+it("replays admitted user events and resolves a legacy image using the saved message location", async () => {
+  const h = await fixture();
+  const result = await h.run();
+  expect(result.request.messages).toEqual([{ role: "user", content: [
+    { type: "text", text: "Read this image" },
+    { type: "image", attachment: { attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4 } },
+  ] }]);
+  expect(h.resolveAttachment).toHaveBeenCalledWith(expect.objectContaining({ conversationId,
+    messageId: "saved-input", turnId: "saved-turn", attachment: expect.objectContaining({ attachment_id: "att_image" }) }));
+  expect(h.authorize).toHaveBeenCalledTimes(3);
+});
+
+it("does not read canonical history or source bytes after authorization is denied", async () => {
+  const h = await fixture();
+  h.authorize.mockRejectedValue(new Error("access revoked"));
+  await expect(h.run()).rejects.toThrow("access revoked");
+  expect(h.resolveAttachment).not.toHaveBeenCalled();
+});
+
+it("rechecks access after a slow source read", async () => {
+  const h = await fixture();
+  h.authorize.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined).mockRejectedValue(new Error("access revoked"));
+  await expect(h.run()).rejects.toThrow("access revoked");
+  expect(h.resolveAttachment).toHaveBeenCalledTimes(1);
+});
+
+it("refuses changed message input while source metadata is loading", async () => {
+  const h = await fixture();
+  h.resolveAttachment.mockImplementation(async () => {
+    await h.append({ type: "message.attachment_referenced", message_id: "saved-input",
+      attachment: { attachment_id: "att_extra", media_type: "image/png", size_bytes: 4 } });
+    return { attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4 };
+  });
+  await expect(h.run()).rejects.toMatchObject({ code: "saved_input_unavailable" });
+});
+
+it("tolerates unrelated metadata changes during preparation", async () => {
+  const h = await fixture();
+  h.resolveAttachment.mockImplementation(async () => {
+    await h.append({ type: "conversation.metadata_updated", metadata: { title: "Renamed" } });
+    return { attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4 };
+  });
+  expect((await h.run()).files[0]?.included).toBe(true);
+});
+
+it("refuses a canonical cancellation saved while a file read was running", async () => {
+  const h = await fixture();
+  h.resolveAttachment.mockImplementation(async () => {
+    await h.append({ type: "turn.cancellation_requested", turn_id: "saved-turn", reason: "user" });
+    return { attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4 };
+  });
+  await expect(h.run()).rejects.toMatchObject({ code: "saved_input_unavailable" });
+});

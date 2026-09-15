@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { prepareSavedConversationRequest, type SavedConversationRequestOptions } from "../src/server/saved-conversation-request.js";
+import { prepareSavedConversationRequest, SavedConversationFileUnavailableError, type SavedConversationRequestOptions } from "../src/server/saved-conversation-request.js";
 import type { ConversationMessageRecord } from "../src/conversation/state.js";
 import type { AttachmentMimeType, ChatRequest } from "../src/protocol.js";
 
@@ -74,6 +74,16 @@ it("honors the provider's per-message document bound", async () => {
     { maximumDocumentsPerMessage: 1 });
   expect((await h.run()).files.filter(file => file.included)).toHaveLength(1);
 });
+
+it.each([{ supportedDocumentMediaTypes: ["text/csv"] }, { maximumDocumentBytes: 2 }])(
+  "omits unsupported optional history but fails an explicitly requested file: %j", async limits => {
+    const h = fixture([message("old", "application/pdf")], limits);
+    expect((await h.run()).files[0]?.included).toBe(false);
+    expect(h.resolveAttachment).not.toHaveBeenCalled();
+    const selected = fixture([message("old", "application/pdf")], { ...limits, historicalAttachmentIds: ["att_old"] });
+    await expect(selected.run()).rejects.toMatchObject({ code: "attachment_unsupported" });
+    expect(selected.resolveAttachment).not.toHaveBeenCalled();
+  });
 it("rejects changed storage identity and observes cancellation after resolution", async () => {
   const h = fixture([message("old", "image/png")]);
   h.resolveAttachment.mockResolvedValue({ attachment_id: "att_other", content_ref: "ref_other", media_type: "image/png", byte_size: 4 });
@@ -113,4 +123,28 @@ it("does not treat assistant-supplied file metadata as uploaded user evidence", 
   const h = fixture([{ ...message("assistant", "image/png"), role: "assistant" }]);
   expect((await h.run()).files).toEqual([]);
   expect(h.resolveAttachment).not.toHaveBeenCalled();
+});
+
+it.each(["expired", "not_found"] as const)("keeps text follow-ups usable when an optional saved file is %s and states it was not read", async reason => {
+  const h = fixture([message("old", "application/pdf")]);
+  h.resolveAttachment.mockRejectedValue(new SavedConversationFileUnavailableError(reason));
+  const result = await h.run();
+  expect(result.files[0]).toMatchObject({ included: false, unavailableReason: reason });
+  expect(result.request.messages.at(-1)?.content).toEqual([{ type: "text", text: "Saved current" }]);
+  expect(JSON.stringify(result.request)).toContain("Its contents were not included");
+  expect(result.request.messages.flatMap(item => item.content).every(part => part.type === "text")).toBe(true);
+});
+
+it.each(["current", "explicit"])("reports an unavailable %s attachment instead of silently skipping it", async selection => {
+  const h = selection === "current" ? fixture([], { messages: [message("current", "image/png")] })
+    : fixture([message("old", "image/png")], { historicalAttachmentIds: ["att_old"] });
+  h.resolveAttachment.mockRejectedValue(new SavedConversationFileUnavailableError("expired"));
+  await expect(h.run()).rejects.toMatchObject({ code: "attachment_unavailable", reason: "expired" });
+});
+
+it.each(["forbidden", "unavailable", "invalid_input", "expired"])("does not hide arbitrary %s resolver failures as a missing optional file", async code => {
+  const h = fixture([message("old", "image/png")]);
+  const error = Object.assign(new Error("host detail"), { code });
+  h.resolveAttachment.mockRejectedValue(error);
+  await expect(h.run()).rejects.toBe(error);
 });

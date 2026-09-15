@@ -212,11 +212,13 @@ export async function deletePostgresConversationAttachments(
   // Called under the conversation fence, so no new reference to this conversation
   // can appear. Lock each blob before deleting references or collecting bytes.
   const attachments = await client.query<{ blob_key: string }>(`SELECT DISTINCT payload->>'blobKey' AS blob_key
-    FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment' AND (payload->>'conversationId'=$2 OR payload->>'retainedConversationId'=$2)
+    FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment' AND (payload->>'conversationId'=$2 OR payload->>'retainedConversationId'=$2
+      OR (payload->'retention'->>'version'='1' AND payload->>'draftConversationId'=$2))
     AND payload->>'blobKey' IS NOT NULL ORDER BY blob_key`, [tenantId, conversationId]);
   for (const attachment of attachments.rows) await lockPostgresAttachmentBlob(client, tenantId, attachment.blob_key);
   await client.query(`DELETE FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment'
-    AND (payload->>'conversationId'=$2 OR payload->>'retainedConversationId'=$2)`, [tenantId, conversationId]);
+    AND (payload->>'conversationId'=$2 OR payload->>'retainedConversationId'=$2
+      OR (payload->'retention'->>'version'='1' AND payload->>'draftConversationId'=$2))`, [tenantId, conversationId]);
   for (const attachment of attachments.rows) {
     await client.query(`DELETE FROM handrail_ai_attachment_blobs WHERE tenant_id=$1 AND blob_key=$2
       AND NOT EXISTS (SELECT 1 FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='attachment'
