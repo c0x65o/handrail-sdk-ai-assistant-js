@@ -11,6 +11,7 @@ import { createApprovalExecutionCoordinator } from "../src/tools/approval-execut
 import { createApprovalCoordinator } from "../src/conversation/approval-coordinator.js";
 import { resumeExternalToolApprovals } from "../src/server/external-tool-approvals.js";
 import { InMemoryDurableApplicationTurnStore } from "../src/transports/durable.js";
+import { parseChatRequest, AI_RUNTIME_PROTOCOL_VERSION } from "../src/protocol.js";
 
 type Context = { scopeId: string; userId: string };
 const context: Context = { scopeId: "household:user", userId: "user" };
@@ -73,6 +74,41 @@ it("uses one native ledger identity across recreated runtime instances and rejec
   const events = (await h.events.read({ conversationId: location.conversationId as never })).entries;
   expect(events.filter(entry => entry.event.payload.type === "tool_call.result_recorded")).toHaveLength(1);
   expect(events.some(entry => ["turn.started", "turn.completed", "message.created"].includes(entry.event.payload.type))).toBe(false);
+});
+
+it("restores unresolved review context for a comment without copying argument authority or executing", async () => {
+  const h = await setup(true), signal = new AbortController().signal;
+  await h.runtime.execute(call, signal, location);
+  await h.runtime.awaitApproval({ ...location, call, signal });
+  const original = await h.pendingProposal();
+  h.authorizeLocation.mockResolvedValue(undefined);
+  const request = parseChatRequest({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: null,
+    messages: [{ role: "user", content: [{ type: "text", text: "Leave the proposal pending" }] }],
+    tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} });
+  const next = { ...location, turnId: "later-comment" };
+  const restored = await (await h.create()).withApprovalContext!(request, next, signal);
+  expect(() => parseChatRequest(restored)).not.toThrow();
+  expect(restored.messages).toHaveLength(2);
+  expect(restored.messages[0]).toMatchObject({ role: "assistant", content: [{ text: expect.stringContaining('"status":"pending"') }] });
+  expect(restored.messages[1]).toEqual(request.messages[0]);
+  expect(JSON.stringify(restored)).not.toContain(assistantToolArgumentReference(call.arguments));
+  expect(JSON.stringify(restored)).not.toContain(original.proposal_id);
+  expect(await h.pendingProposal()).toEqual(original);
+  expect(h.effect).not.toHaveBeenCalled();
+  expect(await h.runtime.withApprovalContext!(request, location, signal)).toBe(request);
+  await h.decide("reject");
+  expect(await h.runtime.withApprovalContext!(request, next, signal)).toBe(request);
+});
+
+it("checks current access before and after reading review context", async () => {
+  const h = await setup(true), signal = new AbortController().signal;
+  const list = vi.spyOn(h.proposals, "listGroup");
+  h.authorizeLocation.mockRejectedValue(new Error("Access revoked"));
+  await expect(h.runtime.withApprovalContext!({} as never, location, signal)).rejects.toThrow("Access revoked");
+  expect(list).not.toHaveBeenCalled();
+  h.authorizeLocation.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("Access revoked during read"));
+  await expect(h.runtime.withApprovalContext!({} as never, location, signal)).rejects.toThrow("Access revoked during read");
+  expect(list).toHaveBeenCalledOnce();
 });
 
 it.each(["confirm", "reject"] as const)("waits on native %s and reuses retained decisions on recreation", async decision => {

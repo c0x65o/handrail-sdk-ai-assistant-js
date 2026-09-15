@@ -63,8 +63,13 @@ export function qualifyDurableApplicationTurnStarts(
         const message = turn?.input_message_ids.length === 1
           ? state.messages.find((candidate) => candidate.message_id === turn.input_message_ids[0]) : undefined;
         const proposed = input.request.messages.filter((candidate) => candidate.role === "user").at(-1);
-        const proposedText = proposed?.content.filter((part) => part.type === "text") ?? [];
-        if (!turn || !message || message.role !== "user" || !proposed || json(message.content) !== json(proposedText)) {
+        // An attachment-only draft is stored with an empty text placeholder by
+        // some clients and with no text parts by others. Empty parts carry no
+        // instructions; retain exact comparison for every nonempty part and
+        // independently bind all attachment identities below.
+        const proposedText = proposed?.content.filter((part) => part.type === "text" && part.text !== "") ?? [];
+        const savedText = message?.content.filter((part) => part.text !== "") ?? [];
+        if (!turn || !message || message.role !== "user" || !proposed || json(savedText) !== json(proposedText)) {
           throw new TypeError("The turn does not match its saved user message.");
         }
         const admission = await findConversationEvent(eventStore, input.conversationId as ConversationId,

@@ -165,7 +165,11 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
           captureUsage: input.persistence.usageReceiptSink.capture,
           captureUsageForDurableExecution: false,
         }),
-        ...(prepareRequest ? { prepareRequest: (turn) => prepareRequest({ ...turn, context: input.context }) } : {}),
+        prepareRequest: async (turn) => {
+          const prepared = prepareRequest ? await prepareRequest({ ...turn, context: input.context }) : turn.request;
+          return input.tools.withApprovalContext
+            ? input.tools.withApprovalContext(prepared, turn, turn.signal) : prepared;
+        },
         resolveAttachmentReference: async ({ conversationId, reference, signal }) => {
           if (attachmentResolver) return attachmentResolver({ conversationId, reference, signal, context: input.context });
           const resolved = await input.persistence.attachments.resolve({ ownerScopeId: input.context.scopeId,

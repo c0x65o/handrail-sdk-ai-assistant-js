@@ -37,7 +37,7 @@ class PagedEventStore extends InMemoryConversationEventStore {
   }
 }
 
-async function fixture(historyEvents = 0, events: ConversationEventStore = new PagedEventStore()) {
+async function fixture(historyEvents = 0, events: ConversationEventStore = new PagedEventStore(), userText = "Update once") {
   if (historyEvents > 0) {
     await events.append({ conversationId, expectedRevision: null,
       events: Array.from({ length: historyEvents }, (_, index) => parseConversationEvent({
@@ -52,7 +52,7 @@ async function fixture(historyEvents = 0, events: ConversationEventStore = new P
       })) });
   }
   await append(events, { type: "message.created", message_id: "message-1" as never, role: "user",
-    content: [{ type: "text", text: "Update once" }] }, input.mutationId);
+    content: [{ type: "text", text: userText }] }, input.mutationId);
   await append(events, { type: "turn.started", turn_id: turnId, input_message_ids: ["message-1" as never] });
   const start = vi.fn<ConversationTransport<StreamEvent, ChatRequest>["startTurn"]>(async (value) => ({ ok: true, value: {
     conversationId: value.conversationId, turnId: value.conversationTurnId, mutationId: value.mutationId,
@@ -71,6 +71,22 @@ async function fixture(historyEvents = 0, events: ConversationEventStore = new P
       fingerprint: (value: ChatRequest) => createHash("sha256").update(JSON.stringify(value)).digest("hex") }, checkpointForEvent: () => checkpoint });
   return { events, turns, durable, start, delegate };
 }
+
+it.each(["matching", "changed-text", "changed-attachment", "changed-admission"] as const)(
+  "qualifies an attachment-only message with an empty saved text placeholder: %s", async variant => {
+    const { events, delegate, start } = await fixture(0, new PagedEventStore(), "");
+    await append(events, { type: "message.attachment_referenced", message_id: "message-1" as never,
+      attachment: { kind: "document", attachment_id: "att_pdf" as never, media_type: "application/pdf", filename: "qa.pdf", size_bytes: 1504 } });
+    const value: ChatRequest = { ...request, messages: [{ role: "user", content: [
+      ...(variant === "changed-text" ? [{ type: "text" as const, text: "Different instructions" }] : []),
+      { type: "document", attachment: { attachment_id: variant === "changed-attachment" ? "att_other" : "att_pdf",
+        content_ref: "ref_pdf", media_type: "application/pdf", filename: "qa.pdf", byte_size: 1504 } },
+    ] }] };
+    const result = await qualifyDurableApplicationTurnStarts(delegate, events).startTurn({ ...input, request: value,
+      ...(variant === "changed-admission" ? { mutationId: "other-admission" } : {}) });
+    expect(result.ok).toBe(variant === "matching");
+    expect(start).toHaveBeenCalledTimes(variant === "matching" ? 1 : 0);
+  });
 
 it.each([999, 1000, 1166, 2001])("starts a follow-up after %s history events and never replays completed work", async (historyEvents) => {
   const { events, durable, start } = await fixture(historyEvents);

@@ -4,6 +4,7 @@ import type { PostgresAssistantPersistenceBundle } from '../src/postgres/index.j
 import { InMemoryOpenAIResponsesContinuationStore } from '../src/providers/openai-responses.js';
 import { openaiResponses, type HandrailOpenAIResponsesOptions } from '../src/server/openai-responses.js';
 import type { HandrailAssistantAuthorizationContext, HandrailAssistantProvider } from '../src/server/assistant.js';
+import type { AssistantToolRuntime } from '../src/server/assistant-tool-runtime.js';
 
 const attribution: AuthoritativeAttribution = {
   organization: { id: 'org', source: 'server_derived', trust: 'authoritative' },
@@ -17,7 +18,8 @@ const context: HandrailAssistantAuthorizationContext = { principalId: 'user', te
 const bytes = Uint8Array.from([1, 2, 3, 4]);
 const request: ChatRequest = { protocol_version: AI_RUNTIME_PROTOCOL_VERSION, messages: [{ role: 'user', content: [{ type: 'text', text: 'Client text' }] }],
   tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, continuation_of: null, correlation_hints: {} };
-async function setup(options: Partial<HandrailOpenAIResponsesOptions> = {}, mediaType = 'application/pdf', maxElapsedMs = 10_000) {
+async function setup(options: Partial<HandrailOpenAIResponsesOptions> = {}, mediaType = 'application/pdf', maxElapsedMs = 10_000,
+  withApprovalContext?: AssistantToolRuntime['withApprovalContext']) {
   const providerRequest = vi.fn<NonNullable<HandrailOpenAIResponsesOptions['request']>>(async function* () {
     yield { type: 'response.output_text.delta', delta: 'Read authorized content.' };
     yield { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Read authorized content.' }] }],
@@ -39,7 +41,8 @@ async function setup(options: Partial<HandrailOpenAIResponsesOptions> = {}, medi
   });
   const persistence = { continuation, usageAdmissions: null, usageReceiptSink: null,
     attachments: { resolve } } as unknown as PostgresAssistantPersistenceBundle<HandrailAssistantAuthorizationContext>;
-  const input = { context, persistence, instructions: [], tools: { definitions: [], execute: vi.fn(), awaitApproval: vi.fn() },
+  const input = { context, persistence, instructions: [], tools: { definitions: [], execute: vi.fn(), awaitApproval: vi.fn(),
+    ...(withApprovalContext ? { withApprovalContext } : {}) },
     limits: { maxIterations: 4, maxTotalToolCalls: 4, maxElapsedMs, parallelism: 1 },
     toolActivity: { waitForApproval: async () => { throw new Error('Unexpected approval'); },
       observe: async (_location, execute) => (await execute(async () => {})).value },
@@ -104,6 +107,23 @@ it('prepares authoritative history once with trusted turn identity before invoki
   expect(prepareRequest).toHaveBeenCalledTimes(1);
   expect(prepareRequest).toHaveBeenCalledWith(expect.objectContaining({ context, conversationId: 'conversation-1', turnId: 'turn-1', mutationId: 'mutation-1' }));
   expect(h.providerRequest.mock.calls[0]![0].input).toMatchObject([{ content: [{ text: 'Authorized saved history' }] }]);
+});
+
+it('adds durable review context after host history replacement and before provider dispatch', async () => {
+  const prepareRequest = vi.fn(async () => ({ ...request,
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'Saved latest comment' }] }] }));
+  const withApprovalContext = vi.fn<NonNullable<AssistantToolRuntime['withApprovalContext']>>(async prepared => {
+    expect(prepared.messages[0]?.content[0]).toEqual({ type: 'text', text: 'Saved latest comment' });
+    return { ...prepared, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Earlier saved review remains pending.' }] }, ...prepared.messages] };
+  });
+  const h = await setup({ prepareRequest }, 'application/pdf', 10_000, withApprovalContext);
+  expect(await h.run()).toMatchObject({ status: 'completed' });
+  expect(withApprovalContext).toHaveBeenCalledOnce();
+  expect(withApprovalContext).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ conversationId: 'conversation-1', turnId: 'turn-1' }), expect.any(AbortSignal));
+  expect(h.providerRequest.mock.calls[0]![0].input).toMatchObject([
+    { role: 'assistant', content: 'Earlier saved review remains pending.' },
+    { role: 'user', content: [{ text: 'Saved latest comment' }] },
+  ]);
 });
 
 it.each([{ status: 401, code: 'unauthenticated' }, { status: 403, code: 'forbidden' },
