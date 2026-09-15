@@ -174,6 +174,10 @@ async function canonicalize(
   if (payload.type === "turn.status_changed" && payload.status === "waiting_for_approval") {
     if (durable.record.status !== "waiting_for_approval" || durable.record.terminal?.status !== "waiting_for_approval" ||
       durable.record.terminal.pendingToolCallIds.length === 0) deny();
+    // A browser can finish observing the old pause after a server admitted its
+    // approval resumption but before the durable record has been woken.
+    if (await findConversationEvent(eventStore, conversationId,
+      event => event.event_id === `approval-resume:${turnId}:${durable.version}`)) deny();
     return canonical(proposed, { type: "assistant" });
   }
   if (payload.type === "turn.status_changed" && metadata.checkpoint !== undefined && metadata.frame_type === undefined) {

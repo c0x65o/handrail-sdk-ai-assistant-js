@@ -313,3 +313,64 @@ describe("server stored-output reconciliation", () => {
     expect((await state()).turns[0]?.status).not.toBe("completed");
   });
 });
+
+it.each(['before-replay', 'during-pause-append'] as const)("does not overwrite an approved turn admission with an old pause (%s)", async timing => {
+  const { input, state } = await setup("completed", []);
+  const original = (await input.turns.load("conversation", "turn"))!;
+  const waiting = { ...original.record, status: "waiting_for_approval" as const,
+    terminal: { status: "waiting_for_approval" as const, pendingToolCallIds: ["call"], checkpoint } };
+  await input.turns.compareAndSet({ conversationId: "conversation", turnId: "turn", expectedVersion: original.version, record: waiting });
+  const paused = (await input.turns.load("conversation", "turn"))!;
+  const append = input.events.append.bind(input.events);
+  const admit = async () => {
+    const revision = await input.events.getLatestRevision("conversation" as never);
+    await append({ conversationId: "conversation" as never, expectedRevision: revision, events: [parseConversationEvent({
+      version: 1, conversation_id: "conversation", event_id: `approval-resume:turn:${paused.version}`,
+      revision: (revision ?? 0) + 1, occurred_at: "2026-09-04T00:00:02.000Z",
+      actor: { type: "system" }, source: { type: "runtime" },
+      payload: { type: "turn.status_changed", turn_id: "turn", status: "running" },
+    })] });
+  };
+  if (timing === 'before-replay') await admit();
+  else {
+    let admitted = false;
+    vi.spyOn(input.events, 'append').mockImplementation(async value => {
+      if (!admitted && value.events.some(event => event.payload.type === 'turn.status_changed' && event.payload.status === 'waiting_for_approval')) {
+        admitted = true;
+        await admit();
+      }
+      return append(value);
+    });
+  }
+  expect(await reconcileDurableConversationTurn(input)).toBe(false);
+  expect(await state()).toMatchObject({ active_turn_id: 'turn', turns: [{ status: 'running', remote_may_still_be_running: true }] });
+  const all = await input.events.read({ conversationId: 'conversation' as never });
+  expect(all.entries.some(({ event }) => event.payload.type === 'turn.failed')).toBe(false);
+});
+
+it('rejects a stale browser pause after approval admission while preserving a later real pause', async () => {
+  const { input, state } = await setup('completed', []);
+  const original = (await input.turns.load('conversation', 'turn'))!;
+  const waiting = { ...original.record, status: 'waiting_for_approval' as const,
+    terminal: { status: 'waiting_for_approval' as const, pendingToolCallIds: ['call'], checkpoint } };
+  await input.turns.compareAndSet({ conversationId: 'conversation', turnId: 'turn', expectedVersion: original.version, record: waiting });
+  const paused = (await input.turns.load('conversation', 'turn'))!;
+  await input.events.append({ conversationId: 'conversation' as never, expectedRevision: 1 as never, events: [parseConversationEvent({
+    version: 1, conversation_id: 'conversation', event_id: `approval-resume:turn:${paused.version}`, revision: 2,
+    occurred_at: '2026-09-04T00:00:02.000Z', actor: { type: 'system' }, source: { type: 'runtime' },
+    payload: { type: 'turn.status_changed', turn_id: 'turn', status: 'running' },
+  })] });
+  const sync = createDurableApplicationConversationSync({ authorizationContext: {}, principalId: 'user',
+    eventStore: input.events, turnStore: input.turns, authorizeConversation: () => true });
+  const event = parseConversationEvent({ version: 1, conversation_id: 'conversation', event_id: 'stale', mutation_id: 'stale',
+    revision: 3, occurred_at: '2026-09-04T00:00:03.000Z', actor: { type: 'assistant' }, source: { type: 'runtime' },
+    payload: { type: 'turn.status_changed', turn_id: 'turn', status: 'waiting_for_approval' } });
+  const result = await sync.appendMutations({ conversationId: 'conversation' as never, expectedRevision: 2 as never,
+    mutations: [{ mutationId: 'stale' as never, events: [{ ...event, mutation_id: 'stale' as never }] }] });
+  expect(result.status).toBe('unauthorized');
+  expect((await state()).active_turn_id).toBe('turn');
+  await input.turns.compareAndSet({ conversationId: 'conversation', turnId: 'turn', expectedVersion: paused.version,
+    record: { ...waiting, approvalResumes: 1, terminal: { ...waiting.terminal, pendingToolCallIds: ['second-call'] } } });
+  expect(await reconcileDurableConversationTurn(input)).toBe(true);
+  expect((await state()).turns[0]?.status).toBe('waiting_for_approval');
+});

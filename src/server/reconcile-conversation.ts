@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createConversationRuntime } from "../runtime.js";
 import { createRetryPolicy } from "../retry.js";
+import { findConversationEvent } from "../conversation/find-event.js";
 import { replayConversation } from "../conversation/replay.js";
 import { parseConversationEvent, type ConversationId, type ConversationEventPayload } from "../conversation/events.js";
 import { ConversationEventStoreConflictError, type ConversationEventStore } from "../conversation/event-store.js";
@@ -48,6 +49,31 @@ export async function reconcileDurableConversationTurn(input: {
   const document = await input.turns.load(input.conversationId, input.turnId);
   if (!document || document.record.status === "pending" || document.record.status === "running") return false;
   const record = document.record;
+  let superseded = false;
+  const verifyPausedSnapshot = async () => {
+    if (record.status !== "waiting_for_approval") return;
+    const current = await input.turns.load(input.conversationId, input.turnId);
+    // Approval admission is canonical before the durable worker is woken. Even
+    // in that narrow window a replay of the old pause must not deactivate it.
+    const admission = await findConversationEvent(input.events, input.conversationId as ConversationId,
+      event => event.event_id === `approval-resume:${input.turnId}:${document.version}`);
+    if (!current || current.version !== document.version || admission) {
+      superseded = true;
+      throw new Error("The stored approval pause has been superseded");
+    }
+  };
+  const events: ConversationEventStore = record.status === "waiting_for_approval" ? {
+    ...(input.events.checkpoints ? { checkpoints: input.events.checkpoints } : {}),
+    read: value => input.events.read(value),
+    getLatestRevision: id => input.events.getLatestRevision(id),
+    append: async value => {
+      await verifyPausedSnapshot();
+      // The canonical CAS closes the race after verification. Every rebased
+      // append is checked again, including the runtime's final pause event.
+      return input.events.append(value);
+    },
+  } : input.events;
+  try { await verifyPausedSnapshot(); } catch (cause) { if (superseded) return false; throw cause; }
   const receipt = record.terminal && record.terminal.status !== "disconnected" && record.terminal.usageReceipt
     ? parseNormalizedUsageReceipt(record.terminal.usageReceipt) : null;
   if (receipt && (receipt.conversation_id !== input.conversationId || receipt.turn_id !== input.turnId)) {
@@ -65,7 +91,7 @@ export async function reconcileDurableConversationTurn(input: {
     if (!turn || turn.started_at === null) return false;
     if (receipt && !state.usage_receipt_links.some((link) => link.usage_receipt_id === receipt.usage_receipt_id)) {
       try {
-        await input.events.append({ conversationId, expectedRevision: state.revision, events: [parseConversationEvent({
+        await events.append({ conversationId, expectedRevision: state.revision, events: [parseConversationEvent({
           version: 1, event_id: `reconciled-usage:${createHash("sha256").update(JSON.stringify([conversationId, input.turnId, receipt.usage_receipt_id])).digest("hex")}`,
           conversation_id: conversationId, revision: (state.revision ?? 0) + 1, occurred_at: record.updatedAt,
           actor: { type: "system" }, source: { type: "runtime" },
@@ -73,6 +99,7 @@ export async function reconcileDurableConversationTurn(input: {
         })] });
         continue;
       } catch (cause) {
+        if (superseded) return false;
         if (cause instanceof ConversationEventStoreConflictError) continue;
         throw cause;
       }
@@ -108,12 +135,13 @@ export async function reconcileDurableConversationTurn(input: {
       payload: { type: "turn.cancellation_requested", turn_id: input.turnId as never, reason: record.cancellation.reason } });
     if (bindings.length > 0) {
       try {
-        await input.events.append({ conversationId, expectedRevision: state.revision, events: bindings.map((binding, index) => parseConversationEvent({
+        await events.append({ conversationId, expectedRevision: state.revision, events: bindings.map((binding, index) => parseConversationEvent({
           version: 1, event_id: binding.id, conversation_id: conversationId, revision: (state.revision ?? 0) + index + 1,
           occurred_at: record.updatedAt, actor: { type: "system" }, source: { type: "runtime" },
           metadata: { handrail_runtime: { transport_turn_id: input.turnId } }, payload: binding.payload,
         })) });
       } catch (cause) {
+        if (superseded) return false;
         if (cause instanceof ConversationEventStoreConflictError) continue;
         throw cause;
       }
@@ -125,14 +153,16 @@ export async function reconcileDurableConversationTurn(input: {
       async resumeTurn() { return { ok: true, value: storedObservation(record, input.attribution) }; },
     };
     const runtime = await createConversationRuntime({ conversationId, clientId: "server-reconciliation" as never,
-      eventStore: input.events, transport, retryPolicy: createRetryPolicy({ maximumAttempts: 1 }) });
+      eventStore: events, transport, retryPolicy: createRetryPolicy({ maximumAttempts: 1 }) });
     try {
       const current = runtime.getSnapshot().turns.find((candidate) => candidate.turn_id === input.turnId);
       if (current && ["completed", "cancelled", "failed"].includes(current.status)) continue;
       const outcome = await runtime.resumeTurn(input.turnId as never);
+      if (superseded) return false;
       if (outcome.status === record.status) return true;
       if (outcome.status !== "interrupted") throw new Error("Stored turn output did not reach its durable outcome");
     } catch (cause) {
+      if (superseded) return false;
       // A browser or another reconciler may have finalized during our CAS rebase.
       if (runtime.getSnapshot().turns.some((candidate) => candidate.turn_id === input.turnId && candidate.status === record.status)) return true;
       throw cause;

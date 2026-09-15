@@ -77,7 +77,9 @@ it.each(['confirmed', 'rejected'] as const)('HTTP decisions resume an external %
   } finally { await assistant.stopBackgroundWorkers(); await database.close(); }
 }, 30_000);
 
-it.each([['confirmed', false], ['rejected', false], ['confirmed', true]] as const)('rests across comments and restart, then resumes %s once (comment running=%s)', async (decision, commentRunning) => {
+it.each([['confirmed', 'complete'], ['rejected', 'complete'], ['confirmed', 'running'], ['confirmed', 'none'], ['rejected', 'none']] as const)('rests across comments and restart, then resumes %s once (comment=%s)', async (decision, commentMode) => {
+  const commentRunning = commentMode === 'running';
+  const hasComment = commentMode !== 'none';
   const database = new PGlite();
   const adapt = (db: Pick<PGlite, 'query'>): PostgresSqlClient => {
     const client: PostgresSqlClient = { async query<T extends Record<string, unknown>>(sql: string, values?: readonly unknown[]) {
@@ -140,11 +142,11 @@ it.each([['confirmed', false], ['rejected', false], ['confirmed', true]] as cons
     await assistant.stopBackgroundWorkers(); assistant = await create();
     await assistant.handle(new Request('https://app.test/capabilities'));
     expect(physical).toBe(1);
-    const comment = send('comment', 'I need more time to think about this.');
+    const comment = hasComment ? send('comment', 'I need more time to think about this.') : Promise.resolve('completed');
     if (commentRunning) await vi.waitFor(() => expect(physical).toBe(2));
     else expect(await comment).toContain('completed');
     expect((await bundle.approvals.get({ permissionContext: context, proposalId: proposal.proposal_id }))?.status).toBe('pending');
-    expect(physical).toBe(2); expect(effect).not.toHaveBeenCalled();
+    expect(physical).toBe(hasComment ? 2 : 1); expect(effect).not.toHaveBeenCalled();
     const decisionInput = { conversationId: 'conversation', proposalId: proposal.proposal_id, expectedVersion: 1,
       status: decision, idempotencyKey: 'decide', idempotencyFingerprint: 'decide' };
     expect((await post('approvals/transition', decisionInput)).status).toBe(200);
@@ -158,10 +160,10 @@ it.each([['confirmed', false], ['rejected', false], ['confirmed', true]] as cons
       expect(current.turns.find(turn => turn.turn_id === turnIds.original)?.status,
         JSON.stringify(diagnostics.mock.calls)).toBe('completed');
     }, { timeout: 10_000 });
-    expect(physical).toBe(3);
+    expect(physical).toBe(hasComment ? 3 : 2);
     expect(effect).toHaveBeenCalledTimes(decision === 'confirmed' ? 1 : 0);
     expect((await post('approvals/transition', decisionInput)).status).toBe(200);
-    expect(physical).toBe(3);
+    expect(physical).toBe(hasComment ? 3 : 2);
     expect((await state()).active_turn_id).toBeNull();
     expect((await bundle.durableTurns.load('conversation', turnIds.original!))?.record).toMatchObject({ attempt: 2, approvalResumes: 1, lease: null });
   } finally { releaseComment(); await browser.dispose(); await assistant.stopBackgroundWorkers(); await database.close(); }
