@@ -100,7 +100,7 @@ describe("styled React preset", () => {
       source: { type: "runtime" }, payload: { type: "turn.completed", turn_id: "turn", outcome: "stop", output_message_ids: [] } }));
     view.rerender(<StyledChatPreset state={completed} activity={activity}/>);
     expect(screen.queryByText("Comparing revenue")).toBeNull();
-    expect(screen.getByText("Done")).toBeTruthy();
+    expect(view.container.querySelector(".hr-activity")).toBeNull();
     view.unmount();
   });
 
@@ -113,7 +113,7 @@ describe("styled React preset", () => {
     expect(screen.queryByText("Other conversation work")).toBeNull();
     act(() => activity.upsert({ conversationId: "bulk-revenue", turnStatus: "running", unread: false,
       summary: "Tracing invoice accounts", progress: { completed: 18, total: 43, unit: "products" } }));
-    expect(screen.getByText("Tracing invoice accounts (18/43 products)").getAttribute("role")).toBe("status");
+    expect(screen.getByText("Tracing invoice accounts (18/43 products)").closest("[role=status]")?.getAttribute("role")).toBe("status");
     act(() => activity.upsert({ conversationId: "bulk-revenue", turnStatus: "running", unread: false,
       summary: "Comparing this month and last month" }));
     expect(screen.queryByText(/Tracing invoice accounts/)).toBeNull();

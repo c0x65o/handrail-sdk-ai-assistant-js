@@ -94,14 +94,19 @@ export class PostgresRealtimeCallStore {
     const expired = value.leaseExpiresAt <= this.#now() && ["admitted", "starting", "active"].includes(value.status);
     return Object.freeze({ ...value, status: expired ? "uncertain" : value.status, recordVersion });
   }
-  /** Bounded server-side enumeration; apply the same owner authorization as get. */
-  async list(input: { readonly afterCallId?: string; readonly limit?: number } = {}) {
+  /** Bounded server-side enumeration; apply the same owner authorization as get.
+   * Cleared calls are retained for explicit audit reads, outside current context. */
+  async list(input: { readonly afterCallId?: string; readonly limit?: number; readonly includeCleared?: boolean } = {}) {
     const limit = input.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("Realtime call page size is invalid.");
     const after = input.afterCallId === undefined ? null : identity(input.afterCallId);
     const rows = await this.persistence.client.query<{ record_id: string; version: string; payload: DurableRealtimeCallRecord }>(
-      "SELECT record_id,version::text AS version,payload FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='realtime_call' AND scope_id=$2 AND ($3::text IS NULL OR record_id>$3) ORDER BY record_id LIMIT $4",
-      [this.tenantId, this.scopeId, after, limit + 1]);
+      `SELECT d.record_id,d.version::text AS version,d.payload FROM handrail_ai_documents d
+       WHERE d.tenant_id=$1 AND d.kind='realtime_call' AND d.scope_id=$2 AND ($3::text IS NULL OR d.record_id>$3)
+         AND ($5::boolean OR NOT EXISTS (SELECT 1 FROM handrail_ai_documents cleared WHERE cleared.tenant_id=d.tenant_id
+           AND cleared.kind='checkpoint' AND cleared.scope_id=d.payload->>'conversationId'
+           AND cleared.record_id='cleared-call:' || d.record_id)) ORDER BY d.record_id LIMIT $4`,
+      [this.tenantId, this.scopeId, after, limit + 1, input.includeCleared === true]);
     const calls = rows.rows.slice(0, limit).map((row) => this.#snapshot(row.payload, Number(row.version), row.record_id));
     return Object.freeze({ calls: Object.freeze(calls), nextCallId: rows.rows.length > limit ? calls.at(-1)!.callId : null });
   }

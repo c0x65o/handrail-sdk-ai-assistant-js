@@ -9,6 +9,7 @@ export { cleanupPostgresAssistantAttachmentStaging, startPostgresAssistantAttach
 import { assertPostgresConversationWritable, postgresDocumentConversation, deletePostgresConversationHistory,
   deletePostgresConversationAttachments, lockPostgresAttachmentBlob } from "./conversation-deletion.js";
 import { PostgresConversationCatalogTable, PostgresCatalogIdentityError, type PostgresCatalogRow, type PostgresConversationCatalogTableOptions } from "./catalog-table.js";
+export { clearPostgresConversation } from "./conversation-clear.js";
 export type { PostgresConversationCatalogTableOptions } from "./catalog-table.js";
 export { enqueuePostgresConversationFileCleanup, drainPostgresConversationFileCleanup,
   startPostgresConversationFileCleanupWorker, type PostgresConversationFileCleanupOptions } from "./conversation-file-cleanup.js";
@@ -1432,6 +1433,8 @@ export class PostgresConversationEventStore implements ConversationEventStore {
 }
 
 export interface PostgresConversationCatalogOptions<TAuthorizationContext> {
+  /** One stable conversation per authorized scope; preserves legacy rows. */
+  readonly conversationMode?: "single" | "multiple";
   readonly persistence: PostgresAiPersistence;
   readonly tenantId: string;
   /** Optional physical ownership-table mapping. Generic behavior remains SDK-owned. */
@@ -1506,10 +1509,49 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
     this.capabilities = Object.freeze({ rename: { supported: true as const },
       clear: options.clearContents ? { supported: true as const } : { supported: false as const, reason: "not_implemented" as const },
       archive: { supported: true as const }, restore: { supported: true as const }, permanentDelete: { supported: true as const } });
+    if (options.conversationMode === "single") {
+      const disabled = { supported: false as const, reason: "policy_disabled" as const };
+      this.capabilities = Object.freeze({ ...this.capabilities, rename: disabled, archive: disabled,
+        restore: disabled, permanentDelete: disabled });
+    }
+  }
+
+  private async single(context: TAuthorizationContext, create: boolean): Promise<ConversationCatalogDescriptor | null> {
+    await this.allowed({ action: create ? "create" : "list", authorizationContext: context });
+    const scope = id(this.options.scopeId(context), "scopeId");
+    return this.options.persistence.client.transaction(async tx => {
+      const key = `single-${createHash("sha256").update(JSON.stringify([this.#table.identity, scope])).digest("hex")}`;
+      await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [JSON.stringify([this.options.tenantId, key])]);
+      const client: PostgresSqlClient = { query: tx.query.bind(tx), transaction: async operation => operation(client) };
+      const persistence = new PostgresAiPersistence(client);
+      const saved = await persistence.getDocument<{ conversationId: ConversationId }>(this.options.tenantId, "checkpoint", key, "current");
+      let row = saved ? await this.lookup(tx, scope, saved.value.conversationId) : null;
+      if (saved && !row) throw new ConversationCatalogError("not_found", "get");
+      if (!saved) {
+        const page = await this.#table.list(tx, { tenantId: this.options.tenantId, scopeId: scope,
+          lifecycle: "active", pageSize: 1, cursor: null, order: { field: "updated_at", direction: "desc" } });
+        row = page.rows[0] ? catalogDescriptor(page.rows[0]) : null;
+        if (!row && create) {
+          const { conversationMode: _mode, ...options } = this.options;
+          row = (await new PostgresConversationCatalog({ ...options, persistence }).create({ authorizationContext: context,
+            idempotencyKey: key as never })).descriptor;
+        }
+        if (row) await persistence.compareAndSetDocument({ tenantId: this.options.tenantId, kind: "checkpoint",
+          scopeId: key, recordId: "current", expectedVersion: null, value: { conversationId: row.conversationId } });
+      }
+      await this.options.onRead?.({ client: tx, authorizationContext: context,
+        tenantId: this.options.tenantId, scopeId: scope, action: "list" });
+      await this.allowed({ action: create ? "create" : "list", authorizationContext: context });
+      return row;
+    });
   }
 
   async list(value: Parameters<ConversationCatalog<TAuthorizationContext>["list"]>[0]): Promise<ListConversationsResult> {
     const input = parseListConversationsInput<TAuthorizationContext>(value); await this.allowed({ action: "list", authorizationContext: input.authorizationContext });
+    if (this.options.conversationMode === "single") {
+      const row = await this.single(input.authorizationContext, false);
+      return { items: row && input.lifecycle === "active" && !input.cursor ? [row] : [], hasMore: false, nextCursor: null, order: input.order };
+    }
     const scope = id(this.options.scopeId(input.authorizationContext), "scopeId");
     const cursor = input.cursor ? cursorValues(input.cursor) : null;
     try {
@@ -1528,6 +1570,11 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
   async create(value: Parameters<ConversationCatalog<TAuthorizationContext>["create"]>[0]): Promise<CreateConversationResult> {
     const input = parseCreateConversationInput<TAuthorizationContext>(value); await this.allowed({ action: "create", authorizationContext: input.authorizationContext,
       ...(input.conversationId ? { conversationId: input.conversationId } : {}) });
+    if (this.options.conversationMode === "single") {
+      const descriptor = (await this.single(input.authorizationContext, true))!;
+      if (descriptor.lifecycle !== "active") throw new ConversationCatalogError("invalid_input", "create");
+      return { operation: "create", status: "idempotent", descriptor };
+    }
     const scope = id(this.options.scopeId(input.authorizationContext), "scopeId");
     const preparedTitle = this.options.prepareTitle ? this.options.prepareTitle(input.title ?? null, input.authorizationContext, "create") : input.title ?? null;
     const title = preparedTitle === null ? null : parseConversationCatalogTitle(preparedTitle, "create");
@@ -1697,6 +1744,9 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
     return catalogFingerprint(operation, this.#table.custom ? { ...input, storageIdentity: this.#table.identity } : input);
   }
   private async allowed(request: Parameters<ConversationCatalogAuthorizer<TAuthorizationContext>>[0]): Promise<void> {
+    if (this.options.conversationMode === "single" && ["rename", "archive", "restore", "permanent_delete"].includes(request.action)) {
+      throw new ConversationCatalogError("unsupported", request.action);
+    }
     if (await this.options.authorize(request) !== "allow") throw new ConversationCatalogError("forbidden", request.action);
   }
   private idempotencyError(error: unknown, operation: Parameters<ConversationCatalogAuthorizer<TAuthorizationContext>>[0]["action"]): unknown {

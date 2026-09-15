@@ -72,6 +72,58 @@ it("shows the complete assistant's saved threads by default and keeps compact hi
   expect(view.getByText("Threads").closest("details")?.open).toBe(false);
 });
 
+it.each([false, true])("single-conversation presentation confirms Clear and recovers a version conflict: %s", async (versionConflict) => {
+  const f = await fixture(1);
+  const originalClear = f.catalog.clear.bind(f.catalog);
+  const clear = vi.spyOn(f.catalog, "clear");
+  if (versionConflict) clear.mockImplementationOnce(async input => {
+    await originalClear({ ...input, idempotencyKey: "other-device-clear" as never });
+    throw Object.assign(new Error("Another device cleared the conversation"), { code: "version_conflict" });
+  });
+  const uploader = createAttachmentUploader<Blob>({ upload: async () => { throw new Error("unused"); } });
+  const view = render(<HandrailChatWorkspace workspace={f.workspace} threads={false} showConversationTitle={false}
+    title="Family Assistant" catalogOptions={{ catalog: f.catalog, authorizationContext: f.authorizationContext }}
+    composerForConversation={() => ({ uploader, conversationId: f.descriptors[0]!.conversationId, createRequest: () => ({}) })}
+    approvals={false} transcription={false} attachmentsEnabled={false}/>);
+  await waitFor(() => expect(view.getByText("Saved preview 1")).toBeTruthy());
+  expect(view.queryByRole("complementary", { name: "Conversation history" })).toBeNull();
+  expect(view.queryByText("Thread 1")).toBeNull();
+  expect(view.queryByRole("button", { name: "New" })).toBeNull();
+  fireEvent.click(view.getByRole("button", { name: "Clear conversation" }));
+  expect(clear).not.toHaveBeenCalled();
+  fireEvent.click(view.getByRole("button", { name: "Cancel" }));
+  expect(clear).not.toHaveBeenCalled();
+  fireEvent.click(view.getByRole("button", { name: "Clear conversation" }));
+  fireEvent.click(view.getByRole("button", { name: /^Clear$/ }));
+  await waitFor(() => expect(clear).toHaveBeenCalledTimes(1));
+  expect(clear.mock.calls[0]![0].conversationId).toBe(f.descriptors[0]!.conversationId);
+  if (versionConflict) {
+    await waitFor(() => expect(view.getByRole("alert")).toBeTruthy());
+    fireEvent.click(view.getByRole("button", { name: /^Clear$/ }));
+    await waitFor(() => expect(clear).toHaveBeenCalledTimes(2));
+    expect(clear.mock.calls[1]![0].expectedVersion).toBe(2);
+    expect(clear.mock.calls[1]![0].idempotencyKey).not.toBe(clear.mock.calls[0]![0].idempotencyKey);
+  }
+});
+
+it("an account switch discards Clear confirmation even when catalog IDs coincide", async () => {
+  const first = await fixture(1), second = await fixture(1);
+  const clearFirst = vi.spyOn(first.catalog, "clear"), clearSecond = vi.spyOn(second.catalog, "clear");
+  const uploader = createAttachmentUploader<Blob>({ upload: async () => { throw new Error("unused"); } });
+  const component = (f: typeof first) => <HandrailChatWorkspace threads={false} workspace={f.workspace}
+    catalogOptions={{ catalog: f.catalog, authorizationContext: f.authorizationContext }}
+    composerForConversation={() => ({ uploader, conversationId: f.descriptors[0]!.conversationId, createRequest: () => ({}) })}
+    attachmentsEnabled={false} approvals={false} transcription={false}/>;
+  const view = render(component(first));
+  await waitFor(() => expect(view.getByText("Saved preview 1")).toBeTruthy());
+  fireEvent.click(view.getByRole("button", { name: "Clear conversation" }));
+  expect(view.getByRole("group", { name: "Clear conversation confirmation" })).toBeTruthy();
+  view.rerender(component(second));
+  await waitFor(() => expect(view.getByRole("button", { name: "Clear conversation" })).toBeTruthy());
+  expect(view.queryByRole("group", { name: "Clear conversation confirmation" })).toBeNull();
+  expect(clearFirst).not.toHaveBeenCalled(); expect(clearSecond).not.toHaveBeenCalled();
+});
+
 it("preserves the latest selection when an older history request finishes later", async () => {
   const f = await fixture();
   const gate = deferred<void>();

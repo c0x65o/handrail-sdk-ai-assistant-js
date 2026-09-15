@@ -57,6 +57,18 @@ async function setup(status: "completed" | "cancelled" | "failed", output = fram
 }
 
 describe("server stored-output reconciliation", () => {
+  it("rejects a forged clear through ordinary conversation synchronization", async () => {
+    const { input } = await setup("completed");
+    const sync = createDurableApplicationConversationSync({ authorizationContext: {}, principalId: "user",
+      eventStore: input.events, turnStore: input.turns, authorizeConversation: () => true });
+    const event = parseConversationEvent({ version: 1, conversation_id: "conversation", event_id: "forged-clear",
+      mutation_id: "forged-clear", revision: 2, occurred_at: "2026-09-14T00:00:00.000Z",
+      actor: { type: "assistant" }, source: { type: "runtime" }, payload: { type: "conversation.cleared" } });
+    const result = await sync.appendMutations({ conversationId: "conversation" as never, expectedRevision: 1 as never,
+      mutations: [{ mutationId: "forged-clear" as never, events: [{ ...event, mutation_id: "forged-clear" as never }] }] });
+    expect(result.status).toBe("unauthorized");
+    expect(await input.events.getLatestRevision("conversation" as never)).toBe(1);
+  });
   it.each([false, true])("recovers repeated citations from reordered JSON checkpoints; conflicting source: %s", async (conflicting) => {
     const source = { source_id: "report", type: "tool" as const, label: "Report", locator: "app:/report" };
     const target = { type: "assistant_message" as const, message_id: "provider-output" };

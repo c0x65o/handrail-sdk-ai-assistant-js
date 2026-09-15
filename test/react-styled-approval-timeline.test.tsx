@@ -103,7 +103,7 @@ it("rests at a pending approval with no Stop button or decision from typing a co
   f.resources.listApprovalGroup.mockResolvedValue([{ ...f.proposal, expires_at: null }]);
   const view = render(<StyledChatPreset state={state} approvalResources={f.resources} includeStyles={false} transcription={false}/>);
   await screen.findByRole("button", { name: "Confirm" });
-  expect(screen.getByText("Approval requested")).toBeTruthy();
+  expect(screen.getByText("Waiting for approval", { selector: "strong" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   expect(view.container.querySelector('[data-busy="true"]')).toBeNull();
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "I need more time." } });

@@ -50,6 +50,9 @@ export class PostgresRealtimeWorkspaceActivityStore {
        JOIN unnest($2::text[], $3::text[]) AS authorized(scope_id, conversation_id)
          ON d.scope_id=authorized.scope_id AND d.payload->>'conversationId'=authorized.conversation_id
        WHERE d.tenant_id=$1 AND d.kind='realtime_call'
+         AND NOT EXISTS (SELECT 1 FROM handrail_ai_documents cleared WHERE cleared.tenant_id=d.tenant_id
+           AND cleared.kind='checkpoint' AND cleared.scope_id=d.payload->>'conversationId'
+           AND cleared.record_id='cleared-call:' || d.record_id)
          AND ($4::text IS NULL OR (d.payload->>'conversationId',d.record_id)>($4,$5))
        ORDER BY d.payload->>'conversationId',d.record_id LIMIT $6`,
       [first.tenantId, this.#scopes.map((scope) => scope.calls.scopeId), this.#scopes.map((scope) => scope.conversationId),

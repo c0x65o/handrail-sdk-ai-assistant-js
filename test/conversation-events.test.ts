@@ -14,6 +14,7 @@ import {
 type Fixture = Record<string, unknown>;
 
 const payloads: Fixture[] = [
+  { type: "conversation.cleared" },
   {
     type: "message.created",
     message_id: "msg_01",
@@ -355,7 +356,7 @@ describe("durable conversation event contract", () => {
       ).toThrow(/future_payload_field.*not a supported field/);
     }
 
-    const attachmentPayload = payloads[2]!;
+    const attachmentPayload = payloads.find(payload => payload.type === "message.attachment_referenced")!;
     parseConversationEvent(event(attachmentPayload));
     expect(() =>
       parseConversationEvent(

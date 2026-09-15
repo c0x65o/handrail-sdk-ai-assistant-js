@@ -23,7 +23,7 @@ function state(): ConversationState {
     message("answer", "assistant", 3), message("next-question", "user", 5, "turn-2"), message("next-answer", "assistant", 8, "turn-2")] };
 }
 const labels = (value: ReturnType<typeof conversationTimeline>) => value.map(entry => entry.type === "message" ? entry.message.message_id
-  : entry.type === "approval" ? entry.proposal.proposal_id : entry.type === "failure" ? `failed:${entry.turn.turn_id}` : entry.call.tool_call_id);
+  : entry.type === "activity" ? `activity:${entry.group.id}` : entry.type === "approval" ? entry.proposal.proposal_id : entry.type === "failure" ? `failed:${entry.turn.turn_id}` : entry.call.tool_call_id);
 
 describe("conversation timeline", () => {
   it("renders saved approvals for independent group identities in canonical chronology", () => {

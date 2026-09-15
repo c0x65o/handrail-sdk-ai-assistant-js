@@ -18,6 +18,7 @@ export const CONVERSATION_EVENT_VERSION = 1 as const;
 export const CONVERSATION_CITATION_RECORDS_VERSION = 1 as const;
 
 export const CONVERSATION_EVENT_TYPES = [
+  "conversation.cleared",
   "message.created",
   "message.text_appended",
   "message.attachment_referenced",
@@ -527,6 +528,7 @@ export interface ConversationTitleUpdatedPayload {
 }
 
 export type ConversationEventPayload =
+  | { type: "conversation.cleared" }
   | MessageCreatedPayload
   | MessageTextAppendedPayload
   | MessageAttachmentReferencedPayload
@@ -1301,6 +1303,9 @@ function validatePayload(
   }
 
   switch (object.type as ConversationEventType) {
+    case "conversation.cleared":
+      allowedKeys(object, ["type"], path);
+      return;
     case "message.created": {
       requiredKeys(object, ["message_id", "role", "content"], path);
       allowedKeys(object, ["type", "message_id", "role", "content"], path);

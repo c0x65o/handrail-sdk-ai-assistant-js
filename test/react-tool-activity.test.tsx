@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ToolActivity } from "../src/react/tool-activity.js";
 import { StyledChatPreset } from "../src/react-styled/index.js";
@@ -71,16 +71,57 @@ describe("canonical tool activity", () => {
       { type: "message.created", message_id: "message", role: "assistant",
         content: [{ type: "text", text: "Checking" }] }, call("lookup"), started("lookup")]);
     const view = render(<StyledChatPreset state={state}/>);
-    expect(screen.getByText("1 tool call: 0 completed, 1 running")).toBeTruthy();
+    expect(screen.getByText("1 action")).toBeTruthy();
     expect(view.container.textContent).not.toContain("not-visible-in-activity");
     view.rerender(<StyledChatPreset state={state} toolActivity="hidden"/>);
-    expect(screen.queryByText(/tool call:/)).toBeNull();
+    expect(screen.queryByText("1 action")).toBeNull();
     expect(screen.queryByText("lookup")).toBeNull();
     const next = history([{ type: "turn.status_changed", turn_id: "old", status: "running" }, call("lookup", "old"),
       result("lookup", false, "old"), { type: "turn.completed", turn_id: "old", outcome: "stop", output_message_ids: [] },
       { type: "turn.status_changed", turn_id: "new", status: "running" }]);
     expect(projectToolActivity(next).total).toBe(0);
     view.rerender(<StyledChatPreset state={next}/>);
-    expect(screen.queryByText(/tool call:/)).toBeNull();
+    expect(screen.getByText("Activity complete")).toBeTruthy();
+    expect(screen.getByText("Thinking…")).toBeTruthy();
   });
+});
+
+
+it("keeps one expanded group with its original question across tool continuations and new requests", () => {
+  const payloads: object[] = [
+    { type: "message.created", message_id: "question", role: "user", content: [{ type: "text", text: "First question" }] },
+    { type: "turn.started", turn_id: "turn", input_message_ids: ["question"] },
+    call("read_ledger"), started("read_ledger"),
+  ];
+  const view = render(<StyledChatPreset state={history(payloads)}/>);
+  const group = view.container.querySelector("details.hr-activity")! as HTMLDetailsElement;
+  expect(group.open).toBe(false);
+  group.open = true;
+  fireEvent(group, new Event("toggle"));
+  payloads.push(result("read_ledger"), { type: "turn.completed", turn_id: "turn", outcome: "tool_calls", output_message_ids: [] },
+    { type: "turn.started", turn_id: "continued", continuation_of_turn_id: "turn", input_message_ids: ["question"] },
+    call("summarize_income", "continued"), started("summarize_income", "continued"));
+  view.rerender(<StyledChatPreset state={history(payloads)}/>);
+  expect(view.container.querySelectorAll("details.hr-activity")).toHaveLength(1);
+  expect(view.container.querySelector("details.hr-activity")).toBe(group);
+  expect(group.open).toBe(true);
+  expect(group.textContent).toContain("2 actions");
+  expect(group.textContent).toContain("Read ledger");
+  expect(group.textContent).not.toContain("private-result");
+  payloads.push(result("summarize_income", false, "continued"),
+    { type: "message.text_appended", message_id: "answer", turn_id: "continued", text: "Here is the answer" },
+    { type: "turn.completed", turn_id: "continued", outcome: "stop", output_message_ids: ["answer"] },
+    { type: "message.created", message_id: "question2", role: "user", content: [{ type: "text", text: "Second question" }] },
+    { type: "turn.started", turn_id: "second", input_message_ids: ["question2"] });
+  const completed = history(payloads);
+  view.rerender(<StyledChatPreset state={completed}/>);
+  const text = view.container.querySelector(".hr-chat__transcript")!.textContent!;
+  expect(text.indexOf("Activity complete")).toBeLessThan(text.indexOf("Here is the answer"));
+  expect(text.indexOf("Here is the answer")).toBeLessThan(text.indexOf("Second question"));
+  expect(text.indexOf("Second question")).toBeLessThan(text.indexOf("Thinking…"));
+  expect(group.open).toBe(true);
+  view.unmount();
+  const restored = render(<StyledChatPreset state={completed}/>);
+  expect(restored.container.querySelectorAll("details.hr-activity")).toHaveLength(1);
+  expect(restored.container.querySelector("details.hr-activity")?.textContent).toContain("2 actions");
 });

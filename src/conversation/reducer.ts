@@ -1,4 +1,5 @@
 import { jsonValuesEqual } from "../json-equality.js";
+import { createInitialConversationState } from "./state.js";
 import {
   isLegalConversationApprovalProposalTransition,
   type ConversationApprovalReviewedArguments,
@@ -80,6 +81,10 @@ export function reduceConversationEvent(
   const payload = event.payload;
 
   switch (payload.type) {
+    case "conversation.cleared":
+      return freeze({ ...createInitialConversationState(event.conversation_id),
+        revision: accepted.revision, last_event_id: accepted.last_event_id, processed_event_ids: accepted.processed_event_ids,
+        processed_mutation_ids: accepted.processed_mutation_ids });
     case "message.created": {
       const index = accepted.messages.findIndex(
         (message) => message.message_id === payload.message_id,

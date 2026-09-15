@@ -142,6 +142,8 @@ async function canonicalize(
   eventStore: ConversationEventStore,
 ): Promise<CanonicalConversationSyncMutation> {
   const payload = proposed.payload;
+  // A reset is a separately authorized catalog operation, never a client fact.
+  if (payload.type === "conversation.cleared") deny();
   if (payload.type === "message.created") {
     if (proposed.source.type !== "client" || proposed.actor.type !== "user" || payload.role !== "user") deny();
     return canonical(proposed, { type: "user", id: principalId as never });

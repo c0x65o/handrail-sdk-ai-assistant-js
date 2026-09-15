@@ -22,6 +22,6 @@ export * from "./transports/index.js";
 export * from "./usage.js";
 export * from "./web-search.js";
 
-export { conversationTimeline, type ConversationTimelineEntry, type ConversationTimelineOptions } from "./conversation/timeline.js";
+export { conversationTimeline, conversationActivityGroups, type ConversationActivityGroup, type ConversationTimelineEntry, type ConversationTimelineOptions } from "./conversation/timeline.js";
 
 export { assistantToolArgumentReference, reviewedToolArguments } from "./conversation/approval-arguments.js";

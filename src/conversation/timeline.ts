@@ -1,12 +1,42 @@
 import type { ConversationApprovalProposalRecord, ConversationMessageRecord, ConversationState, ConversationToolCallRecord } from "./state.js";
 
+export interface ConversationActivityGroup {
+  readonly id: string;
+  readonly turnId: string;
+  readonly turnIds: readonly string[];
+}
+
+/** Continuations share one stable request identity, including after reload. */
+export function conversationActivityGroups(state: ConversationState): readonly ConversationActivityGroup[] {
+  const turns = new Map(state.turns.map(turn => [String(turn.turn_id), turn]));
+  const groups = new Map<string, { id: string; turnId: string; turnIds: string[] }>();
+  const ids = [...new Set([...state.turns.map(turn => String(turn.turn_id)), ...state.tool_calls.map(call => String(call.turn_id))])];
+  for (const id of ids) {
+    let root = id;
+    const visited = new Set<string>();
+    while (!visited.has(root)) {
+      visited.add(root);
+      const parent = turns.get(root)?.continuation_of_turn_id;
+      if (!parent || visited.has(parent)) break;
+      root = parent;
+    }
+    const group = groups.get(root) ?? { id: root, turnId: id, turnIds: [] };
+    group.turnId = id;
+    group.turnIds.push(id);
+    groups.set(root, group);
+  }
+  return [...groups.values()];
+}
+
 export type ConversationTimelineEntry =
+  | { readonly type: "activity"; readonly group: ConversationActivityGroup }
   | { readonly type: "message"; readonly message: ConversationMessageRecord }
   | { readonly type: "approval"; readonly proposal: ConversationApprovalProposalRecord }
   | { readonly type: "tool_result"; readonly call: ConversationToolCallRecord }
   | { readonly type: "failure"; readonly turn: ConversationState["turns"][number] };
 
 export interface ConversationTimelineOptions {
+  readonly includeActivity?: boolean;
   readonly proposals?: readonly ConversationApprovalProposalRecord[];
   /** Show domain result cards; unselected tool results remain in activity. */
   readonly includeToolResult?: (call: ConversationToolCallRecord) => boolean;
@@ -20,6 +50,16 @@ export function conversationTimeline(state: ConversationState, options: Conversa
   const proposals = options.proposals ?? state.approval_proposals;
   const slots = new Map<number, ConversationTimelineEntry[]>();
   const add = (slot: number, entry: ConversationTimelineEntry) => slots.set(slot, [...(slots.get(slot) ?? []), entry]);
+  if (options.includeActivity) for (const group of conversationActivityGroups(state)) {
+    const turns = state.turns.filter(turn => group.turnIds.includes(turn.turn_id));
+    // Bind to the original input, never to the latest user's message during a continuation.
+    const root = turns.find(turn => turn.turn_id === group.id) ?? turns[0];
+    const input = messages.findIndex(message => message.role === "user" &&
+      (message.turn_id === group.id || root?.input_message_ids.includes(message.message_id)));
+    const related = messages.findIndex(message => group.turnIds.includes(message.turn_id ?? "") ||
+      turns.some(turn => turn.output_message_ids.includes(message.message_id)));
+    add(input >= 0 ? input + 1 : related >= 0 ? related : messages.length, { type: "activity", group });
+  }
   const actions = proposals.map((proposal) => ({ entry: { type: "approval" as const, proposal },
     id: String(proposal.proposal_id), turnId: proposal.turn_id, createdAt: String(proposal.created_at) }));
   const results = state.tool_calls.flatMap((call) => {

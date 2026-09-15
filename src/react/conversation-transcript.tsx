@@ -1,11 +1,12 @@
 import { Fragment, useMemo, type HTMLAttributes, type ReactNode } from "react";
-import { conversationTimeline, type ConversationTimelineOptions } from "../conversation/timeline.js";
+import { conversationTimeline, type ConversationActivityGroup, type ConversationTimelineOptions } from "../conversation/timeline.js";
 import type { ConversationApprovalProposalRecord, ConversationMessageRecord, ConversationState, ConversationToolCallRecord } from "../conversation/state.js";
 import { useSmartTranscriptFollow } from "./transcript-follow.js";
 import { Message } from "./primitives.js";
 
 export interface ConversationTranscriptProps extends Omit<HTMLAttributes<HTMLDivElement>, "children">, ConversationTimelineOptions {
   readonly state: ConversationState;
+  readonly renderActivity?: (group: ConversationActivityGroup) => ReactNode;
   readonly renderMessage?: (message: ConversationMessageRecord) => ReactNode;
   readonly renderApproval?: (proposal: ConversationApprovalProposalRecord) => ReactNode;
   readonly renderToolResult?: (call: ConversationToolCallRecord) => ReactNode;
@@ -15,19 +16,20 @@ export interface ConversationTranscriptProps extends Omit<HTMLAttributes<HTMLDiv
 }
 
 /** Shared chronology, saved failures and scroll following; hosts supply domain card formatting. */
-export function ConversationTranscript({ state, proposals, includeToolResult,
+export function ConversationTranscript({ state, proposals, includeToolResult, includeActivity, renderActivity,
   renderMessage, renderApproval, renderToolResult, renderFailure, emptyState, children, onScroll, ...props }: ConversationTranscriptProps) {
   const contentVersion = useMemo(() => ({ state, proposals }), [state, proposals]);
   const follow = useSmartTranscriptFollow({ conversationId: state.conversation_id, contentVersion });
   const entries = conversationTimeline(state, {
-    ...(proposals ? { proposals } : {}), ...(includeToolResult ? { includeToolResult } : {}),
+    ...(includeActivity ? { includeActivity } : {}), ...(proposals ? { proposals } : {}), ...(includeToolResult ? { includeToolResult } : {}),
   });
   return <div className="hr-chat__transcript-wrap">
     <div {...props} ref={follow.transcriptRef} tabIndex={props.tabIndex ?? 0} role={props.role ?? "list"}
       aria-label={props["aria-label"] ?? "Conversation transcript"} onScroll={(event) => {
         onScroll?.(event); if (!event.defaultPrevented) follow.onScroll(event);
       }}>
-      {entries.map((entry) => entry.type === "message" ? <Fragment key={`message:${entry.message.message_id}`}>
+      {entries.map((entry) => entry.type === "activity" ? <Fragment key={`activity:${entry.group.id}`}>{renderActivity?.(entry.group)}</Fragment>
+        : entry.type === "message" ? <Fragment key={`message:${entry.message.message_id}`}>
         {renderMessage ? renderMessage(entry.message) : <Message message={entry.message}/>}</Fragment>
         : entry.type === "approval" ? <Fragment key={`approval:${entry.proposal.proposal_id}`}>{renderApproval?.(entry.proposal)}</Fragment>
           : entry.type === "tool_result" ? <Fragment key={`tool:${entry.call.turn_id}:${entry.call.tool_call_id}`}>{renderToolResult?.(entry.call)}</Fragment>
