@@ -24,7 +24,7 @@ import { ConversationEventStoreConflictError } from "../conversation/event-store
 import { replayConversation } from "../conversation/replay.js";
 import { findConversationEvent } from "../conversation/find-event.js";
 import { createAssistantConversationTitles, type AssistantAutomaticTitleOptions,
-  type AssistantTitleProviderRequest } from "./conversation-titles.js";
+  type AssistantTitleProviderRequest, type AssistantExternalTitleUserTexts } from "./conversation-titles.js";
 
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 import type { AuthoritativeAttribution, ChatRequest, JsonObject, StreamEvent } from "../protocol.js";
@@ -61,7 +61,7 @@ export { waitForApplicationApproval, ApplicationApprovalWaitExpiredError,
 export type { HandrailAssistantToolObserver } from "./tool-observer.js";
 export { openaiResponses, createOpenAIResponsesRequest, DEFAULT_ASSISTANT_DOCUMENT_INPUT, type HandrailOpenAIResponsesOptions } from "./openai-responses.js";
 export { createProviderToolLoopTransport, type ProviderToolLoopTransportOptions } from "./provider-tool-loop.js";
-export type { AssistantAutomaticTitleOptions, AssistantTitleProviderRequest } from "./conversation-titles.js";
+export type { AssistantAutomaticTitleOptions, AssistantTitleProviderRequest, AssistantExternalTitleUserTexts } from "./conversation-titles.js";
 
 export const HANDRAIL_ASSISTANT_VERSION = "handrail.assistant.v1" as const;
 
@@ -161,6 +161,9 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   readonly activityPubSub?: LiveConversationActivityPubSub;
   /** Server-owned first-completed-turn titles, enabled when the provider supports generation. */
   readonly automaticTitles?: false | AssistantAutomaticTitleOptions;
+  /** Freshly authorized user speech for conversations without text messages.
+   * This never creates chat turns or reopens the external transport. */
+  readonly externalTitleUserTextsFor?: AssistantExternalTitleUserTexts<TContext>;
   /** Legacy generate endpoint override. Prefer provider.generateTitle so the SDK owns persistence and automatic triggers. */
   readonly titleGeneration?: (input: { readonly conversationId: string; readonly idempotencyKey: string },
     context: TContext, signal: AbortSignal) => Promise<string>;
@@ -259,6 +262,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     context, persistence: bundleFor(context),
   }) ?? bundleFor(context).catalog;
   const titles = createAssistantConversationTitles({ assistantId, catalogFor, bundleFor, provider: options.provider,
+    ...(options.externalTitleUserTextsFor === undefined ? {} : { externalUserTextsFor: options.externalTitleUserTextsFor }),
     ...(options.automaticTitles === undefined ? {} : { automatic: options.automaticTitles }),
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }) });
   const approvalStoreFor = (context: TContext) => options.approvalStoreFor?.({

@@ -65,6 +65,33 @@ Other clients read the same saved catalog title. They do not need to implement
 generation or persistence; their normal catalog refresh determines when the new
 label appears.
 
+## Saved activity outside text turns
+
+A host with separately persisted user speech can supply
+`externalTitleUserTextsFor({ context, conversationId, signal })`. It must read only
+currently authorized user speech from that exact conversation, respect cancellation,
+and return strings. Do not return assistant speech, tool payloads, credentials,
+or serialized metadata. The SDK uses this fallback only when canonical user text
+is absent; it does not manufacture messages or turns. It bounds and normalizes
+the text, reauthorizes catalog access after the read, and preserves concurrent
+manual renames. Source reads share the title generation timeout. Empty sources
+leave the existing title unchanged.
+
+The host should select a stable saved source, such as an explicitly ended call,
+using fresh account permissions rather than the call's expired media lease.
+Catalog listing checks placeholder titles, or a client can explicitly request
+the title endpoint and then refresh history. The Flutter controller's
+`refreshGeneratedTitle(conversationId, operationId)` supports this server-owned
+path without requiring a text message or falling back to a local rename.
+Neither operation resumes calls, approves tools, or asserts spoken success.
+
+When neither canonical text nor authorized speech exists, saved user attachment
+types provide a deterministic label: “Shared documents”, “Shared images”, or
+“Shared attachments”. This path does not call a title provider or expose file
+names, references, or bytes. It uses the same authorized optimistic catalog
+rename and preserves manual titles. A truly empty conversation keeps its
+placeholder.
+
 ## Persistence and failures
 
 The SDK authorizes catalog access before reading user text or joining pending
@@ -83,22 +110,14 @@ The existing title stays visible, and title failures are diagnostic-only. Usage
 admission and durable receipts are separate from the answer's invocation and
 contain no prompt or transcript text.
 
-## Mills and Spartan adoption
+## Consumer adoption
 
-Both app manifests pin `135ac5ab541b124ddd78b65a4c69d6fcb0008b41`, which includes
-completion-triggered titles. The running-turn trigger in this checkout requires
-a new immutable SDK commit and matching consumer lockfiles before deployment.
-Do not point application dependencies at an uncommitted checkout or branch.
-
-Spartan's adapter uses the SDK Responses title provider and shared React title
-observer. Its existing authorized catalog rename adapter remains the domain
-persistence seam. The legacy gateway keeps its separate compatibility path.
-
-Mills still uses a custom provider without a title hook, and its retained
-household catalog reports rename unsupported. That integration needs a title
-provider hook and an authorized optimistic rename implementation before server
-automatic titles can apply there. Standard SDK catalogs and `openaiResponses`
-providers supply these capabilities by default.
+SDK source changes apply to consumers only after publication to a public HTTPS
+Git full-SHA revision, matching lockfiles, and normal installation/build. Verify
+installed packages and loaded releases separately. A working source checkout or
+an adapter patch does not establish adoption. The external speech hook and
+Flutter refresh method must both be available in the chosen published revisions
+before enabling that integration.
 
 Verify running turns from Enter and Send, reopened placeholders, manual
 rename/archive races, provider failure, and separate usage receipts before

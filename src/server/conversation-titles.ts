@@ -22,6 +22,23 @@ export interface AssistantAutomaticTitleOptions {
   readonly timeoutMilliseconds?: number;
 }
 
+/** Reads user speech retained by a trusted external transport. The host must
+ * freshly authorize that source and return no assistant/tool/private metadata. */
+export type AssistantExternalTitleUserTexts<TContext> = (input: {
+  readonly context: TContext;
+  readonly conversationId: string;
+  readonly signal: AbortSignal;
+}) => Promise<readonly string[]>;
+
+function withSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+  });
+}
+
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
 /** The server owns generation, duplicate dispatch protection, and catalog persistence. */
@@ -35,6 +52,7 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
     readonly generateTitle?: (input: AssistantTitleProviderRequest<TContext>) => Promise<string>;
   };
   readonly diagnostics?: AiDiagnosticSink;
+  readonly externalUserTextsFor?: AssistantExternalTitleUserTexts<TContext>;
 }) {
   const policy = options.automatic === false ? {} : options.automatic;
   const placeholders = new Set([DEFAULT_CONVERSATION_TITLE, ...(policy?.placeholderTitles ?? [])]);
@@ -58,20 +76,46 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
     const existing = pending.get(identity);
     if (existing) return existing;
     const work = (async () => {
-      const bundle = options.bundleFor(context);
-      const replay = await replayConversation({ conversationId: conversationId as never, eventStore: bundle.events });
-      const state = replay.state;
-      replay.store.destroy();
-      if (state.replay_error !== null) throw new ConversationCatalogError("unavailable", "rename");
-      const titleContext = createConversationTitleGenerationContext(state);
-      if (titleContext.userTexts.length === 0) return found.descriptor.title ?? DEFAULT_CONVERSATION_TITLE;
-      const completedTurn = [...state.turns].reverse().find((turn) => turn.status === "completed");
-      if (requireCompleted && !completedTurn) return found.descriptor.title ?? DEFAULT_CONVERSATION_TITLE;
-      const operationId = `title-${hash(JSON.stringify([identity, state.turns.at(-1)?.turn_id ?? "first-message"]))}`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(new Error("Conversation title generation timed out.")), timeoutMilliseconds);
       timeout.unref?.();
       try {
+        const bundle = options.bundleFor(context);
+        const replay = await replayConversation({ conversationId: conversationId as never, eventStore: bundle.events });
+        const state = replay.state;
+        replay.store.destroy();
+        if (state.replay_error !== null) throw new ConversationCatalogError("unavailable", "rename");
+        let titleContext = createConversationTitleGenerationContext(state);
+        let externalUserTexts: readonly string[] = [];
+        if (titleContext.userTexts.length === 0 && options.externalUserTextsFor) {
+          externalUserTexts = await withSignal(options.externalUserTextsFor({ context, conversationId, signal: controller.signal }), controller.signal);
+          controller.signal.throwIfAborted();
+          // A source read can outlive permission changes, deletion or a manual rename.
+          const current = await catalog.get({ authorizationContext: context, conversationId: conversationId as never });
+          if (!isUntitled(current.descriptor.title)) return current.descriptor.title!;
+          if (current.descriptor.lifecycle !== "active") return current.descriptor.title ?? DEFAULT_CONVERSATION_TITLE;
+          titleContext = createConversationTitleGenerationContext(state, externalUserTexts);
+        }
+        const completedTurn = [...state.turns].reverse().find((turn) => turn.status === "completed");
+        if (requireCompleted && !completedTurn) return found.descriptor.title ?? DEFAULT_CONVERSATION_TITLE;
+        if (titleContext.userTexts.length === 0) {
+          // An attachment-only conversation still needs a useful history label.
+          // Keep filenames, references and file bytes out of title-provider input.
+          const kinds = new Set(state.messages.filter((message) => message.role === "user")
+            .flatMap((message) => message.attachments.map((attachment) => attachment.kind ?? "image")));
+          if (kinds.size === 0) return found.descriptor.title ?? DEFAULT_CONVERSATION_TITLE;
+          const title = kinds.size > 1 ? "Shared attachments" : kinds.has("document") ? "Shared documents" : "Shared images";
+          const latest = await catalog.get({ authorizationContext: context, conversationId: conversationId as never });
+          if (!isUntitled(latest.descriptor.title)) return latest.descriptor.title!;
+          if (latest.descriptor.lifecycle !== "active") return latest.descriptor.title ?? DEFAULT_CONVERSATION_TITLE;
+          controller.signal.throwIfAborted();
+          const renamed = await catalog.rename({ authorizationContext: context, conversationId: conversationId as never,
+            expectedVersion: latest.descriptor.version,
+            idempotencyKey: `attachment-title-${hash(JSON.stringify([identity, latest.descriptor.version, title]))}` as never, title });
+          return renamed.descriptor.title ?? title;
+        }
+        const sourceIdentity = externalUserTexts.length > 0 ? `external-${hash(JSON.stringify(titleContext))}` : "first-message";
+        const operationId = `title-${hash(JSON.stringify([identity, state.turns.at(-1)?.turn_id ?? sourceIdentity]))}`;
         const invoke = async (): Promise<string> => {
           let usageAttempted = false;
           const recordUsage: AssistantTitleProviderRequest<TContext>["recordUsage"] = async (usage, status) => {
@@ -109,7 +153,7 @@ export function createAssistantConversationTitles<TContext extends HandrailAssis
               throw error;
             }
           });
-          return service.generateTitle({ state, signal: controller.signal, idempotencyKey: operationId });
+          return service.generateTitle({ state, externalUserTexts, signal: controller.signal, idempotencyKey: operationId });
         };
         // Keep completed results across catalog-write failures and process restarts.
         // An uncertain external dispatch is never repeated under the same identity.

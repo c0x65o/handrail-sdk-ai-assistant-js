@@ -66,6 +66,23 @@ async function fixture(title?: string, deltas = false) {
 }
 
 describe("SDK-owned conversation titles", () => {
+  it.each([['document', 'Shared documents'], ['image', 'Shared images']] as const)(
+    'names attachment-only %s conversations without provider access to files', async (kind, expected) => {
+      const f = await fixture();
+      await f.append({ type: "message.created", message_id: "file-question" as never, role: "user", content: [{ type: "text", text: "" }] });
+      await f.append({ type: "message.attachment_referenced", message_id: "file-question" as never,
+        attachment: { attachment_id: "att_file" as never, kind, filename: "private-name", size_bytes: 100,
+          media_type: kind === "document" ? "application/pdf" : "image/png" } as never });
+      const titles = createAssistantConversationTitles(f.options);
+      expect(await titles.generate(f.conversationId, f.context)).toBe(expected);
+      expect(await f.currentTitle()).toBe(expected);
+      expect(f.request).not.toHaveBeenCalled();
+      const row = (await f.bundle.catalog.get({ authorizationContext: f.context, conversationId: f.conversationId })).descriptor;
+      await f.bundle.catalog.rename({ authorizationContext: f.context, conversationId: f.conversationId,
+        expectedVersion: row.version, idempotencyKey: "manual" as never, title: "My chosen title" });
+      expect(await titles.generate(f.conversationId, f.context)).toBe("My chosen title");
+    });
+
   it("removes the generated title from provider retention when its conversation is deleted", async () => {
     const f = await fixture(); await f.complete();
     await createAssistantConversationTitles(f.options).generate(f.conversationId, f.context);
@@ -247,5 +264,73 @@ describe("SDK-owned conversation titles", () => {
       expect(f.request).toHaveBeenCalledTimes(2); // Answer plus the separate title Responses call.
       expect(paths.some((path) => path.endsWith("/titles/generate"))).toBe(false);
     } finally { finishTitle(); runtime.destroy(); assistant.stopUsageWorker(); }
+  });
+});
+
+describe("titles from authorized external user speech", () => {
+  it("generates and persists a title without manufacturing chat messages or turns", async () => {
+    const f = await fixture();
+    const read = vi.fn(async () => ["  Plan   a family picnic  "]);
+    const options = { ...f.options, externalUserTextsFor: read };
+    await createAssistantConversationTitles(options).afterActivity(f.conversationId, f.context);
+    expect(await f.currentTitle()).toBe("Quarterly Cash Planning");
+    expect(read).toHaveBeenCalledWith({ context: f.context, conversationId: f.conversationId, signal: expect.any(AbortSignal) });
+    expect(JSON.stringify(f.request.mock.calls)).toContain("Plan a family picnic");
+    expect(await f.bundle.events.getLatestRevision(f.conversationId)).toBeNull();
+    await createAssistantConversationTitles(options).afterActivity(f.conversationId, f.context);
+    expect(f.request).toHaveBeenCalledOnce();
+  });
+
+  it("does not read speech before authorization or replace canonical user text", async () => {
+    const f = await fixture();
+    const read = vi.fn(async () => ["Private external speech"]);
+    const titles = createAssistantConversationTitles({ ...f.options, externalUserTextsFor: read });
+    await expect(titles.generate(f.conversationId, { ...f.context, principalId: "foreign" })).rejects.toBeDefined();
+    expect(read).not.toHaveBeenCalled();
+    await f.complete();
+    await titles.generate(f.conversationId, f.context);
+    expect(read).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.request.mock.calls)).not.toContain("Private external speech");
+  });
+
+  it("rechecks authorization after the source read before provider dispatch", async () => {
+    const f = await fixture();
+    let denied = false;
+    const get = f.bundle.catalog.get.bind(f.bundle.catalog);
+    const readCatalog = vi.spyOn(f.bundle.catalog, "get").mockImplementation(async (input) => {
+      if (denied) throw new Error("Access revoked");
+      return get(input);
+    });
+    const titles = createAssistantConversationTitles({ ...f.options,
+      externalUserTextsFor: async () => { denied = true; return ["Private speech"]; } });
+    await expect(titles.generate(f.conversationId, f.context)).rejects.toThrow("Access revoked");
+    expect(f.request).not.toHaveBeenCalled();
+    readCatalog.mockRestore();
+    expect(await f.currentTitle()).toBeNull();
+  });
+
+  it("lets a manual rename during the source read win without spending on generation", async () => {
+    const f = await fixture();
+    const titles = createAssistantConversationTitles({ ...f.options, externalUserTextsFor: async () => {
+      const row = await f.bundle.catalog.get({ authorizationContext: f.context, conversationId: f.conversationId });
+      await f.bundle.catalog.rename({ authorizationContext: f.context, conversationId: f.conversationId,
+        expectedVersion: row.descriptor.version, idempotencyKey: "manual-during-speech" as never, title: "My chosen title" });
+      return ["Recorded user speech"];
+    } });
+    expect(await titles.generate(f.conversationId, f.context)).toBe("My chosen title");
+    expect(f.request).not.toHaveBeenCalled();
+  });
+
+  it("times out a stalled speech reader and never dispatches after it returns late", async () => {
+    const f = await fixture();
+    let release!: (texts: readonly string[]) => void;
+    const read = vi.fn(() => new Promise<readonly string[]>(resolve => { release = resolve; }));
+    const titles = createAssistantConversationTitles({ ...f.options, automatic: { timeoutMilliseconds: 100 }, externalUserTextsFor: read });
+    await expect(titles.generate(f.conversationId, f.context)).rejects.toThrow("timed out");
+    expect(read).toHaveBeenCalledOnce();
+    release(["Late speech"]);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(f.request).not.toHaveBeenCalled();
+    expect(await f.currentTitle()).toBeNull();
   });
 });

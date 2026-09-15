@@ -23,7 +23,8 @@ export type ConversationTitleGenerationIdempotencyKey =
 /**
  * The complete conversation context visible to a title generator.
  *
- * `userTexts` contains only normalized, capped text from user messages. It
+ * `userTexts` contains only normalized, capped text from user messages or,
+ * when those are absent, user speech supplied by an authorized host transport. It
  * never contains assistant/system text, attachments or references, tool data,
  * citations, metadata, credentials, authorization state, hidden instructions,
  * or provider-native fields.
@@ -47,6 +48,8 @@ export type ConversationTitleGenerationHook = (
 
 export interface GenerateConversationTitleInput {
   readonly state: ConversationState;
+  /** Trusted user speech fallback; never a synthetic chat message or instruction. */
+  readonly externalUserTexts?: readonly string[];
   readonly signal: AbortSignal;
   readonly idempotencyKey: string;
 }
@@ -91,6 +94,7 @@ const SANITIZED_TEXT_CHARACTER = /[\p{Cc}\p{Cs}\p{Zl}\p{Zp}]/gu;
  */
 export function createConversationTitleGenerationContext(
   state: ConversationState,
+  externalUserTexts: readonly string[] = [],
 ): ConversationTitleGenerationContext {
   const conversationId = state.conversation_id;
   if (
@@ -135,6 +139,21 @@ export function createConversationTitleGenerationContext(
     remaining -= capped.length;
   }
 
+  // Keep external transport data out of text-chat titles. Read only this narrow,
+  // bounded array; never forward a host record, metadata or provider event.
+  if (userTexts.length === 0) {
+    if (!Array.isArray(externalUserTexts)) throw new ConversationTitleGenerationError("invalid_input");
+    for (const value of externalUserTexts.slice(0, CONVERSATION_TITLE_GENERATION_LIMITS.userTextItems)) {
+      if (typeof value !== "string") throw new ConversationTitleGenerationError("invalid_input");
+      const text = sanitizeUserText(value.slice(0, 8_192));
+      const capped = truncateUtf16(text, Math.min(remaining, CONVERSATION_TITLE_GENERATION_LIMITS.userTextLength)).trimEnd();
+      if (!capped) continue;
+      userTexts.push(capped);
+      remaining -= capped.length;
+      if (remaining === 0) break;
+    }
+  }
+
   return Object.freeze({
     conversationId,
     userTexts: Object.freeze(userTexts),
@@ -165,7 +184,7 @@ export class ConversationTitleGenerationService {
     }
     throwIfAborted(input.signal);
 
-    const context = createConversationTitleGenerationContext(input.state);
+    const context = createConversationTitleGenerationContext(input.state, input.externalUserTexts);
     let idempotencyKey: ConversationTitleGenerationIdempotencyKey;
     try {
       idempotencyKey = parseConversationCatalogIdempotencyKey(

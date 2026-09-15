@@ -297,3 +297,29 @@ describe("ConversationTitleGenerationService", () => {
     });
   });
 });
+
+describe("external user speech title context", () => {
+  it("bounds, normalizes and isolates speech without changing the source conversation", async () => {
+    const state = conversationState([]);
+    const hook = vi.fn(async (_request: ConversationTitleGenerationHostRequest) => "Spoken request");
+    const service = new ConversationTitleGenerationService(hook);
+    await service.generateTitle({ ...input(state), externalUserTexts: Array.from({ length: 10 }, () => " words\n".repeat(500)) });
+    const context = hook.mock.calls[0]![0];
+    expect(Object.keys(context.context)).toEqual(["conversationId", "userTexts"]);
+    expect(context.context.userTexts.length).toBeLessThanOrEqual(8);
+    expect(context.context.userTexts.every(text => text.length <= 1024 && !text.includes("\n"))).toBe(true);
+    expect(context.context.userTexts.join("").length).toBeLessThanOrEqual(4096);
+    expect(state.messages).toHaveLength(0);
+    expect(state.turns).toHaveLength(0);
+  });
+
+  it("never substitutes external speech for an existing user message", () => {
+    expect(createConversationTitleGenerationContext(conversationState(), ["External text"]).userTexts)
+      .toEqual(["Plan a weekend in Chicago"]);
+  });
+
+  it("rejects malformed external text rather than serializing host metadata", () => {
+    expect(() => createConversationTitleGenerationContext(conversationState([]), [{ secret: "hidden" }] as never))
+      .toThrow(ConversationTitleGenerationError);
+  });
+});
