@@ -27,7 +27,7 @@ async function fixture(limits: Partial<Omit<SavedFileToolOptions<typeof context>
       const file = manifest.find(file => file.saved.attachment_id === attachment.attachment_id)!;
       return { reference: file.uploaded as AttachmentReference, sha256: file.sha256 };
     }, readBytes });
-  const tools = createSavedFileTools({ filesFor: (_context: typeof context) => files, supportedDocumentMediaTypes: ["application/pdf",
+  const tools = createSavedFileTools<typeof context>({ filesFor: () => files, supportedDocumentMediaTypes: ["application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"], maximumDocuments: 2, ...limits });
   const application = await createAiApplication({ installContext: context, plugins: [tools.plugin], toolAdmission: tools.admission,
     policy: () => ({ outcome: "allow" }) });

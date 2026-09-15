@@ -1,4 +1,5 @@
 import { correlateOpenAIResponsesFunctionCalls } from "./openai-responses-stream.js";
+import { ProviderInputPreparationError } from "./input-preparation-error.js";
 import { awaitWithSignal } from "../await-signal.js";
 import {
   normalizeCitationRecords,
@@ -254,6 +255,7 @@ function usage(value: unknown): ProviderUsage {
 }
 
 function safeFailure(error: unknown): ProviderAdapterError {
+  if (error instanceof ProviderInputPreparationError) return error.failure;
   if (error instanceof OpenAIResponsesPreflightError) {
     return { kind: "client", retryable: false, code: "invalid_request", message: "The request uses a capability not configured for this adapter." };
   }

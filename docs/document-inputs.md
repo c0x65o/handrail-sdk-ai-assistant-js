@@ -67,8 +67,91 @@ Existing-storage adapters keep their ownership/identity and byte-integrity check
 in the metadata/read callbacks. Do not serialize the returned bytes or private
 content reference into model tool JSON; expose only the public entry fields.
 
-This server API is implemented and tested. Its model-facing tools and shared
-attachment-to-record integration remain separate work in progress.
+### Model-facing list and open tools
+
+`openaiResponses({ savedConversation: true, ...options })` installs shared
+`handrail_files_list` and `handrail_files_open` tools through the assistant's
+normal tool registry, admission policy, execution ledger and result events.
+Use `savedConversation: { fileTools: false }` to disable these tools, or
+`fileTools: { maximumTotalBytes }` to lower the aggregate open-selection budget.
+The default aggregate budget is 25 MiB; the configured provider format, document
+size and image/document count limits also apply. Host tool policies still apply.
+
+Listing returns canonical metadata and a paging cursor, including files outside
+the bounded recent history. Opening accepts handles from that list and reads the
+original bytes through the protected service. A successful result records only
+public metadata and SHA-256 checksums. Private content references and binary data
+are never included in tool-result JSON. Opening does not attach a file to a
+business record; use the separate record attachment service below.
+
+The latest successful open selection replaces the previous selection in that
+provider continuation. The server revalidates the receipt against current saved
+files and rebuilds bounded provider input, retaining all current-message files.
+It does not append every historical file. Required old files survive a legacy
+message-only window limit, and approved-review context is preserved. A new turn
+starts from canonical bounded history and can list/open prior files again.
+
+Selection limits are checked against the current admitted message before an open
+receipt succeeds. Expired, changed or inaccessible files produce safe failures.
+Fresh checks also run before cached tool receipts and before connection retries
+send saved content again. The SDK does not grant access from a handle or reuse
+old file bytes across later tool steps. Existing-storage adapters use the same
+authorized metadata and byte callbacks as canonical history preparation.
+
+## Attaching an original file to a record
+
+`createRecordFileAttachments` owns preparation, original-file verification,
+immutable operation identity, receipt persistence and destination read-back.
+It uses `createSavedFileHandles` and registered domain destinations. The host
+supplies a trusted namespace (including account/user/service identity), the
+saved-file service, `createPostgresRecordFileAttachmentStore(persistence, tenantId)`,
+and its destination adapters. No separate database schema is needed.
+
+The workflow has three stages:
+
+1. `prepare({ conversationId, signal, idempotencyKey, request })` reads the original
+   saved file and validates current target access and destination format/size
+   limits. It durably freezes the source identity/checksum, destination, canonical
+   target and metadata, plus any `writeOptions` such as an expected record version.
+   The idempotency key comes from the trusted operation, not a model-chosen tenant
+   or storage identity. Reusing it for different input is rejected. Preparation
+   creates no business attachment and does not grant approval.
+2. Present the returned intent through the existing SDK approval policy and UI.
+   The mutation tool takes its `operationId` and runs `execute` only through that
+   approved tool path. Compose `createRecordFileAttachmentAdmission({ toolNames,
+   serviceFor })` with host admission; it checks current source/destination access
+   and completed read-back before the SDK can replay a cached tool result.
+   `inspect` is the equivalent read-only API for reviewing a prepared operation.
+3. `execute({ conversationId, signal, operationId })` loads the frozen intent,
+   reauthorizes, and resolves the original bytes again. It looks up the domain
+   operation before writing. A successful receipt is persisted only after reading
+   the destination's actual bytes, filename, MIME, stable target and metadata and
+   comparing them with the prepared operation. The receipt contains identities,
+   metadata and a checksum, never file bytes or private storage references.
+
+Each destination registers `id`, `mediaTypes`, `maximumBytes`, `authorize`,
+`lookup`, `attach` and `readBack`. These callbacks are business adapters, not a
+second chat-file pipeline. They must use fresh identity/ownership/permissions and
+the app's existing domain services. Canonicalize metadata before preparation;
+read-back must return actual stored metadata. Optimistic mutation conditions
+belong in `writeOptions`, so an updated record version is not confused with its
+stable identity. An unnamed legacy source gets the new destination filename
+`attachment`; its saved conversation reference is not rewritten.
+
+**The domain write must atomically bind `operationId` and immutable input to its
+mutation and deduplicate concurrent retries.** `lookup` must use that durable
+binding; matching a filename or checksum is not proof that this operation ran.
+A lookup outage must throw, not return null. After a lost acknowledgement the SDK
+looks up and verifies the same operation. It never treats an accounting metadata
+entry, an upload-start response, or an unverified tool result as a saved binary.
+Removing a completed destination attachment does not authorize recreation on
+retry. Cancellation can leave a committed domain outcome to reconcile; resume the
+same operation instead of inventing a new identity.
+
+The shared coordinator is tested with real files, a disposable PostgreSQL-compatible
+domain store, and the existing SDK HTTP approval/restart flow. Application-specific
+destination adapters and their installed-consumer adoption remain separate work;
+this API's tests do not establish that any deployed app is using it.
 
 ## What the provider reads
 
@@ -105,6 +188,14 @@ a text follow-up and protected download still read the original file bytes.
 Storage tests cover failed-batch rollback, lost commit acknowledgements,
 authorization changes, cancellation, explicit deletion and legacy identity
 preservation.
+
+The high-level list/open regression saves five documents, expires and removes
+their staging copies, recreates the assistant/client, then reopens an omitted
+scanned PDF or DOCX. Captured provider requests contain the exact original bytes,
+including after another tool step. Further cases reject an open selection that
+would exceed the current message's document limit and stop a connection retry
+after access is revoked. These are scripted-provider transport/byte checks, not
+live model content-analysis evidence.
 
 These checks do not prove live provider extraction, application record attachment,
 installed-consumer adoption or production

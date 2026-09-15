@@ -8,6 +8,11 @@ export { createSavedFileHandles, type SavedFileHandles, type SavedFileHandlesOpt
   type SavedFileHandleEntry, type SavedFileLocation } from "./saved-file-handles.js";
 export { createSavedFileTools, openedSavedFileSelection, SAVED_FILE_LIST_TOOL, SAVED_FILE_OPEN_TOOL,
   type SavedFileToolOptions, type OpenedSavedFile } from "./saved-file-tools.js";
+export { createRecordFileAttachments, createRecordFileAttachmentAdmission, createPostgresRecordFileAttachmentStore, RecordFileAttachmentError,
+  type RecordFileAttachmentRequest, type RecordFileAttachmentIntent, type RecordFileAttachmentReceipt,
+  type RecordFileAttachmentState, type RecordFileAttachmentStore, type RecordFileAttachmentDestination,
+  type RecordFileAttachmentSource, type RecordFileAttachmentLocation, type RecordFileDestinationInput,
+  type RecordFileAttachmentFailure, type RecordFileAttachments } from "./record-file-attachments.js";
 import { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
 import { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
 export { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";

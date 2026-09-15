@@ -5,6 +5,7 @@ import { parseNormalizedUsageReceipt, type NormalizedUsageReceipt } from "../usa
 import type { AuthoritativeAttribution } from "../protocol.js";
 import type { DurableTurnExecutionIdentity } from "../transports/types.js";
 import type { OpenAIResponsesProviderOptions } from "../providers/openai-responses.js";
+import { awaitWithSignal } from "../await-signal.js";
 
 export interface OpenAIResponsesExecutionContext {
   readonly conversationId: string;
@@ -22,6 +23,9 @@ export interface TrackedOpenAIResponsesRequestOptions {
   readonly capture?: (receipt: NormalizedUsageReceipt) => void | Promise<void>;
   readonly retryPolicy?: RetryPolicy;
   readonly diagnostics?: AiDiagnosticSink;
+  /** Reauthorize before each physical attempt, including connection retries.
+   * A denied attempt never dispatches or records a provider usage receipt. */
+  readonly authorizeAttempt?: (signal: AbortSignal) => void | Promise<void>;
   /** Preserve an installed consumer's receipt namespace during migration. Defaults to handrail. */
   readonly receiptPrefix?: string;
 }
@@ -39,6 +43,8 @@ export function createTrackedOpenAIResponsesRequest(options: TrackedOpenAIRespon
   if (!/^[a-z][a-z0-9_-]{0,63}$/u.test(prefix)) throw new TypeError("Provider receipt prefix is invalid.");
   return async (request, { signal }) => {
     const result = await executeWithRetry<AsyncIterable<unknown>, RetryFailure & { cause: unknown }>(async ({ attempt }) => {
+      if (options.authorizeAttempt) await awaitWithSignal(signal, () => options.authorizeAttempt!(signal));
+      signal.throwIfAborted();
       const occurredAt = new Date().toISOString();
       const save = (usage: unknown, status: "completed" | "failed" | "cancelled") => capture?.(
         physicalUsageReceipt(execution, request.model, attempt, occurredAt, usage, status, prefix));

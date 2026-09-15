@@ -19,6 +19,8 @@ import { createSavedConversationRequestPreparer, type SavedConversationPreparerO
 import { createSavedFileHandles, type SavedFileLocation } from "./saved-file-handles.js";
 import { createSavedFileTools, openedSavedFileSelection, SAVED_FILE_OPEN_TOOL, type OpenedSavedFile } from "./saved-file-tools.js";
 import { awaitWithSignal } from "../await-signal.js";
+import { ConversationCatalogError } from "../conversation/catalog.js";
+import { ProviderInputPreparationError } from "../providers/input-preparation-error.js";
 
 export interface HandrailSavedConversationOptions<TContext extends HandrailAssistantAuthorizationContext>
   extends Omit<SavedConversationPreparerOptions, "eventStore" | "authorize" | "resolveAttachment"> {
@@ -133,15 +135,15 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
         throw error;
       }
     },
-      } : undefined;
+  } : undefined;
   const turnInput = async (input: HandrailAssistantProviderScope<TContext>, location: { conversationId: string; turnId: string },
     file: SavedFileLocation): Promise<SavedConversationTurnInput> => {
-      if (file.conversationId !== location.conversationId) throw new SavedConversationPreparationError("saved_input_unavailable");
-      const saved = await awaitWithSignal(file.signal, () => input.persistence.durableTurns.load(location.conversationId, location.turnId));
-      if (!saved || saved.record.conversationId !== location.conversationId || saved.record.turnId !== location.turnId) {
-        throw new SavedConversationPreparationError("saved_input_unavailable");
-      }
-      return { ...file, turnId: location.turnId, mutationId: saved.record.mutationId, request: parseChatRequest(saved.record.request) };
+    if (file.conversationId !== location.conversationId) throw new SavedConversationPreparationError("saved_input_unavailable");
+    const saved = await awaitWithSignal(file.signal, () => input.persistence.durableTurns.load(location.conversationId, location.turnId));
+    if (!saved || saved.record.conversationId !== location.conversationId || saved.record.turnId !== location.turnId) {
+      throw new SavedConversationPreparationError("saved_input_unavailable");
+    }
+    return { ...file, turnId: location.turnId, mutationId: saved.record.mutationId, request: parseChatRequest(saved.record.request) };
   };
   const savedFiles = (input: HandrailAssistantProviderScope<TContext>, location: { conversationId: string; turnId: string }) => {
     if (input.conversationFiles && !savedOptions?.resolveAttachment && !savedOptions?.authorize && !attachmentResolver) {
@@ -247,55 +249,93 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
         adapter,
         invokeProvider: async function* ({ invocation, ...execution }) {
           let currentOptions = adapterOptions;
-          if (savedPreparerOptions && input.tools.definitions.some(tool => tool.name === SAVED_FILE_OPEN_TOOL)) {
-            const parent = invocation.continuation_of ? await awaitWithSignal(invocation.signal, () =>
-              input.persistence.continuation.forConversation(execution.conversationId).load(invocation.continuation_of!)) : null;
-            const selected = openedSavedFileSelection(invocation.tool_results, parent?.inputItems ?? []);
-            if (selected.length > 0) {
-              const files = savedFiles(input, execution);
-              const verify = async (receipt: OpenedSavedFile, signal: AbortSignal) => {
-                const file = await files.read({ conversationId: execution.conversationId, signal, handle: receipt.handle });
-                if (file.entry.attachmentId !== receipt.attachmentId || file.entry.messageId !== receipt.messageId ||
-                  file.entry.mediaType !== receipt.mediaType || file.entry.fileName !== receipt.fileName ||
-                  file.entry.byteSize !== receipt.byteSize || file.sha256 !== receipt.sha256) {
-                  throw new SavedConversationPreparationError("attachment_changed");
-                }
-                return file;
-              };
-              // Revalidate saved receipts before every physical provider invocation.
-              // Do not cache file bytes across an approval, restart or later tool step.
-              for (const receipt of selected) await verify(receipt, invocation.signal);
-              const prepareSelection = createSavedConversationRequestPreparer({ ...savedPreparerOptions,
-                historicalAttachmentIds: selected.map(file => file.attachmentId) });
-              const prepared = await prepareSelection({ ...execution, signal: invocation.signal,
-                request: parseChatRequest({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: invocation.continuation_of,
-                  messages: invocation.messages, tools: invocation.tools, tool_results: invocation.tool_results,
-                  generation: invocation.generation, correlation_hints: invocation.context.correlation_hints }) });
-              const selectedRequest = input.tools.withApprovalContext
-                ? await input.tools.withApprovalContext(prepared.request, execution, invocation.signal) : prepared.request;
-              const originalResolver = invocation.resolve_attachment_reference;
-              invocation = { ...invocation, messages: selectedRequest.messages,
-                resolve_attachment_reference: async (reference, resolution) => {
-                  const receipt = selected.find(file => file.attachmentId === reference.attachment_id);
-                  if (!receipt) {
-                    if (!originalResolver) throw new SavedConversationPreparationError("attachment_unsupported");
-                    return originalResolver(reference, resolution);
+          let verifySelected: ((signal: AbortSignal) => Promise<void>) | undefined;
+          try {
+            if (savedPreparerOptions && input.tools.definitions.some(tool => tool.name === SAVED_FILE_OPEN_TOOL)) {
+              const parent = invocation.continuation_of ? await awaitWithSignal(invocation.signal, () =>
+                input.persistence.continuation.forConversation(execution.conversationId).load(invocation.continuation_of!)) : null;
+              const selected = openedSavedFileSelection(invocation.tool_results, parent?.inputItems ?? []);
+              if (selected.length > 0) {
+                const files = savedFiles(input, execution);
+                const verify = async (receipt: OpenedSavedFile, signal: AbortSignal) => {
+                  const file = await files.read({ conversationId: execution.conversationId, signal, handle: receipt.handle });
+                  if (file.entry.attachmentId !== receipt.attachmentId || file.entry.messageId !== receipt.messageId ||
+                    file.entry.mediaType !== receipt.mediaType || file.entry.fileName !== receipt.fileName ||
+                    file.entry.byteSize !== receipt.byteSize || file.sha256 !== receipt.sha256) {
+                    throw new SavedConversationPreparationError("attachment_changed");
                   }
-                  const file = await verify(receipt, resolution.signal);
-                  if (file.reference.content_ref !== reference.content_ref || file.reference.byte_size !== reference.byte_size ||
-                    file.reference.media_type !== reference.media_type) throw new SavedConversationPreparationError("attachment_changed");
-                  return { media_type: file.reference.media_type, bytes: file.bytes };
-                } };
-              // Explicit saved-file reads use verified bytes, and required old
-              // files must not be sliced away by the legacy message-only limit.
-              const { resolveAttachment: _legacyImage, maximumInputMessages: _legacyHistory, ...fileOptions } = adapterOptions;
-              void _legacyImage; void _legacyHistory;
-              currentOptions = fileOptions;
+                  return file;
+                };
+                // Revalidate saved receipts before every physical provider invocation.
+                // Do not cache file bytes across an approval, restart or later tool step.
+                verifySelected = async signal => { for (const receipt of selected) await verify(receipt, signal); };
+                await verifySelected(invocation.signal);
+                const prepareSelection = createSavedConversationRequestPreparer({ ...savedPreparerOptions,
+                  historicalAttachmentIds: selected.map(file => file.attachmentId) });
+                const prepared = await prepareSelection({ ...execution, signal: invocation.signal,
+                  request: parseChatRequest({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: invocation.continuation_of,
+                    messages: invocation.messages, tools: invocation.tools, tool_results: invocation.tool_results,
+                    generation: invocation.generation, correlation_hints: invocation.context.correlation_hints }) });
+                const selectedRequest = input.tools.withApprovalContext
+                  ? await input.tools.withApprovalContext(prepared.request, execution, invocation.signal) : prepared.request;
+                const originalResolver = invocation.resolve_attachment_reference;
+                invocation = { ...invocation, messages: selectedRequest.messages,
+                  resolve_attachment_reference: async (reference, resolution) => {
+                    const receipt = selected.find(file => file.attachmentId === reference.attachment_id);
+                    if (!receipt) {
+                      if (!originalResolver) throw new SavedConversationPreparationError("attachment_unsupported");
+                      return originalResolver(reference, resolution);
+                    }
+                    const file = await verify(receipt, resolution.signal);
+                    if (file.reference.content_ref !== reference.content_ref || file.reference.byte_size !== reference.byte_size ||
+                      file.reference.media_type !== reference.media_type) throw new SavedConversationPreparationError("attachment_changed");
+                    return { media_type: file.reference.media_type, bytes: file.bytes };
+                  } };
+                // Explicit saved-file reads use verified bytes, and required old
+                // files must not be sliced away by the legacy message-only limit.
+                const { resolveAttachment: _legacyImage, maximumInputMessages: _legacyHistory, ...fileOptions } = adapterOptions;
+                void _legacyImage; void _legacyHistory;
+                currentOptions = fileOptions;
+              }
             }
+          } catch (error) {
+            if (invocation.signal.aborted) return { status: "cancelled", reason: "runtime_shutdown", usage: null };
+            if (error instanceof SavedConversationPreparationError || error instanceof SavedConversationFileUnavailableError) {
+              return { status: "failed", usage: null, error: { kind: "client", code: "invalid_request",
+                retryable: false, message: error.message } };
+            }
+            if (error instanceof AttachmentStagingError && ["expired", "not_found"].includes(error.code)) {
+              return { status: "failed", usage: null, error: { kind: "client", code: "invalid_request", retryable: false,
+                message: "The selected saved file is no longer available. Upload the file again." } };
+            }
+            const denied = error instanceof AttachmentStagingError && error.code === "forbidden" ||
+              error instanceof ConversationCatalogError && ["forbidden", "not_found"].includes(error.code) ||
+              error && typeof error === "object" && "status" in error && [401, 403].includes(Number(error.status));
+            return { status: "failed", usage: null, error: denied
+              ? { kind: "client", code: "forbidden", retryable: false, message: "Access to the selected saved file is no longer available." }
+              : { kind: "provider", code: "upstream_unavailable", retryable: true,
+                message: "The selected saved files could not be prepared. Check access and try again." } };
           }
           // The lower-level transport also supports ephemeral callers. The authenticated assistant always supplies a durable claim.
           if (!execution.durableExecution) return yield* createAdapter(request, execution.conversationId, currentOptions).invoke(invocation);
           const network = createTrackedOpenAIResponsesRequest({ request,
+            ...(savedPreparerOptions ? { authorizeAttempt: async (signal: AbortSignal) => {
+              try {
+                await savedPreparerOptions.authorize({ ...execution, signal,
+                  request: parseChatRequest({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION, messages: invocation.messages,
+                    continuation_of: invocation.continuation_of, tools: invocation.tools, tool_results: invocation.tool_results,
+                    generation: invocation.generation, correlation_hints: invocation.context.correlation_hints }) });
+                await verifySelected?.(signal);
+              } catch (error) {
+                signal.throwIfAborted();
+                const denied = error instanceof ConversationCatalogError && ["forbidden", "not_found"].includes(error.code) ||
+                  error instanceof AttachmentStagingError && error.code === "forbidden" ||
+                  error && typeof error === "object" && "status" in error && [401, 403].includes(Number(error.status));
+                throw new ProviderInputPreparationError(denied ? "forbidden"
+                  : error instanceof SavedConversationFileUnavailableError || error instanceof AttachmentStagingError && ["expired", "not_found"].includes(error.code)
+                    ? "missing" : error instanceof SavedConversationPreparationError ? "changed" : "unavailable");
+              }
+            } } : {}),
             context: { ...execution, tenantId: input.context.tenantId, scopeId: input.context.scopeId, attribution: input.context.attribution },
             retryPolicy: createRetryPolicy({ maximumAttempts: 2, maximumElapsedMs: input.limits.maxElapsedMs, ...retry }),
             ...(input.persistence.usageReceiptSink ? { capture: input.persistence.usageReceiptSink.capture } : {}),

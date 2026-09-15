@@ -134,77 +134,107 @@ it("rejects an expired unsent file once through the real client without admittin
   } finally { await browser.dispose(); await assistant.stopBackgroundWorkers(); }
 });
 
-it("lists and reopens an omitted scanned PDF after five documents, draft expiry and a server/client restart", async () => {
+it.each([{ filename: "invoice-scan.pdf", currentDocuments: 0, revokeDuringRetry: false }, { filename: "invoice.docx", currentDocuments: 0, revokeDuringRetry: false },
+  { filename: "invoice-scan.pdf", currentDocuments: 2, revokeDuringRetry: false }, { filename: "invoice-scan.pdf", currentDocuments: 0, revokeDuringRetry: true }])("reopens $filename with $currentDocuments current files after five documents, expiry and restart (revoke=$revokeDuringRetry)", async ({ filename, currentDocuments, revokeDuringRetry }) => {
   const context: HandrailAssistantAuthorizationContext = { principalId: "alice", scopeId: "account", tenantId: randomUUID(),
     attribution: { organization: fact("org"), project: fact("project"), service_environment: fact("test"),
       known_user: fact("alice"), session: fact("session"), automation: fact(null) } };
   const bundle = persistence.forScope<HandrailAssistantAuthorizationContext>(context, { createConversationId: () => "conversation" as never });
   await bundle.catalog.create({ authorizationContext: context, idempotencyKey: "new" as never });
-  const original = readFileSync(new URL("./fixtures/documents/invoice-scan.pdf", import.meta.url));
+  const original = readFileSync(new URL(`./fixtures/documents/${filename}`, import.meta.url));
+  const originalMediaType = manifest.find(file => file.filename === filename)!.uploaded.media_type;
   const recent = readFileSync(new URL("./fixtures/documents/invoice.pdf", import.meta.url));
   const inputs: OpenAIResponsesRequest[] = [], diagnostics = vi.fn();
-  let followup = false, step = 0, openedHandle = "";
+  let followup = false, readable = true, step = 0, openedHandle = "";
   const make = () => createHandrailAssistant({ id: "reopen", persistence, automaticTitles: false,
     attachmentRetention: "conversation", attachmentCleanup: false, diagnostics, authorize: () => context,
-    provider: openaiResponses({ model: "fixture", savedConversation: { maximumHistoricalMessages: 1 }, supportsToolSearch: false,
+    provider: openaiResponses({ model: "fixture", savedConversation: { maximumHistoricalMessages: 1,
+      authorize: () => { if (!readable) throw Object.assign(new Error("private domain permission detail"), { status: 403 }); } }, supportsToolSearch: false,
       // This legacy limit must not silently discard an explicitly reopened file.
-      maximumInputMessages: 1,
-      request: async function* (request) {
+      maximumInputMessages: 1, retry: { initialDelayMs: 1 },
+      request: async (request) => {
         inputs.push(request);
-        if (followup && step < 2) {
-          let name = SAVED_FILE_LIST_TOOL, arguments_: Record<string, unknown> = { after: null, limit: 20 };
-          if (step === 1) {
-            const output = request.input.find(item => item.type === "function_call_output" && item.call_id === "file-call-0");
-            const parts = JSON.parse(String(output?.output));
-            const listing = parts.find((part: { type: string }) => part.type === "json").value;
-            expect(listing.status).toBe("listed"); expect(listing.files).toHaveLength(5);
-            openedHandle = listing.files.find((file: { fileName: string }) => file.fileName === "oldest-scan.pdf").handle;
-            name = SAVED_FILE_OPEN_TOOL; arguments_ = { handles: [openedHandle] };
-          }
-          yield { type: "response.output_item.added", output_index: 0, item: {
-            type: "function_call", id: `fc-${step}`, call_id: `file-call-${step}`, name, arguments: "" } };
-          yield { type: "response.function_call_arguments.done", output_index: 0, item_id: `fc-${step}`, arguments: JSON.stringify(arguments_) };
-          step++;
-        } else yield { type: "response.output_text.delta", delta: "Fixture received." };
-        yield { type: "response.completed", response: { usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } };
+        if (followup && step === 2 && revokeDuringRetry) {
+          readable = false;
+          throw Object.assign(new Error("temporary connection failure"), { status: 503 });
+        }
+        return (async function* () {
+          if (followup && step < 3) {
+            let name = SAVED_FILE_LIST_TOOL, arguments_: Record<string, unknown> = { after: null, limit: 20 };
+            if (step === 1) {
+              const output = request.input.find(item => item.type === "function_call_output" && item.call_id === "file-call-0");
+              const parts = JSON.parse(String(output?.output));
+              const listing = parts.find((part: { type: string }) => part.type === "json").value;
+              expect(listing.status).toBe("listed"); expect(listing.files).toHaveLength(5 + currentDocuments);
+              openedHandle = listing.files.find((file: { fileName: string }) => file.fileName === filename).handle;
+              name = SAVED_FILE_OPEN_TOOL; arguments_ = { handles: [openedHandle] };
+            }
+            yield { type: "response.output_item.added", output_index: 0, item: {
+              type: "function_call", id: `fc-${step}`, call_id: `file-call-${step}`, name, arguments: "" } };
+            yield { type: "response.function_call_arguments.done", output_index: 0, item_id: `fc-${step}`, arguments: JSON.stringify(arguments_) };
+            step++;
+          } else yield { type: "response.output_text.delta", delta: "Fixture received." };
+          yield { type: "response.completed", response: { usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } };
+        })();
       } }) });
   let assistant = await make();
   const open = () => createHandrailAiClient<HandrailAssistantAuthorizationContext, ChatRequest>({ baseUrl: "https://app.test", startActivityPolling: false,
     fetch: (url, init) => assistant.handle(new Request(url, init)),
     conversations: { mode: "multiple", clientId: "browser" as never, authorize: () => "allow" } });
   let browser = await open();
-  const send = async (text: string, reference?: AttachmentReference) => {
+  const send = async (text: string, references: readonly AttachmentReference[] = []) => {
     const runtime = await browser.workspace!.open({ authorizationContext: context, conversationId: "conversation" as never });
-    return runtime.sendMessage({ content: text, ...(reference ? { attachments: [toConversationAttachmentReference(reference)] } : {}),
+    return runtime.sendMessage({ content: text, attachments: references.map(toConversationAttachmentReference),
       request: parseChatRequest({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: null,
-        messages: [{ role: "user", content: [{ type: "text", text }, ...(reference ? [{ type: "document", attachment: reference }] : [])] }],
+        messages: [{ role: "user", content: [{ type: "text", text }, ...references.map(reference => ({ type: "document", attachment: reference }))] }],
         tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} }) });
   };
   try {
     for (let index = 0; index < 5; index++) {
       const bytes = index === 0 ? original : recent;
-      const reference = await browser.attachmentUpload!.upload({ source: new Blob([bytes], { type: "application/pdf" }),
-        idempotencyKey: `upload-${index}`, metadata: { conversationId: "conversation", filename: index === 0 ? "oldest-scan.pdf" : `recent-${index}.pdf`,
-          mediaType: "application/pdf", byteSize: bytes.length, kind: "document" }, signal: new AbortController().signal, onProgress: () => {} });
-      expect(await send(`Read invoice ${index}`, reference), JSON.stringify(diagnostics.mock.calls)).toMatchObject({ status: "completed" });
+      const mediaType = index === 0 ? originalMediaType : "application/pdf";
+      const reference = await browser.attachmentUpload!.upload({ source: new Blob([bytes], { type: mediaType }),
+        idempotencyKey: `upload-${index}`, metadata: { conversationId: "conversation", filename: index === 0 ? filename : `recent-${index}.pdf`,
+          mediaType, byteSize: bytes.length, kind: "document" }, signal: new AbortController().signal, onProgress: () => {} });
+      expect(await send(`Read invoice ${index}`, [reference]), JSON.stringify(diagnostics.mock.calls)).toMatchObject({ status: "completed" });
     }
     await browser.dispose(); await assistant.stopBackgroundWorkers();
     await sql.query("UPDATE handrail_ai_documents SET version=version+1, payload=jsonb_set(jsonb_set(payload,'{createdAt}','\"2000-01-01T00:00:00.000Z\"'),'{expiresAt}','\"2000-01-01T00:01:00.000Z\"') WHERE tenant_id=$1 AND scope_id LIKE 'assistant-draft:%' AND kind='attachment'", [context.tenantId]);
     expect(await cleanupPostgresConversationFileStaging({ persistence: persistence.persistence, tenantId: context.tenantId,
       maintenanceScopeId: assistantConversationFileMaintenanceScope("reopen") })).toEqual({ removed: 5, blocked: 0 });
     assistant = await make(); browser = await open(); followup = true;
-    const result = await send("What is on the oldest scanned invoice?");
-    expect(result, JSON.stringify(diagnostics.mock.calls)).toMatchObject({ status: "completed" });
-    expect(inputs).toHaveLength(8);
+    const current: AttachmentReference[] = [];
+    for (let index = 0; index < currentDocuments; index++) current.push(await browser.attachmentUpload!.upload({
+      source: new Blob([recent], { type: "application/pdf" }), idempotencyKey: `current-${index}`, metadata: {
+        conversationId: "conversation", filename: `current-${index}.pdf`, mediaType: "application/pdf", byteSize: recent.length, kind: "document" },
+      signal: new AbortController().signal, onProgress: () => {} }));
+    const result = await send("What is on the oldest scanned invoice?", current);
+    expect(result, JSON.stringify(diagnostics.mock.calls)).toMatchObject(revokeDuringRetry
+      ? { status: "failed", error: { code: "forbidden", retryable: false, message: "Access to the saved files is no longer available." } }
+      : { status: "completed" });
+    expect(JSON.stringify(result)).not.toContain("private domain permission detail");
+    // Revocation after the first connection failure prevents any retry from
+    // sending the already-resolved bytes again.
+    expect(inputs).toHaveLength(revokeDuringRetry ? 8 : 9);
     expect(JSON.stringify(inputs[5])).not.toContain(original.toString("base64"));
     const final = inputs.at(-1)!;
     const messages = JSON.stringify(final.input.filter(item => item.type !== "function_call_output"));
-    expect(messages).toContain(original.toString("base64"));
-    expect(messages).not.toContain(recent.toString("base64"));
+    if (currentDocuments) {
+      expect(messages).not.toContain(original.toString("base64"));
+      expect(messages).toContain(recent.toString("base64"));
+    } else {
+      expect(messages).toContain(original.toString("base64"));
+      expect(messages).not.toContain(recent.toString("base64"));
+    }
     expect(final.tools.some(tool => tool.type === "function" && tool.name === SAVED_FILE_OPEN_TOOL)).toBe(true);
     const receipt = final.input.find(item => item.type === "function_call_output" && item.call_id === "file-call-1");
-    expect(String(receipt?.output)).toContain(openedHandle);
-    expect(String(receipt?.output)).toContain('"status":"opened"');
+    if (currentDocuments) {
+      expect(String(receipt?.output)).toContain("exceed this request's attachment limits");
+      expect(String(receipt?.output)).not.toContain('"status":"opened"');
+    } else {
+      expect(String(receipt?.output)).toContain(openedHandle);
+      expect(String(receipt?.output)).toContain('"status":"opened"');
+    }
     expect(String(receipt?.output)).not.toContain("content_ref");
     expect(String(receipt?.output)).not.toContain(original.toString("base64"));
     const replay = await replayConversation({ conversationId: "conversation" as never, eventStore: bundle.events });
