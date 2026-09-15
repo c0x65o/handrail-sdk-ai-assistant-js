@@ -1,4 +1,5 @@
 export * from "./attachments.js";
+export * from "./clipboard-image.js";
 export * from "./audio.js";
 export * from "../transcription-http.js";
 export * from "./realtime-voice.js";

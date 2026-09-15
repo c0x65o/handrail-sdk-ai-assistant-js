@@ -4,6 +4,8 @@ import type { ConversationComposerResult } from "../react/use-conversation-compo
 import { AttachmentList, Composer, ErrorList, FileInput, Form, Stop, Submit, Textarea } from "../react/primitives.js";
 import { ComposerTranscriptionControl } from "./transcription.js";
 import type { ComposerTranscriptionOptions } from "../react/composer-transcription.js";
+import { ComposerAttachment } from "./composer-attachment.js";
+import { ATTACHMENT_IMAGE_CSS } from "./attachment-image.js";
 
 export function ComposerIcon({ name }: { readonly name: "plus" | "shield" | "microphone" | "send" | "stop" }) {
   return <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -122,6 +124,7 @@ export function BrowserDictationControl({ composer }: { readonly composer: Conve
 }
 
 export const HANDRAIL_CHAT_COMPOSER_CSS = `
+${ATTACHMENT_IMAGE_CSS}
 .hr-composer{padding:6px 12px;min-width:0;font-family:var(--hr-font,inherit);font-size:13px;font-weight:400;line-height:1.45;color:var(--hr-text,#202124);background:var(--hr-bg,#fff)}
 .hr-composer .hr-composer[data-dragging] .hr-composer__form{outline:2px dashed var(--hr-accent,currentColor);outline-offset:-3px}
 .hr-composer__form{position:relative;display:flex;flex-direction:column;gap:4px;border:1px solid var(--hr-border,#e9e9e9);border-radius:12px;padding:8px;background:var(--hr-bg,#fff);box-shadow:0 4px 18px #00000006}
@@ -138,6 +141,9 @@ export const HANDRAIL_CHAT_COMPOSER_CSS = `
 .hr-composer__attachments{display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:0;list-style:none}.hr-composer__attachments:empty,.hr-composer__errors:empty{display:none}.hr-composer__attachments li{max-width:100%;overflow-wrap:anywhere}.hr-composer__errors{margin:0;padding-left:20px;color:var(--hr-danger,#b42318);font-size:13px}.hr-composer__notice{font-size:12px;max-width:220px}
 .hr-composer .hr-composer__toolbar svg{width:18px;height:18px}
 .hr-composer__action{border:1px solid var(--hr-border,#e9e9e9);border-radius:8px;padding:6px 10px;background:var(--hr-bg,#fff);color:inherit;font:inherit;white-space:normal}
+.hr-composer__attachment{position:relative;display:flex;align-items:center;gap:8px;box-sizing:border-box;max-width:100%;width:260px;padding:6px 38px 6px 6px;border:1px solid var(--hr-border,#ddd);border-radius:10px;background:var(--hr-panel,#f7f7f7)}
+.hr-composer__attachment-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}.hr-composer__attachment-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}.hr-composer__attachment-copy small{font-size:12px;color:var(--hr-muted,#666)}.hr-composer__attachment-copy progress{width:100%;height:4px}.hr-composer__attachment-copy [role=alert]{color:var(--hr-danger,#b42318)}
+.hr-composer button.hr-composer__attachment-remove{position:absolute;top:3px;right:3px;display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:50%;font-size:21px;background:var(--hr-bg,#fff);color:inherit;cursor:pointer}.hr-composer__file-icon{display:grid;place-items:center;width:64px;height:64px;flex-shrink:0;border-radius:8px;background:var(--hr-bg,#fff)}
 @media(pointer:coarse){.hr-composer button.hr-composer__icon,.hr-composer .hr-composer__voice>button{min-width:44px;min-height:44px;width:44px;height:44px}.hr-composer .hr-composer__voice>button:not(:has(svg)){width:auto}.hr-composer .hr-composer__draft{font-size:16px}}
 
 `;
@@ -177,7 +183,8 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
     onDropCapture={event => { setDragging(false); if (intakeDisabled && isFileDrag(event)) { event.preventDefault(); event.stopPropagation(); } }}>
     {props.includeStyles === false ? null : <style>{HANDRAIL_CHAT_COMPOSER_CSS}</style>}
     <Form className="hr-composer__form" onSubmit={event => { if (props.canStop) event.preventDefault(); }}>
-      <AttachmentList showRetry={false} className="hr-composer__attachments"/>
+      <AttachmentList showRetry={false} className="hr-composer__attachments"
+        renderItem={attachment => "source" in attachment ? <ComposerAttachment attachment={attachment}/> : undefined}/>
       <Textarea ref={textarea} className="hr-composer__draft" rows={1} maxLength={props.maxLength} placeholder={props.placeholder ?? "Message…"}
         onKeyDown={event => {
           if (props.canStop && event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey

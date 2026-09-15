@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AttachmentDownloadInput } from "../attachments/downloader.js";
 import type { ConversationAttachmentReference } from "../conversation/events.js";
+import { AttachmentImage } from "./attachment-image.js";
 
 export type MessageAttachmentLoader = (input: AttachmentDownloadInput) => Promise<Uint8Array>;
 
@@ -65,7 +66,7 @@ export function ProtectedMessageAttachmentPreview({ attachment, conversationId, 
     state.owner.conversation === conversationId && state.owner.attachment === attachmentId && state.owner.mediaType === mediaType &&
     state.owner.byteSize === byteSize ? state : null;
   return <span className="hr-chat__attachment-card">
-    {current?.url ? <img alt={`${name} preview`} src={current.url} onError={() => setState((previous) => ({
+    {current?.url ? <AttachmentImage key={current.url} name={name} url={current.url} onError={() => setState((previous) => ({
       owner: previous.owner, error: "Preview unavailable. Try again.",
     }))}/> : <strong aria-hidden="true">{mediaType === "application/pdf" ? "PDF" : "FILE"}</strong>}
     <span className="hr-chat__attachment-copy"><strong>{name}</strong><small>{mediaType}</small>

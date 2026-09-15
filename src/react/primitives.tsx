@@ -763,6 +763,8 @@ export interface AttachmentListProps
   onRemove?: (attachmentId: string) => void | boolean | Promise<void | boolean>;
   onRetry?: (attachmentId: string) => void | boolean | Promise<void | boolean>;
   renderAttachment?: AttachmentRenderer;
+  /** Replace the complete item contents while retaining its attachment action context. */
+  renderItem?: AttachmentRenderer;
   renderError?: ErrorRenderer;
 }
 
@@ -777,6 +779,7 @@ export const AttachmentList = forwardRef<HTMLUListElement, AttachmentListProps>(
       onRetry,
       showRetry = true,
       renderAttachment,
+      renderItem,
       renderError,
       ...props
     },
@@ -803,7 +806,7 @@ export const AttachmentList = forwardRef<HTMLUListElement, AttachmentListProps>(
             {...(retry === undefined ? {} : { onRetry: retry })}
             {...(renderAttachment === undefined ? {} : { renderAttachment })}
             {...(renderError === undefined ? {} : { renderError })}
-          />
+          >{renderItem?.(attachment, index)}</AttachmentItem>
         ))}
       </ul>
     );

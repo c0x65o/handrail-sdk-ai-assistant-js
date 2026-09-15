@@ -20,6 +20,7 @@ import type {
   AttachmentUploadKind,
 } from "../attachments/types.js";
 import type { AttachmentUploader } from "../attachments/uploader.js";
+import { prepareClipboardImage } from "../browser/clipboard-image.js";
 import {
   intakeFileInputImages,
   intakeFileInputPdfs,
@@ -236,6 +237,8 @@ interface ComposerIntakeRejection {
   readonly reason: IntakeRejectionReason;
   readonly fingerprint?: string;
   readonly filename?: string;
+  readonly byteSize?: number;
+  readonly mediaType?: string;
 }
 
 interface ComposerIntakeResult {
@@ -257,6 +260,12 @@ const INTAKE_MESSAGES: Record<IntakeRejectionReason, string> = {
 
 const IMAGE_MIME_TYPES = new Set<string>(AI_RUNTIME_IMAGE_MIME_TYPES);
 const DOCUMENT_MIME_TYPES = new Set<string>(AI_RUNTIME_DOCUMENT_MIME_TYPES);
+
+function formatAttachmentBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${Number((bytes / (1024 * 1024)).toFixed(1))} MB`;
+}
 
 function validateAttachmentIntakeOptions(
   options: ConversationComposerAttachmentIntakeOptions,
@@ -318,8 +327,9 @@ function validateAttachmentIntakeOptions(
 type ImageResult = BrowserImageIntakeResult | BrowserDropImageIntakeResult;
 type PdfResult = BrowserPdfIntakeResult | BrowserDropPdfIntakeResult;
 
-function filesFromList(files: FileList): BrowserAttachmentSource[] {
+function filesFromList(files: FileList | undefined): BrowserAttachmentSource[] {
   const sources: BrowserAttachmentSource[] = [];
+  if (!files) return sources;
   for (let index = 0; index < files.length; index += 1) {
     const source = files[index] ?? files.item(index);
     if (source !== null && source !== undefined) sources.push(source);
@@ -362,6 +372,8 @@ function recordsBySource(
       rejection: {
         reason: rejection.reason,
         fingerprint: rejection.fingerprint,
+        byteSize: rejection.byteSize,
+        mediaType: rejection.mediaType,
         ...(rejection.filename === undefined ? {} : { filename: rejection.filename }),
       },
     });
@@ -541,6 +553,11 @@ export function useConversationComposer<TRequest = undefined>(
     presence,
     initialized: false,
   });
+  const pastePreparations = useRef(new Set<{ abort: AbortController; release(): void }>());
+  useEffect(() => () => {
+    for (const job of pastePreparations.current) { job.abort.abort(); job.release(); }
+    pastePreparations.current.clear();
+  }, [conversationId, store, uploader, presence]);
 
   draftRef.current = draft;
   ownedRef.current = owned;
@@ -772,23 +789,25 @@ export function useConversationComposer<TRequest = undefined>(
     }
 
     if (added.length > 0) {
-      setOwned((current) => {
-        const next = [...current, ...added];
-        ownedRef.current = next;
-        return next;
-      });
+      const next = [...ownedRef.current, ...added];
+      ownedRef.current = next;
+      setOwned(next);
     }
     setOperationErrors(result.rejections.map((rejection) => ({
       source: "intake" as const,
       code: rejection.reason,
-      message: INTAKE_MESSAGES[rejection.reason],
+      message: rejection.reason === "too_large" && rejection.byteSize !== undefined
+        ? `The selected attachment is ${formatAttachmentBytes(rejection.byteSize)}; the limit is ${formatAttachmentBytes(
+          rejection.mediaType?.startsWith("image/") ? maxImageFileBytes : maxDocumentFileBytes,
+        )}.${rejection.mediaType?.startsWith("image/") ? " For a pasted image, try attaching the original file." : ""}`
+        : INTAKE_MESSAGES[rejection.reason],
       retryable: false as const,
       ...(rejection.fingerprint === undefined
         ? {}
         : { fingerprint: rejection.fingerprint }),
       ...(rejection.filename === undefined ? {} : { filename: rejection.filename }),
     })));
-  }, [conversationId, releaseOwned, scope, uploader]);
+  }, [conversationId, releaseOwned, scope, uploader, maxImageFileBytes, maxDocumentFileBytes]);
 
   const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>): void => {
     if (sendingRef.current || store.getSnapshot().active_turn_id !== null) {
@@ -797,16 +816,48 @@ export function useConversationComposer<TRequest = undefined>(
     }
     // Native clipboard reads can return a new File wrapper each time. Snapshot
     // once so intake and combineIntake validate the same source objects.
-    const sources = filesFromItems(event.clipboardData.items);
-    const imageResult = acceptedImageMediaTypes.length === 0
-      ? undefined
-      : intakeFileInputImages(sources, imageOptions());
-    const pdfResult = generalizedIntake === undefined || acceptedDocumentMediaTypes.length === 0
-      ? undefined
-      : intakeFileInputPdfs(sources, pdfOptions());
-    const result = combineIntake(sources, imageResult, pdfResult);
-    if (result.shouldPreventDefault) event.preventDefault();
-    acceptIntake(result);
+    const sources = filesFromTransfer(event.clipboardData);
+    if (sources.length === 0) return;
+    const consume = (prepared: readonly Blob[]) => {
+      const imageResult = acceptedImageMediaTypes.length === 0
+        ? undefined : intakeFileInputImages(prepared, imageOptions());
+      const pdfResult = generalizedIntake === undefined || acceptedDocumentMediaTypes.length === 0
+        ? undefined : intakeFileInputPdfs(prepared, pdfOptions());
+      return combineIntake(prepared, imageResult, pdfResult);
+    };
+    const needsImagePreparation = (source: Blob) => source.size > maxImageFileBytes && source.type === "image/png" &&
+      acceptedImageMediaTypes.includes("image/png") && acceptedImageMediaTypes.includes("image/jpeg");
+    const needsPreparation = sources.some(needsImagePreparation);
+    if (!needsPreparation) {
+      const result = consume(sources);
+      if (result.shouldPreventDefault) event.preventDefault();
+      acceptIntake(result);
+      return;
+    }
+    // Clipboard data is only available during the event. Prevent native image
+    // insertion now and keep Send blocked until these captured bytes are ready.
+    event.preventDefault();
+    const owner = lifecycleRef.current;
+    const job = { abort: new AbortController(), release: acquireSubmissionBlock() };
+    pastePreparations.current.add(job);
+    void (async () => {
+      try {
+        const prepared: Blob[] = [];
+        let remaining = maxImageSelectionCount - ownedRef.current.filter(entry => entry.kind === "image").length;
+        for (const source of sources) {
+          job.abort.signal.throwIfAborted();
+          prepared.push(needsImagePreparation(source) && remaining-- > 0 ? await prepareClipboardImage(source, {
+            maximumBytes: maxImageFileBytes, acceptedMediaTypes: acceptedImageMediaTypes, signal: job.abort.signal,
+          }) : source);
+        }
+        if (job.abort.signal.aborted || lifecycleRef.current !== owner || store.getSnapshot().active_turn_id !== null) return;
+        acceptIntake(consume(prepared));
+      } catch {
+        if (!job.abort.signal.aborted && lifecycleRef.current === owner) setOperationErrors([{
+          source: "intake", code: "intake_failed", message: "The pasted image could not be prepared. Try attaching the original file.", retryable: false,
+        }]);
+      } finally { job.release(); pastePreparations.current.delete(job); }
+    })();
   }, [
     acceptIntake,
     acceptedDocumentMediaTypes.length,
@@ -815,6 +866,10 @@ export function useConversationComposer<TRequest = undefined>(
     imageOptions,
     pdfOptions,
     store,
+    acquireSubmissionBlock,
+    maxImageFileBytes,
+    maxImageSelectionCount,
+    acceptedImageMediaTypes,
   ]);
 
   const handleFileInputChange = useCallback((event: ChangeEvent<HTMLInputElement>): void => {

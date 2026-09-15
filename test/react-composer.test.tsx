@@ -3,6 +3,7 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as clipboardImages from "../src/browser/clipboard-image.js";
 
 import {
   AttachmentUploadAdapterError,
@@ -22,7 +23,7 @@ import {
   type UseConversationComposerOptions,
 } from "../src/react/index.js";
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 it("clears the failed Stop error after a successful retry and preserves the draft", async () => {
   const { runtime } = fakeRuntime();
@@ -635,7 +636,7 @@ describe("useConversationComposer", () => {
     expect(result.current.errors.map(({ code, message }) => ({ code, message }))).toEqual([
       { code: "duplicate", message: "The selected attachment is already attached." },
       { code: "count_overflow", message: "The attachment selection limit has been reached." },
-      { code: "too_large", message: "The selected attachment is too large." },
+      { code: "too_large", message: "The selected attachment is 5 bytes; the limit is 4 bytes." },
       { code: "empty_file", message: "The selected attachment is empty." },
       { code: "unsafe_filename", message: "The selected attachment has an unsafe filename." },
       { code: "unsupported_type", message: "The selected file is not a supported attachment type." },
@@ -972,4 +973,58 @@ it("accepts PDF documents with the default composer intake", async () => {
   await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
   expect(result.current.attachments[0]?.kind).toBe("document");
   expect(result.current.errors).toEqual([]);
+});
+
+it("prepares large pasted images before upload, blocks premature sends and uses prepared metadata", async () => {
+  const { runtime, sendMessage } = fakeRuntime();
+  const uploader = immediateUploader();
+  let finish!: (file: Blob) => void;
+  const prepare = vi.spyOn(clipboardImages, "prepareClipboardImage").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, initialDraft: "Read these measurements",
+    attachmentIntake: { maxFileBytes: { image: 8 }, previews: false } }), { wrapper: wrapper(runtime) });
+  const preventDefault = vi.fn();
+  act(() => result.current.getTextareaProps().onPaste({ clipboardData: { items: itemList(fileItem(file("image.png", "image/png", "expanded clipboard"))) }, preventDefault } as never));
+  expect(preventDefault).toHaveBeenCalledOnce();
+  expect(result.current.canSend).toBe(false);
+  await act(async () => { expect(await result.current.submit()).toBeNull(); });
+  expect(sendMessage).not.toHaveBeenCalled();
+  expect(prepare).toHaveBeenCalledWith(expect.any(Blob), expect.objectContaining({ maximumBytes: 8 }));
+  const jpeg = file("image.jpg", "image/jpeg", "jpeg");
+  await act(async () => { finish(jpeg); });
+  await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
+  expect(result.current.attachments[0]).toMatchObject({ source: jpeg, filename: "image.jpg", mediaType: "image/jpeg", byteSize: 4 });
+  expect(result.current.errors).toEqual([]);
+  expect(result.current.canSend).toBe(true);
+  await act(async () => { await result.current.submit(); });
+  expect(sendMessage.mock.calls[0]?.[0].attachments?.[0]).toMatchObject({ media_type: "image/jpeg", size_bytes: 4 });
+  unmount(); uploader.dispose();
+});
+
+it.each(["conversation", "unmount"])("cancels paste preparation on %s changes without uploading stale bytes", async change => {
+  const { runtime } = fakeRuntime();
+  const uploader = immediateUploader();
+  let finish!: (file: Blob) => void;
+  const prepare = vi.spyOn(clipboardImages, "prepareClipboardImage").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const { result, rerender, unmount } = renderHook(({ conversationId }) => useConversationComposer({ uploader, conversationId,
+    attachmentIntake: { maxFileBytes: { image: 8 }, previews: false } }), { wrapper: wrapper(runtime), initialProps: { conversationId: "first" as ConversationId } });
+  act(() => result.current.getTextareaProps().onPaste({ clipboardData: { items: itemList(fileItem(file("image.png", "image/png", "expanded clipboard"))) }, preventDefault: vi.fn() } as never));
+  if (change === "unmount") unmount(); else rerender({ conversationId: "second" as ConversationId });
+  expect(prepare.mock.calls[0]?.[1].signal.aborted).toBe(true);
+  await act(async () => { finish(file("image.jpg", "image/jpeg", "jpeg")); });
+  expect(uploader.getSnapshot().items).toEqual([]);
+  if (change !== "unmount") {
+    act(() => result.current.setDraft("New conversation"));
+    expect(result.current.canSend).toBe(true);
+    expect(result.current.errors).toEqual([]);
+    unmount();
+  }
+  uploader.dispose();
+});
+
+it("accepts clipboard files when the browser exposes only the files collection", async () => {
+  const { runtime } = fakeRuntime(), uploader = immediateUploader();
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, attachmentIntake: { previews: false } }), { wrapper: wrapper(runtime) });
+  act(() => result.current.getTextareaProps().onPaste({ clipboardData: { items: itemList(), files: fileList(file("image.png")) }, preventDefault: vi.fn() } as never));
+  await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
+  unmount(); uploader.dispose();
 });

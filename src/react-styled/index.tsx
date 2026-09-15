@@ -34,6 +34,8 @@ import { AI_RUNTIME_DOCUMENT_MIME_TYPES, AI_RUNTIME_IMAGE_MIME_TYPES, AI_RUNTIME
 import type { ConversationClientId, ConversationDeviceId } from "../conversation/events.js";
 import type { ConversationAttachmentReference } from "../conversation/events.js";
 import { ProtectedMessageAttachmentPreview, type MessageAttachmentLoader } from "./protected-attachment.js";
+import { AttachmentImage, ATTACHMENT_IMAGE_CSS } from "./attachment-image.js";
+export { ATTACHMENT_IMAGE_CSS } from "./attachment-image.js";
 export { ProtectedMessageAttachmentPreview, type MessageAttachmentLoader } from "./protected-attachment.js";
 import type { ConversationMessageRecord, ConversationState, ConversationToolResultRecord } from "../conversation/state.js";
 import type { PresenceController } from "../presence/controller.js";
@@ -253,7 +255,7 @@ export const handrailChatPresetCss = `
 .hr-chat__workspace-picker{align-items:flex-start;display:flex;gap:.4rem;position:relative}.hr-chat__workspace-picker summary{background:var(--hr-panel,#f6f7fb);border:1px solid var(--hr-border,#dfe3eb);border-radius:9px;cursor:pointer;list-style:none;padding:.55rem .7rem}.hr-chat__workspace-picker summary::-webkit-details-marker{display:none}.hr-chat__workspace-picker ul{background:var(--hr-bg,#fff);border:1px solid var(--hr-border,#dfe3eb);border-radius:10px;box-shadow:0 12px 35px #17192724;display:grid;gap:.2rem;inset-block-start:calc(100% + .35rem);inset-inline-end:0;list-style:none;margin:0;max-block-size:20rem;min-inline-size:18rem;overflow:auto;padding:.4rem;position:absolute;z-index:10}.hr-chat__workspace-picker li{align-items:center;display:flex;margin:0;padding:0}.hr-chat__workspace-picker li button:first-child{align-items:center;display:flex;flex:1;inline-size:100%;justify-content:space-between;max-inline-size:none;text-align:start}.hr-chat__workspace-picker small{color:var(--hr-muted,#687083);margin-inline-start:.5rem}.hr-chat__workspace-picker [data-turn-status=running] small{color:var(--hr-activity)}.hr-chat__empty{display:grid;min-block-size:12rem;place-items:center;padding:1rem}
 .hr-chat__approvals{display:grid;gap:.5rem}.hr-chat .hr-chat__approval{background:var(--hr-bg);border:1px solid var(--hr-border);border-radius:var(--hr-radius-control);display:grid;gap:.75rem;padding:1rem;inline-size:auto;white-space:normal}.hr-chat__approval>strong{font-size:1.05em}.hr-chat__approval-status{color:var(--hr-muted);font-size:.9em}.hr-chat__approval details{min-inline-size:0}.hr-chat__approval summary{cursor:pointer;font-weight:600}.hr-chat__approval details[open]>summary{margin-block-end:.75rem}.hr-chat__approval-actions{display:flex;flex-wrap:wrap;gap:.5rem;border-block-start:1px solid var(--hr-border);padding-block-start:.75rem}.hr-chat__approval-error{color:var(--hr-danger)}
 .hr-chat__message-actions{align-items:center;flex-wrap:wrap;gap:.25rem}
-` + HANDRAIL_CONVERSATION_HISTORY_CSS + HANDRAIL_STRUCTURED_DETAILS_CSS + HANDRAIL_ACTIVITY_CSS;
+` + HANDRAIL_CONVERSATION_HISTORY_CSS + HANDRAIL_STRUCTURED_DETAILS_CSS + HANDRAIL_ACTIVITY_CSS + ATTACHMENT_IMAGE_CSS;
 
 export function StyledChatPresetStyles(): ReactNode {
   return <style data-handrail-ai-preset={HANDRAIL_CHAT_PRESET_VERSION}>{handrailChatPresetCss}</style>;
@@ -432,14 +434,14 @@ export function MessageAttachmentPreview({ attachment, url: rawUrl }: {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const name = attachment.filename ?? (attachment.media_type.startsWith("image/") ? "Image" : "Document");
   const size = attachmentSize(attachment.size_bytes);
-  const content = <>
-    {attachment.media_type.startsWith("image/") && url && failedUrl !== url
-      ? <img alt={`${name} preview`} loading="lazy" src={url} onError={() => setFailedUrl(url)}/>
-      : <strong aria-hidden="true">{attachment.media_type === "application/pdf" ? "PDF" : "FILE"}</strong>}
-    <span className="hr-chat__attachment-copy"><strong>{name}</strong>
+  const copy = <><strong>{name}</strong>
       <small>{[attachment.media_type, size].filter(Boolean).join(" · ")}</small>
-      {url && failedUrl === url ? <small>Preview unavailable. Open the attachment to try again.</small> : null}</span>
-  </>;
+      {url && failedUrl === url ? <small>Preview unavailable. Open the attachment to try again.</small> : null}</>;
+  if (attachment.media_type.startsWith("image/") && url && failedUrl !== url) return <span className="hr-chat__attachment-card">
+    <AttachmentImage key={`${attachment.attachment_id}:${url}`} url={url} name={name} onError={() => setFailedUrl(url)}/>
+    <span className="hr-chat__attachment-copy">{copy}<a href={url} target="_blank" rel="noopener noreferrer">Open original</a></span>
+  </span>;
+  const content = <><strong aria-hidden="true">{attachment.media_type === "application/pdf" ? "PDF" : "FILE"}</strong><span className="hr-chat__attachment-copy">{copy}</span></>;
   return url
     ? <a className="hr-chat__attachment-card" href={url} target="_blank" rel="noopener noreferrer">{content}</a>
     : <span className="hr-chat__attachment-card">{content}</span>;

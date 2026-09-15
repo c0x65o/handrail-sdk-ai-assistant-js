@@ -1,0 +1,34 @@
+{
+  "originalBytes": 2670630,
+  "clipboardBytes": 23074581,
+  "width": 2600,
+  "height": 2600,
+  "uploads": [
+    {
+      "size": 4085273,
+      "type": "image/jpeg",
+      "name": "pasted-image.jpg",
+      "width": 2600,
+      "height": 2600
+    }
+  ],
+  "oldRejections": [
+    "too_large"
+  ],
+  "widths": [
+    320,
+    390,
+    1280
+  ],
+  "checks": [
+    "compression",
+    "dimensions retained",
+    "thumbnail",
+    "remove",
+    "modal focus",
+    "zoom",
+    "Escape",
+    "no horizontal overflow",
+    "small PNG unchanged"
+  ]
+}

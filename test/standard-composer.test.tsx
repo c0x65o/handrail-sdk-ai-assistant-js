@@ -98,3 +98,35 @@ it("dictates into the latest draft, blocks submission, and aborts on unmount", (
   expect(instances[0]!.abort).toHaveBeenCalledOnce();
   expect(release).toHaveBeenCalledOnce();
 });
+
+it("shows thumbnails and an accessible X, opens a zoomable modal, and removes failed/uploading files", () => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true; } });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false; } });
+  const remove = vi.fn();
+  const photo = { id: "photo", fingerprint: "photo", filename: "plan.png", source: new Blob(["image"]),
+    kind: "image" as const, mediaType: "image/png" as const, byteSize: 2700000, previewUrl: "blob:photo", status: "ready" as const,
+    progress: { uploadedBytes: 2700000, totalBytes: 2700000 }, retryable: false, cancellable: false };
+  const input = { ...composer(), attachments: [photo], removeAttachment: remove };
+  const view = render(<StandardChatComposer composer={input} voiceControls={null}/>);
+  expect(screen.getByRole("img").getAttribute("src")).toBe("blob:photo");
+  expect(screen.queryByText(/Kind:|Type:|Status:/)).toBeNull();
+  expect(screen.queryByRole("progressbar")).toBeNull();
+  const enlarge = screen.getByRole("button", { name: "Enlarge plan.png" });
+  fireEvent.click(enlarge);
+  expect(screen.getByRole("dialog", { name: "plan.png image preview" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+  expect(screen.getByRole("button", { name: "Reset image zoom" }).textContent).toBe("150%");
+  fireEvent.click(screen.getByRole("button", { name: "Close image preview" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.activeElement).toBe(enlarge);
+  const removeButton = screen.getByRole("button", { name: "Remove plan.png" });
+  expect(removeButton.textContent).toBe("×");
+  fireEvent.click(removeButton);
+  expect(remove).toHaveBeenCalledWith("photo");
+  view.rerender(<StandardChatComposer composer={{ ...input, attachments: [{ ...photo, status: "uploading", cancellable: true }] }} voiceControls={null}/>);
+  expect(screen.getByRole("progressbar")).toBeTruthy();
+  fireEvent.error(screen.getByRole("img"));
+  expect(screen.getByText("Preview unavailable")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Remove plan.png" })).toBeTruthy();
+  expect(input.submit).not.toHaveBeenCalled();
+});
