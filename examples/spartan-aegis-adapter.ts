@@ -79,9 +79,9 @@ export function createSpartanAegisRegistrations<TActor, TExecutionContext>(
 }
 
 export const SPARTAN_AEGIS_TOOL_LOOP_LIMITS = Object.freeze({
-  maxIterations: 80,
-  maxTotalToolCalls: 75,
-  maxElapsedMs: 120_000,
+  maxIterations: 160,
+  maxTotalToolCalls: 150,
+  maxElapsedMs: 600_000,
   parallelism: 1,
 });
 

@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { createOpenAIResponsesProviderAdapter, type OpenAIResponsesRequest } from "../src/providers/openai.js";
+import { InMemoryOpenAIResponsesContinuationStore } from "../src/providers/openai-responses.js";
 import type { ProviderAdapterInvocation } from "../src/providers/index.js";
 
 const attribution = {
@@ -10,6 +11,15 @@ const attribution = {
   session: { id: null, source: "server_derived", trust: "authoritative" },
   automation: { id: null, source: "server_derived", trust: "authoritative" },
 } as const;
+
+it("retains enough provider context for the standard 150-call tool budget", () => {
+  const store = new InMemoryOpenAIResponsesContinuationStore();
+  const inputItems = Array.from({ length: 460 }, (_, index) => ({
+    type: "reasoning", id: `continuation-item-${index}`,
+  }));
+  store.save({ requestId: "standard-budget", inputItems });
+  expect(store.load("standard-budget")?.inputItems).toHaveLength(460);
+});
 
 it.each([
   { bound: undefined, count: 16, expected: "completed" },

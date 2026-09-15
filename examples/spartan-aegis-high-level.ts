@@ -1,4 +1,5 @@
 import { createToolPlugin, type ApplicationToolExecutor, type JsonValue } from "@handrail/ai-assistant";
+import { SPARTAN_AEGIS_TOOL_LOOP_LIMITS } from "@handrail/ai-assistant/adapters/spartan-aegis";
 import { postgres, type PostgresPoolLike } from "@handrail/ai-assistant/persistence/postgres";
 import { createHandrailAssistant, openaiResponses,
   type HandrailAssistantAuthorizationContext } from "@handrail/ai-assistant/server/assistant";
@@ -59,7 +60,7 @@ const assistant = await createHandrailAssistant<AegisContext>({
     : { outcome: "allow" },
   usage: usageFromEnvironment(),
   recoveryContexts: listActiveAegisContexts,
-  toolLoopLimits: { maxIterations: 80, maxTotalToolCalls: 75, maxElapsedMs: 120_000, parallelism: 1 },
+  toolLoopLimits: SPARTAN_AEGIS_TOOL_LOOP_LIMITS,
 });
 
 // Authentication, SSE, retries, durable replay, cancellation, tool continuation,

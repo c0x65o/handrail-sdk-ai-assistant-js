@@ -29,7 +29,7 @@ import { createAssistantConversationTitles, type AssistantAutomaticTitleOptions,
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 import type { AuthoritativeAttribution, ChatRequest, JsonObject, StreamEvent } from "../protocol.js";
 import type { ProviderAdapterMetadata } from "../providers/index.js";
-import type { ToolLoopLimits } from "../tools/loop.js";
+import { DEFAULT_TOOL_LOOP_LIMITS, type ToolLoopLimits } from "../tools/loop.js";
 import type { ConversationTransport, TurnResumePoint } from "../transports/types.js";
 import { createApplicationGateway, createConversationActivityHttpHandler,
   type ApplicationGateway, type ApplicationGatewayAction,
@@ -186,10 +186,6 @@ export interface HandrailAssistant {
   stopUsageWorker(): Promise<void>;
 }
 
-const DEFAULT_LIMITS: Readonly<ToolLoopLimits> = Object.freeze({
-  maxIterations: 8, maxTotalToolCalls: 32, maxElapsedMs: 120_000, parallelism: 1,
-});
-
 function identifier(value: string, label: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/u.test(value)) throw new TypeError(`${label} is invalid`);
   return value;
@@ -216,7 +212,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const transcriptionProvider = options.transcription ?? options.provider.transcription;
   const instructions = Object.freeze(typeof options.instructions === "string"
     ? [options.instructions] : [...(options.instructions ?? [])]);
-  const limits = Object.freeze({ ...DEFAULT_LIMITS, ...options.toolLoopLimits });
+  const limits = Object.freeze({ ...DEFAULT_TOOL_LOOP_LIMITS, ...options.toolLoopLimits });
   const workerId = identifier(options.workerId ?? `${assistantId}-${process.pid}`, "workerId");
   const bundles = new Map<string, PostgresAssistantPersistenceBundle<TContext>>();
   const applications = new Map<string, Promise<AiApplication<TContext, TContext, unknown>>>();

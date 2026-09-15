@@ -31,9 +31,9 @@ export interface ToolLoopLimits {
 }
 
 export const DEFAULT_TOOL_LOOP_LIMITS: Readonly<ToolLoopLimits> = Object.freeze({
-  maxIterations: 8,
-  maxTotalToolCalls: 32,
-  maxElapsedMs: 120_000,
+  maxIterations: 160,
+  maxTotalToolCalls: 150,
+  maxElapsedMs: 600_000,
   parallelism: 1,
 });
 

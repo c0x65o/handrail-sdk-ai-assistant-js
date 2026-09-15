@@ -31,7 +31,7 @@ describe("Spartan Aegis checked adapter", () => {
       toolCallId: "action-1" })).toEqual({ outcome: "external_approval_required" });
     expect(validate).toHaveBeenCalledWith("propose_invoice", {});
     expect(execute).not.toHaveBeenCalled();
-    expect(SPARTAN_AEGIS_TOOL_LOOP_LIMITS.maxTotalToolCalls).toBe(75);
+    expect(SPARTAN_AEGIS_TOOL_LOOP_LIMITS.maxTotalToolCalls).toBe(150);
   });
 
   it("turns action calls into proposals without exposing the business executor", async () => {

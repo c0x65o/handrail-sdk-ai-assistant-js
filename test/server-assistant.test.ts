@@ -73,6 +73,9 @@ describe("createHandrailAssistant", () => {
         context_window_tokens: null, max_output_tokens: null } },
         createTransport(input) { exposed = input.tools; return transport; } },
     });
+    expect(assistant.capabilities.toolLoopLimits).toEqual({
+      maxIterations: 160, maxTotalToolCalls: 150, maxElapsedMs: 600_000, parallelism: 1,
+    });
     expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(200);
     const run = (turnId: string, name = "write_record") => exposed.execute({ name, tool_call_id: `${turnId}-${name}`, arguments: {} },
       new AbortController().signal, { conversationId: "policy-conversation", turnId });

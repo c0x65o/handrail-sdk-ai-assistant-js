@@ -6,6 +6,7 @@ import type {
 import { createToolPlugin, type ToolPlugin, type ToolPluginPresentation } from "../tools/plugin.js";
 import type { JsonObject, JsonSchemaObject } from "../protocol.js";
 import type { ToolRegistration } from "../tools/registry.js";
+import { DEFAULT_TOOL_LOOP_LIMITS } from "../tools/loop.js";
 
 export const SPARTAN_AEGIS_ADAPTER_VERSION = "handrail.spartan-aegis.v1" as const;
 
@@ -118,12 +119,7 @@ export function createSpartanAegisPlugin<TActor>(
   return Object.freeze({ ...plugin, adapterVersion: SPARTAN_AEGIS_ADAPTER_VERSION });
 }
 
-export const SPARTAN_AEGIS_TOOL_LOOP_LIMITS = Object.freeze({
-  maxIterations: 160,
-  maxTotalToolCalls: 150,
-  maxElapsedMs: 600_000,
-  parallelism: 1,
-});
+export const SPARTAN_AEGIS_TOOL_LOOP_LIMITS = DEFAULT_TOOL_LOOP_LIMITS;
 
 export const SPARTAN_AEGIS_MAXIMUM_INPUT_MESSAGES = 30;
 

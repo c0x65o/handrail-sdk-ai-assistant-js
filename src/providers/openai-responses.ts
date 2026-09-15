@@ -90,7 +90,9 @@ type RecordValue = Record<string, unknown>;
 class OpenAIResponsesPreflightError extends Error {}
 class OpenAIResponsesMalformedStreamError extends Error {}
 
-const MAX_CONTINUATION_ITEMS = 256;
+// A sequential 150-call turn retains at least one function call and one result
+// per call. Leave room for provider reasoning items across all 160 rounds.
+const MAX_CONTINUATION_ITEMS = 512;
 const MAX_CONTINUATION_BYTES = 2 * 1024 * 1024;
 
 function record(value: unknown): RecordValue {

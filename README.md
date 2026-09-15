@@ -691,7 +691,8 @@ also retries activity writes that failed after execution finished, preserving
 already-cleared read markers.
 
 `toolExecutorLimits` sets each tool's timeout (30 seconds by default);
-`toolLoopLimits` sets the overall continuation budget (two minutes by default).
+`toolLoopLimits` sets the overall continuation budget (10 minutes, 150 tool
+calls, and 160 provider rounds by default).
 Configure both for longer requests. Tools must honor their abort signal and
 use application-owned transactions and idempotency for partial work.
 
