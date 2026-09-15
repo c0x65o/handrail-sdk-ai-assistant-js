@@ -20,6 +20,7 @@ import type {
   AttachmentUploadKind,
 } from "../attachments/types.js";
 import type { AttachmentUploader } from "../attachments/uploader.js";
+import { toConversationAttachmentReference } from "../attachments/references.js";
 import { prepareClipboardImage } from "../browser/clipboard-image.js";
 import {
   intakeFileInputImages,
@@ -36,7 +37,6 @@ import {
   type BrowserPdfIntakeResult,
 } from "../browser/attachments.js";
 import type {
-  ConversationAttachmentId,
   ConversationAttachmentReference,
   ConversationId,
 } from "../conversation/events.js";
@@ -443,14 +443,7 @@ function compactHash(value: string): string {
 }
 
 function durableAttachment(reference: AttachmentReference): ConversationAttachmentReference {
-  const mediaType = AI_RUNTIME_DOCUMENT_MIME_TYPES.find((type) => type === reference.media_type);
-  const attachment = {
-    attachment_id: reference.attachment_id as ConversationAttachmentId,
-    media_type: reference.media_type,
-    ...(reference.filename === undefined ? {} : { filename: reference.filename }),
-    size_bytes: reference.byte_size,
-  };
-  return mediaType ? { ...attachment, kind: "document", media_type: mediaType } : attachment;
+  return toConversationAttachmentReference(reference);
 }
 
 function sendError(error: ConversationRuntimeError): ConversationComposerError {

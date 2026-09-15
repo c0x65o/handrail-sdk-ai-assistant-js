@@ -388,7 +388,7 @@ describe("useConversationComposer", () => {
     expect(urls.created).toHaveLength(1);
     await act(() => result.current.submit());
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ attachments: [
-      expect.objectContaining({ filename: "screenshot.png", media_type: "image/png" }),
+      expect.objectContaining({ filename: "screenshot.png", media_type: "image/png", kind: "image" }),
       expect.objectContaining({ filename: "report.pdf", kind: "document" }),
     ] }));
     expect(urls.revoked).toEqual(["blob:composer-1"]);

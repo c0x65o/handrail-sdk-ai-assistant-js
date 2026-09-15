@@ -1,0 +1,101 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ❯ test/server-tool-admission.integration.test.ts (2 tests | 1 failed | 1 skipped) 2102ms
+   × HTTP authenticated recovery admits exact execution replay (allowed=false), while history retains separate authorization 2102ms
+     → expected { …(5) } to match object { is_error: true }
+(4 matching properties omitted from actual)
+   ↓ HTTP authenticated recovery admits exact execution replay (allowed=true), while history retains separate authorization
+ ❯ test/tool-admission.integration.test.ts (2 tests | 2 failed) 3364ms
+   × rechecks finance.period-close.prepare exact durable receipts with stale/refreshed discovery and current principals after recreation 1901ms
+     → finance.period-close.prepare: {"id":"user","permissions":[],"namespace":true}, refreshed=false: expected { status: 'completed', …(1) } to match object { status: 'completed', …(1) }
+(3 matching properties omitted from actual)
+   × rechecks finance.manage exact durable receipts with stale/refreshed discovery and current principals after recreation 1462ms
+     → finance.manage: {"id":"user","permissions":[],"namespace":true}, refreshed=false: expected { status: 'completed', …(1) } to match object { status: 'completed', …(1) }
+(3 matching properties omitted from actual)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/server-tool-admission.integration.test.ts > HTTP authenticated recovery admits exact execution replay (allowed=false), while history retains separate authorization
+AssertionError: expected { …(5) } to match object { is_error: true }
+(4 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "is_error": true,
++   "is_error": false,
+  }
+
+ ❯ test/server-tool-admission.integration.test.ts:102:25
+    100|       .map(entry => entry.event.payload).filter(payload => payload.typ…
+    101|     expect(recorded).toHaveLength(1);
+    102|     expect(recorded[0]).toMatchObject({ is_error: !permitted });
+       |                         ^
+    103|     expect(JSON.stringify(recorded).includes("protectedReceipt")).toBe…
+    104|     expect(admission).toHaveBeenCalledOnce();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  test/tool-admission.integration.test.ts > rechecks finance.period-close.prepare exact durable receipts with stale/refreshed discovery and current principals after recreation
+AssertionError: finance.period-close.prepare: {"id":"user","permissions":[],"namespace":true}, refreshed=false: expected { status: 'completed', …(1) } to match object { status: 'completed', …(1) }
+(3 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "result": {
+-     "is_error": true,
++     "is_error": false,
+    },
+    "status": "completed",
+  }
+
+ ❯ test/tool-admission.integration.test.ts:68:14
+     66|             ? { ...context, principal: principal ?? { ...allowed(), na…
+     67|           expect(result, `${permission}: ${JSON.stringify(principal)},…
+     68|             .toMatchObject({ status: "completed", result: { is_error: …
+       |              ^
+     69|           expect(JSON.stringify(result)).not.toContain("protectedRecei…
+     70|           expect(await receipts()).toEqual(before);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  test/tool-admission.integration.test.ts > rechecks finance.manage exact durable receipts with stale/refreshed discovery and current principals after recreation
+AssertionError: finance.manage: {"id":"user","permissions":[],"namespace":true}, refreshed=false: expected { status: 'completed', …(1) } to match object { status: 'completed', …(1) }
+(3 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "result": {
+-     "is_error": true,
++     "is_error": false,
+    },
+    "status": "completed",
+  }
+
+ ❯ test/tool-admission.integration.test.ts:68:14
+     66|             ? { ...context, principal: principal ?? { ...allowed(), na…
+     67|           expect(result, `${permission}: ${JSON.stringify(principal)},…
+     68|             .toMatchObject({ status: "completed", result: { is_error: …
+       |              ^
+     69|           expect(JSON.stringify(result)).not.toContain("protectedRecei…
+     70|           expect(await receipts()).toEqual(before);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  3 failed | 1 skipped (4)
+   Start at  15:35:27
+   Duration  7.28s (transform 898ms, setup 0ms, collect 1.36s, tests 5.47s, environment 0ms, prepare 130ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice

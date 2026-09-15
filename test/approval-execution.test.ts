@@ -206,6 +206,33 @@ function execute(
 }
 
 describe("approval execution", () => {
+  it("admits approval retries before claims and receipt reuse without granting confirmation", async () => {
+    const f = await fixture();
+    let allowed = true;
+    const bounded = new BoundedToolExecutor({ registry: f.registry, ledger: f.ledger,
+      policy: () => ({ outcome: "external_approval_required" }), approvalCoordinator: f.approval,
+      admission: () => ({ outcome: allowed ? "allow" : "deny" }) });
+    expect(await execute(f, bounded)).toMatchObject({ status: "external_approval_required" });
+    expect(f.invoke).not.toHaveBeenCalled();
+    const proposalId = await createProposal(f);
+    await confirm(f, proposalId);
+    const before = await f.proposals.get({ permissionContext: "allowed", proposalId });
+    allowed = false;
+    expect(await execute(f, bounded, resume(proposalId))).toMatchObject({ result: { is_error: true } });
+    expect(await f.proposals.get({ permissionContext: "allowed", proposalId })).toEqual(before);
+    expect(f.invoke).not.toHaveBeenCalled();
+    allowed = true;
+    const original = await execute(f, bounded, resume(proposalId));
+    expect(original).toMatchObject({ result: { is_error: false } });
+    const executed = await f.proposals.get({ permissionContext: "allowed", proposalId });
+    allowed = false;
+    expect(await execute(f, bounded, resume(proposalId))).toMatchObject({ result: { is_error: true } });
+    expect(await f.proposals.get({ permissionContext: "allowed", proposalId })).toEqual(executed);
+    allowed = true;
+    expect(await execute(f, bounded, resume(proposalId))).toEqual(original);
+    expect(f.invoke).toHaveBeenCalledOnce();
+  });
+
   it("never executes pending, rejected, attempted expiry, tampered, or unauthorized proposals", async () => {
     const cases = [
       "pending",

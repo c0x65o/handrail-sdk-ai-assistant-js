@@ -91,10 +91,18 @@ export interface ApplicationToolPolicyInput<TContext = unknown> {
   readonly toolCallId: string;
 }
 
-/** The application policy is the sole authorization boundary for discovered, valid calls. */
+/** Dispatch/approval policy for discovered, valid calls. Use admission for current authorization on every retry. */
 export type ApplicationToolPolicy<TContext = unknown> = (
   input: ApplicationToolPolicyInput<TContext>,
 ) => ApplicationToolPolicyDecision | Promise<ApplicationToolPolicyDecision>;
+
+/** Current authorization for every execution attempt, including completed and in-flight replay.
+ * Resolve trusted principal/operation permissions here; discovery and dispatch policy may be stale
+ * or skipped on replay. This hook must be side-effect free and cannot grant human approval.
+ */
+export type ApplicationToolAdmission<TContext = unknown> = (
+  input: ApplicationToolPolicyInput<TContext> & { readonly executionKey: string },
+) => { readonly outcome: "allow" | "deny" } | Promise<{ readonly outcome: "allow" | "deny" }>;
 
 export interface ToolExecutionLedger {
   /** Optional fast path used to avoid repeating validation/policy for completed calls. */
@@ -218,6 +226,7 @@ export interface BoundedToolExecutorOptions<
 > {
   readonly registry: ToolRegistry<ApplicationToolExecutor<TContext>, TDiscoveryContext>;
   readonly policy: ApplicationToolPolicy<TContext>;
+  readonly admission?: ApplicationToolAdmission<TContext>;
   readonly ledger?: ToolExecutionLedger;
   readonly approvalCoordinator?: ApprovalExecutionCoordinator<TApprovalPermissionContext>;
   readonly limits?: Partial<BoundedToolExecutorLimits>;
@@ -684,6 +693,7 @@ export class BoundedToolExecutor<
 > {
   readonly #registry: ToolRegistry<ApplicationToolExecutor<TContext>, TDiscoveryContext>;
   readonly #policy: ApplicationToolPolicy<TContext>;
+  readonly #admission: ApplicationToolAdmission<TContext> | undefined;
   readonly #ledger: ToolExecutionLedger;
   readonly #approvalCoordinator:
     | ApprovalExecutionCoordinator<TApprovalPermissionContext>
@@ -703,6 +713,7 @@ export class BoundedToolExecutor<
   ) {
     this.#registry = options.registry;
     this.#policy = options.policy;
+    this.#admission = options.admission;
     this.#ledger = options.ledger ?? new InMemoryToolExecutionLedger();
     this.#approvalCoordinator = options.approvalCoordinator;
     this.#limits = resolvedLimits(options.limits);
@@ -772,6 +783,12 @@ export class BoundedToolExecutor<
     // Snapshot arguments before any asynchronous boundary so the caller cannot
     // change the dispatched request after its retry identity has been checked.
     request = { ...request, call: { ...request.call, arguments: arguments_ } };
+    // Admission belongs to this caller, never to the shared operation or ledger.
+    // A denial must not retain a result, replace a receipt, or claim an approval.
+    if (this.#admission !== undefined) {
+      const denied = await this.#admit(request, toolCallId, name, executionKey);
+      if (denied !== undefined) return { status: "completed", result: denied };
+    }
     try {
       const completed = request.approval === undefined
         ? this.#ledger.get?.(executionKey, fingerprint) : undefined;
@@ -794,6 +811,44 @@ export class BoundedToolExecutor<
       if (this.#operations.get(executionKey)?.operation === operation) this.#operations.delete(executionKey);
     }).catch(() => undefined);
     return operation;
+  }
+
+  async #admit(
+    request: BoundedToolExecutionRequest<TContext, TApprovalPermissionContext>,
+    toolCallId: string,
+    name: string,
+    executionKey: string,
+  ): Promise<ApplicationToolResult | undefined> {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    if (request.signal?.aborted) controller.abort();
+    else request.signal?.addEventListener("abort", onAbort, { once: true });
+    const timeout = setTimeout(onAbort, this.#limits.timeoutMs);
+    try {
+      if (controller.signal.aborted) throw new ExecutionCancelled();
+      const registration = this.#registry.get(name);
+      if (!registration || !request.discoveredTools.includes(registration.definition)) {
+        return errorResult(toolCallId, name, "Tool is unavailable for this call.");
+      }
+      // Give the hook its own copy: it cannot change the fingerprint or dispatch arguments.
+      const arguments_ = cloneArguments(request.call.arguments);
+      validateArguments(registration.definition, arguments_);
+      const decision = await raceWithSignal(Promise.resolve().then(() => this.#admission!({
+        applicationContext: request.applicationContext,
+        ...(request.location === undefined ? {} : { location: request.location }),
+        arguments: arguments_, definition: registration.definition,
+        signal: controller.signal, toolCallId, executionKey,
+      })), controller.signal);
+      if (decision?.outcome === "allow" && !controller.signal.aborted) return undefined;
+    } catch {
+      // Fail closed without exposing resolver errors or protected receipt contents.
+    } finally {
+      clearTimeout(timeout);
+      request.signal?.removeEventListener("abort", onAbort);
+    }
+    emitAiDiagnostic(this.#diagnostics, { domain: "policy", operation: "tool_admission",
+      phase: "failed", toolName: name, toolCallId, code: "admission_denied", retryable: false });
+    return errorResult(toolCallId, name, "Tool execution was denied by application admission.");
   }
 
   async #executeDetailedOnce(

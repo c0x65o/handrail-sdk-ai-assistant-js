@@ -44,7 +44,7 @@ import { createInMemoryLiveConversationActivityDelivery,
 import { ApprovalProposalStoreError, type ApprovalProposalStore } from "../conversation/approval-proposal-store.js";
 import type { PostgresAssistantPersistence, PostgresAssistantPersistenceBundle } from "../postgres/index.js";
 import { createAiApplication, type AiApplication, type ApplicationApprovalPolicy } from "./application.js";
-import type { ApplicationToolActivityUpdate, ApplicationToolExecutor, ApplicationToolPolicy,
+import type { ApplicationToolActivityUpdate, ApplicationToolExecutor, ApplicationToolPolicy, ApplicationToolAdmission,
   BoundedToolExecutorLimits } from "../tools/executor.js";
 import type { ToolPlugin } from "../tools/plugin.js";
 import { createAIRuntimeUsageDelivery, type AIRuntimeUsageConfiguration } from "./usage-control.js";
@@ -58,6 +58,7 @@ import { createAssistantActivityTransport } from "../presence/assistant-activity
 
 export { waitForApplicationApproval, ApplicationApprovalWaitExpiredError,
   type ApplicationApprovalWaitOptions, type ApplicationApprovalObservation } from "./application-approval-wait.js";
+export type { ApplicationToolAdmission } from "../tools/executor.js";
 export type { HandrailAssistantToolObserver } from "./tool-observer.js";
 export { openaiResponses, createOpenAIResponsesRequest, DEFAULT_ASSISTANT_DOCUMENT_INPUT, type HandrailOpenAIResponsesOptions } from "./openai-responses.js";
 export { createProviderToolLoopTransport, type ProviderToolLoopTransportOptions } from "./provider-tool-loop.js";
@@ -104,6 +105,8 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   };
   readonly tools?: readonly ToolPlugin<ApplicationToolExecutor<TContext>, TContext, TContext, TContext>[];
   readonly toolPolicy?: ApplicationToolPolicy<TContext>;
+  /** Resolves current principal/operation access for every tool attempt, including recovered exact retries. */
+  readonly toolAdmission?: ApplicationToolAdmission<TContext>;
   /** Project-aware confirmation policy for tools declared with approval mode `policy`. */
   readonly approvalPolicy?: ApplicationApprovalPolicy<TContext>;
   /** Supplies the first safe summary shown when a tool begins. Long-running tools can report later progress. */
@@ -272,6 +275,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       application = createAiApplication({
         plugins: options.tools ?? [], installContext: context,
         policy: options.toolPolicy ?? (() => ({ outcome: "allow" })),
+        ...(options.toolAdmission === undefined ? {} : { toolAdmission: options.toolAdmission }),
         approvalPolicy: options.approvalPolicy ?? (async ({ location, signal }) => {
           // Read the admitted request, including during recovery. A later UI
           // preference cannot alter an already running turn. This is only the
@@ -804,3 +808,5 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     stopUsageWorker: stopBackgroundWorkers,
   });
 }
+export { prepareSavedConversationRequest, SavedConversationPreparationError,
+  type SavedConversationRequestOptions, type SavedConversationFile } from "./saved-conversation-request.js";

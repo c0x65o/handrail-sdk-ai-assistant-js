@@ -16,6 +16,7 @@ import {
 import {
   BoundedToolExecutor,
   type ApplicationToolExecutor,
+  type ApplicationToolAdmission,
   type ApplicationToolPolicyInput,
   type ApplicationToolPolicy,
   type ApplicationToolPolicyDecision,
@@ -29,6 +30,7 @@ import type { AiDiagnosticSink } from "../diagnostics.js";
 import type { ToolRecoveryPolicy } from "../tools/recovery.js";
 import type { ApplicationToolOutput } from "../tools/executor.js";
 export * from "../tools/recovery.js";
+export type { ApplicationToolAdmission } from "../tools/executor.js";
 export * from "./tool-incidents.js";
 import {
   runToolLoop,
@@ -101,7 +103,7 @@ export interface ApplicationApprovalPolicyInput<TApplicationContext>
 
 /**
  * Chooses whether a policy-controlled tool pauses for human confirmation.
- * Authorization remains exclusively owned by ApplicationToolPolicy.
+ * Authorization remains owned by application admission and tool policy.
  */
 export type ApplicationApprovalPolicy<TApplicationContext> = (
   input: ApplicationApprovalPolicyInput<TApplicationContext>,
@@ -128,6 +130,8 @@ export interface CreateAiApplicationOptions<
   >[];
   readonly installContext: TInstallContext;
   readonly policy: ApplicationToolPolicy<TApplicationContext>;
+  /** Current principal/operation authorization before any dispatch, receipt replay or in-flight join. */
+  readonly toolAdmission?: ApplicationToolAdmission<TApplicationContext>;
   /** Project-aware confirmation policy for plugin tools whose approval mode is `policy`. */
   readonly approvalPolicy?: ApplicationApprovalPolicy<TApplicationContext>;
   readonly approvalCoordinator?: ApprovalExecutionCoordinator<TApprovalPermissionContext>;
@@ -267,6 +271,7 @@ export async function createAiApplication<
   const executor = new BoundedToolExecutor({
     registry,
     policy,
+    ...(options.toolAdmission === undefined ? {} : { admission: options.toolAdmission }),
     ...(options.approvalCoordinator ? { approvalCoordinator: options.approvalCoordinator } : {}),
     ...(options.toolExecutionLedger ? { ledger: options.toolExecutionLedger } : {}),
     ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),

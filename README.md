@@ -588,6 +588,10 @@ restart/resume idempotent; a failed execution can be explicitly reclaimed
 through a new version. Expired, mismatched, stale, rejected, or unauthorized
 proposals cannot execute.
 
+For current principal and operation authorization on exact retries, configure
+[`toolAdmission`](docs/tool-execution-admission.md). Checks inside the domain
+executor alone do not run when a retained success receipt is replayed.
+
 Approval and authorization are separate decisions. A plugin declares each
 tool as `never`, `always`, or `policy`: `never` adds no plugin confirmation
 requirement, `always` always adds one, and `policy` calls the trusted host's
@@ -598,7 +602,8 @@ or require confirmation for any tool:
 
 ```ts
 const assistant = await createHandrailAssistant({
-  // Authentication and role/tenant authorization still belong here.
+  // Resolve current principal/operation access, including exact retries.
+  toolAdmission: admitCurrentToolAccess,
   toolPolicy: authorizeToolExecution,
   approvalPolicy: ({ applicationContext }) =>
     applicationContext.project.approvalsRequired

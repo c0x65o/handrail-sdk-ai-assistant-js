@@ -1,0 +1,46 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ✓ test/tool-admission.integration.test.ts (2 tests) 4120ms
+   ✓ rechecks finance.period-close.prepare exact durable receipts with stale/refreshed discovery and current principals after recreation  2431ms
+   ✓ rechecks finance.manage exact durable receipts with stale/refreshed discovery and current principals after recreation  1687ms
+ ✓ test/server-tool-admission.integration.test.ts (2 tests) 4449ms
+   ✓ HTTP authenticated recovery admits exact execution replay (allowed=false), while history retains separate authorization  2718ms
+   ✓ HTTP authenticated recovery admits exact execution replay (allowed=true), while history retains separate authorization  1729ms
+ ✓ test/server-approval-pause.integration.test.ts (7 tests) 17506ms
+   ✓ HTTP decisions resume an external confirmed proposal after restart without reopening its provider  2649ms
+   ✓ HTTP decisions resume an external rejected proposal after restart without reopening its provider  1755ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=complete)  2709ms
+   ✓ rests across comments and restart, then resumes rejected once (comment=complete)  2692ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=running)  2686ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=none)  2627ms
+   ✓ rests across comments and restart, then resumes rejected once (comment=none)  2383ms
+ ✓ test/postgres-durable-recovery.integration.test.ts (1 test) 2681ms
+   ✓ pages on immutable tenant keys, retains the scan boundary, and recovers behind denied rows without claiming them  2680ms
+ ✓ test/postgres-tool-ledger.integration.test.ts (1 test) 2438ms
+   ✓ retains dispatch claims across real SQL rollback while keeping external writes and legacy results  2437ms
+ ✓ test/server-provider-replay.test.ts (8 tests) 2237ms
+   ✓ provides physical retries, durable tool identities and replay in the default server provider  2221ms
+ ✓ test/tool-admission.test.ts (7 tests) 1265ms
+   ✓ fails admission closed (timeout) without retaining a denial  1002ms
+ ✓ test/server-assistant.test.ts (8 tests) 608ms
+ ✓ test/server-assistant-worker-ownership.test.ts (2 tests) 545ms
+ ✓ test/tool-executor.test.ts (25 tests) 337ms
+ ✓ test/server-assistant-recovery-authorization.test.ts (2 tests) 249ms
+ ✓ test/application-gateway-synchronization.test.ts (2 tests) 113ms
+ ✓ test/approval-execution.test.ts (7 tests) 84ms
+ ✓ test/application-assembly.test.ts (5 tests) 81ms
+ ✓ test/tool-recovery.test.ts (22 tests) 68ms
+ ✓ test/postgres-tool-ledger.test.ts (6 tests) 62ms
+ ✓ test/application-gateway.test.ts (10 tests) 47ms
+
+ Test Files  17 passed (17)
+      Tests  117 passed (117)
+   Start at  15:35:48
+   Duration  44.19s (transform 1.29s, setup 0ms, collect 3.95s, tests 36.89s, environment 3ms, prepare 957ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice
