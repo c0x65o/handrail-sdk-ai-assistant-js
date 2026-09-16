@@ -26,7 +26,11 @@ function storedObservation(record: DurableApplicationTurnRecord<ChatRequest, Str
     if (frames.length === 0) frames.push(parseStreamEvent({ type: "response.started", protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
       request_id: `recovery-${createHash("sha256").update(`${record.conversationId}:${record.turnId}`).digest("hex")}`,
       trace_id: `recovery-${createHash("sha256").update(record.turnId).digest("hex")}`, sequence: 0, attribution }));
-    const preceding = frames.at(-1)!;
+    // A recovery can replay only part of the already retained prefix before
+    // authorization or preparation fails. Its last physical frame may have an
+    // older sequence. Append after the complete saved prefix, never over it.
+    // The runtime still validates duplicates and rejects changed frame data.
+    const preceding = frames.reduce((latest, frame) => frame.sequence > latest.sequence ? frame : latest);
     frames.push(parseStreamEvent({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
       request_id: preceding.request_id, trace_id: preceding.trace_id, sequence: preceding.sequence + 1,
       ...(record.status === "cancelled" ? { type: "response.cancelled", reason: record.cancellation?.reason === "timeout"

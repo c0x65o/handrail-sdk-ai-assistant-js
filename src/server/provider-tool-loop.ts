@@ -10,6 +10,7 @@ import type { ConversationTransport, DurableTurnExecutionIdentity, TurnObservati
 import type { NormalizedUsageReceipt } from "../usage.js";
 import { projectProviderUsageToReceipt } from "../usage.js";
 import { SavedConversationPreparationError, SavedConversationFileUnavailableError } from "./saved-conversation-request.js";
+import { ToolLifecycleConflictError } from "./tool-lifecycle.js";
 
 export interface ProviderToolLoopExecutionResult {
   readonly status: "completed";
@@ -277,6 +278,15 @@ export function createProviderToolLoopTransport(
             code: result.error.code, message: result.error.message, retryable: result.error.retryable,
           } });
         return terminal(result, { requestId: rootRequestId, sequence: sequence - 1 });
+      } catch (cause) {
+        if (!(cause instanceof ToolLifecycleConflictError)) throw cause;
+        // A resumed attempt may stop before the end of its retained stream.
+        // Reconciliation appends the failure after that immutable prefix; an
+        // early terminal frame here would reuse a previously saved sequence.
+        const checkpoint = { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null };
+        return turn.signal.aborted ? { status: "cancelled", checkpoint } : { status: "failed", checkpoint,
+          error: { code: "conflict", retryable: false,
+            message: "Saved action results could not be reused. Access or action data may have changed. Review the saved results before starting a new request." } };
       } finally { budget.dispose(); }
     },
   });

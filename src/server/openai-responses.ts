@@ -7,7 +7,7 @@ import { createOpenAIResponsesProviderAdapter, type OpenAIResponsesProviderOptio
 import type { OpenAIResponsesRequest } from "../providers/openai-responses-tools.js";
 import { parseServerSentEvents } from "../transports/sse.js";
 import type { HandrailAssistantAuthorizationContext, HandrailAssistantProvider, HandrailAssistantProviderScope } from "./assistant.js";
-import { AI_RUNTIME_PROTOCOL_LIMITS, AI_RUNTIME_PROTOCOL_VERSION, parseChatRequest, type AttachmentReference, type ChatRequest } from "../protocol.js";
+import { AI_RUNTIME_PROTOCOL_LIMITS, parseChatRequest, type AttachmentReference, type ChatRequest } from "../protocol.js";
 import type { DocumentInputCapabilityDescriptor, ProviderAttachmentReferenceResolver } from "../providers/index.js";
 import { createProviderToolLoopTransport } from "./provider-tool-loop.js";
 import type { AssistantTitleProviderRequest } from "./conversation-titles.js";
@@ -23,12 +23,16 @@ import { ConversationCatalogError } from "../conversation/catalog.js";
 import { ProviderInputPreparationError } from "../providers/input-preparation-error.js";
 
 export interface HandrailSavedConversationOptions<TContext extends HandrailAssistantAuthorizationContext>
-  extends Omit<SavedConversationPreparerOptions, "eventStore" | "authorize" | "resolveAttachment"> {
+  extends Omit<SavedConversationPreparerOptions, "eventStore" | "authorize" | "resolveAttachment" | "applicationContext"> {
   /** Additional fresh domain authorization. SDK catalog ownership is always checked. */
   readonly authorize?: (input: SavedConversationTurnInput & { readonly context: TContext }) => void | Promise<void>;
   /** Existing app storage may retain its identities. Defaults to SDK protected uploads. */
   readonly resolveAttachment?: (input: Parameters<SavedConversationPreparerOptions["resolveAttachment"]>[0] &
     { readonly context: TContext }) => ReturnType<SavedConversationPreparerOptions["resolveAttachment"]>;
+  /** Add fresh authorized business facts without reconstructing history/files.
+   * Runs inside the SDK's history and authorization rechecks, including reopen. */
+  readonly applicationContext?: (input: SavedConversationTurnInput & { readonly context: TContext }) =>
+    ReturnType<NonNullable<SavedConversationPreparerOptions["applicationContext"]>>;
   /** Shared list/open tools are enabled with canonical history. False disables
    * them; custom storage uses the same authorized metadata and byte adapters. */
   readonly fileTools?: boolean | { readonly maximumTotalBytes?: number };
@@ -103,39 +107,45 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
   void _apiKey; void _baseUrl; void _fetch; void _request;
   const metadata = createOpenAIResponsesProviderAdapter({ ...adapterOptions, request }).metadata;
   const savedOptions = savedConversation === true ? {} : savedConversation;
-  const preparerOptions = (input: HandrailAssistantProviderScope<TContext>): SavedConversationPreparerOptions | undefined => savedOptions ? {
-    ...savedOptions,
-    eventStore: input.persistence.events,
-    maximumDocuments: Math.min(savedOptions.maximumDocuments ?? AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerRequest,
-      adapterOptions.document_input?.max_document_count ?? 0),
-    maximumDocumentsPerMessage: Math.min(savedOptions.maximumDocumentsPerMessage ?? AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerMessage,
-      adapterOptions.document_input?.max_document_count ?? 0),
-    supportedDocumentMediaTypes: (adapterOptions.document_input?.supported_mime_types ?? [])
-      .filter(type => !savedOptions.supportedDocumentMediaTypes || savedOptions.supportedDocumentMediaTypes.includes(type)),
-    maximumDocumentBytes: Math.min(savedOptions.maximumDocumentBytes ?? Number.MAX_SAFE_INTEGER,
-      adapterOptions.document_input?.max_document_bytes ?? 0),
-    authorize: async turn => {
-      if (input.authorizeConversation) await input.authorizeConversation(turn.conversationId);
-      else await input.persistence.catalog.get({ authorizationContext: input.context, conversationId: turn.conversationId as never });
-      if (savedOptions.authorize) await savedOptions.authorize({ ...turn, context: input.context });
-    },
-    resolveAttachment: async turn => {
-      if (savedOptions.resolveAttachment) return savedOptions.resolveAttachment({ ...turn, context: input.context });
-      try {
-        if (input.conversationFiles) return await input.conversationFiles.resolveSaved(turn.conversationId, turn.attachment);
-        const { record } = await input.persistence.attachments.download({ ownerScopeId: input.context.scopeId,
-          conversationId: turn.conversationId, attachmentId: turn.attachment.attachment_id });
-        return { attachment_id: record.attachmentId, content_ref: record.contentRef,
-          media_type: record.mediaType as AttachmentReference["media_type"], byte_size: record.byteSize,
-          ...(record.filename ? { filename: record.filename } : {}) };
-      } catch (error) {
-        if (error instanceof AttachmentStagingError && (error.code === "expired" || error.code === "not_found")) {
-          throw new SavedConversationFileUnavailableError(error.code);
+  const preparerOptions = (input: HandrailAssistantProviderScope<TContext>): SavedConversationPreparerOptions | undefined => {
+    if (!savedOptions) return undefined;
+    const { applicationContext, ...preparationOptions } = savedOptions;
+    return {
+      ...preparationOptions,
+      ...(applicationContext ? { applicationContext: (turn: SavedConversationTurnInput) =>
+        applicationContext({ ...turn, context: input.context }) } : {}),
+      eventStore: input.persistence.events,
+      maximumDocuments: Math.min(savedOptions.maximumDocuments ?? AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerRequest,
+        adapterOptions.document_input?.max_document_count ?? 0),
+      maximumDocumentsPerMessage: Math.min(savedOptions.maximumDocumentsPerMessage ?? AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerMessage,
+        adapterOptions.document_input?.max_document_count ?? 0),
+      supportedDocumentMediaTypes: (adapterOptions.document_input?.supported_mime_types ?? [])
+        .filter(type => !savedOptions.supportedDocumentMediaTypes || savedOptions.supportedDocumentMediaTypes.includes(type)),
+      maximumDocumentBytes: Math.min(savedOptions.maximumDocumentBytes ?? Number.MAX_SAFE_INTEGER,
+        adapterOptions.document_input?.max_document_bytes ?? 0),
+      authorize: async turn => {
+        if (input.authorizeConversation) await input.authorizeConversation(turn.conversationId);
+        else await input.persistence.catalog.get({ authorizationContext: input.context, conversationId: turn.conversationId as never });
+        if (savedOptions.authorize) await savedOptions.authorize({ ...turn, context: input.context });
+      },
+      resolveAttachment: async turn => {
+        if (savedOptions.resolveAttachment) return savedOptions.resolveAttachment({ ...turn, context: input.context });
+        try {
+          if (input.conversationFiles) return await input.conversationFiles.resolveSaved(turn.conversationId, turn.attachment);
+          const { record } = await input.persistence.attachments.download({ ownerScopeId: input.context.scopeId,
+            conversationId: turn.conversationId, attachmentId: turn.attachment.attachment_id });
+          return { attachment_id: record.attachmentId, content_ref: record.contentRef,
+            media_type: record.mediaType as AttachmentReference["media_type"], byte_size: record.byteSize,
+            ...(record.filename ? { filename: record.filename } : {}) };
+        } catch (error) {
+          if (error instanceof AttachmentStagingError && (error.code === "expired" || error.code === "not_found")) {
+            throw new SavedConversationFileUnavailableError(error.code);
+          }
+          throw error;
         }
-        throw error;
-      }
-    },
-  } : undefined;
+      },
+    };
+  };
   const turnInput = async (input: HandrailAssistantProviderScope<TContext>, location: { conversationId: string; turnId: string },
     file: SavedFileLocation): Promise<SavedConversationTurnInput> => {
     if (file.conversationId !== location.conversationId) throw new SavedConversationPreparationError("saved_input_unavailable");
@@ -187,12 +197,14 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
   return Object.freeze({
     metadata,
     createToolSupport(input: HandrailAssistantProviderScope<TContext>) {
-      if (!savedOptions || savedOptions.fileTools === false) return { plugins: [] };
+      if (!savedOptions) return { plugins: [] };
+      const savedFilesFor = (location: { conversationId: string; turnId: string }) => savedFiles(input, location);
+      if (savedOptions.fileTools === false) return { plugins: [], savedFilesFor };
       const maximumImages = savedOptions.maximumImages ?? AI_RUNTIME_PROTOCOL_LIMITS.imageAttachmentsPerRequest;
       const maximumDocuments = Math.min(savedOptions.maximumDocuments ?? AI_RUNTIME_PROTOCOL_LIMITS.documentAttachmentsPerRequest,
         adapterOptions.document_input?.max_document_count ?? 0);
-      if (maximumImages + maximumDocuments === 0) return { plugins: [] };
-      const support = createSavedFileTools<TContext>({ filesFor: (_context, location) => savedFiles(input, location), maximumImages, maximumDocuments,
+      if (maximumImages + maximumDocuments === 0) return { plugins: [], savedFilesFor };
+      const support = createSavedFileTools<TContext>({ filesFor: (_context, location) => savedFilesFor(location), maximumImages, maximumDocuments,
         validateSelection: async ({ location, signal, files }) => {
           const prepare = createSavedConversationRequestPreparer({ ...preparerOptions(input)!,
             historicalAttachmentIds: files.map(file => file.attachmentId) });
@@ -203,7 +215,7 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
           .filter(type => !savedOptions.supportedDocumentMediaTypes || savedOptions.supportedDocumentMediaTypes.includes(type)),
         ...(typeof savedOptions.fileTools === "object" ? savedOptions.fileTools : {}),
       });
-      return { plugins: [support.plugin], admission: support.admission };
+      return { plugins: [support.plugin], admission: support.admission, savedFilesFor };
     },
     ...(transcription ? { transcription } : {}),
     async generateTitle(input: AssistantTitleProviderRequest<TContext>): Promise<string> {
@@ -272,10 +284,8 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
                 await verifySelected(invocation.signal);
                 const prepareSelection = createSavedConversationRequestPreparer({ ...savedPreparerOptions,
                   historicalAttachmentIds: selected.map(file => file.attachmentId) });
-                const prepared = await prepareSelection({ ...execution, signal: invocation.signal,
-                  request: parseChatRequest({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: invocation.continuation_of,
-                    messages: invocation.messages, tools: invocation.tools, tool_results: invocation.tool_results,
-                    generation: invocation.generation, correlation_hints: invocation.context.correlation_hints }) });
+                const prepared = await prepareSelection(await turnInput(input, execution,
+                  { conversationId: execution.conversationId, signal: invocation.signal }));
                 const selectedRequest = input.tools.withApprovalContext
                   ? await input.tools.withApprovalContext(prepared.request, execution, invocation.signal) : prepared.request;
                 const originalResolver = invocation.resolve_attachment_reference;
@@ -321,10 +331,8 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
           const network = createTrackedOpenAIResponsesRequest({ request,
             ...(savedPreparerOptions ? { authorizeAttempt: async (signal: AbortSignal) => {
               try {
-                await savedPreparerOptions.authorize({ ...execution, signal,
-                  request: parseChatRequest({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION, messages: invocation.messages,
-                    continuation_of: invocation.continuation_of, tools: invocation.tools, tool_results: invocation.tool_results,
-                    generation: invocation.generation, correlation_hints: invocation.context.correlation_hints }) });
+                await savedPreparerOptions.authorize(await turnInput(input, execution,
+                  { conversationId: execution.conversationId, signal }));
                 await verifySelected?.(signal);
               } catch (error) {
                 signal.throwIfAborted();

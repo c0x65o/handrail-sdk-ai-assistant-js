@@ -144,16 +144,32 @@ it.each([{ filename: "invoice-scan.pdf", currentDocuments: 0, revokeDuringRetry:
   const original = readFileSync(new URL(`./fixtures/documents/${filename}`, import.meta.url));
   const originalMediaType = manifest.find(file => file.filename === filename)!.uploaded.media_type;
   const recent = readFileSync(new URL("./fixtures/documents/invoice.pdf", import.meta.url));
-  const inputs: OpenAIResponsesRequest[] = [], diagnostics = vi.fn();
+  const inputs: OpenAIResponsesRequest[] = [], diagnostics = vi.fn(), contextCalls = vi.fn();
   let followup = false, readable = true, step = 0, openedHandle = "";
   const make = () => createHandrailAssistant({ id: "reopen", persistence, automaticTitles: false,
     attachmentRetention: "conversation", attachmentCleanup: false, diagnostics, authorize: () => context,
     provider: openaiResponses({ model: "fixture", savedConversation: { maximumHistoricalMessages: 1,
-      authorize: () => { if (!readable) throw Object.assign(new Error("private domain permission detail"), { status: 403 }); } }, supportsToolSearch: false,
+      authorize: ({ request }) => {
+        expect(request.metadata).toEqual({ route: "/invoices/original" });
+        if (!readable) throw Object.assign(new Error("private domain permission detail"), { status: 403 });
+      },
+      transformText: ({ text }) => text.replaceAll("private-marker", "[redacted]"),
+      applicationContext: ({ request, context: owner, conversationId, turnId }) => {
+        expect(owner.principalId).toBe("alice"); expect(conversationId).toBe("conversation"); expect(turnId).toBeTruthy();
+        expect(request.metadata).toEqual({ route: "/invoices/original" });
+        expect(JSON.stringify(request.messages)).not.toContain("private-marker");
+        expect(JSON.stringify(request.messages)).not.toContain("Application context");
+        contextCalls(turnId);
+        request.messages.splice(0); // Cannot remove the SDK-selected file input.
+        return { screen: "authorized invoice facts", route: request.metadata!.route! };
+      } }, supportsToolSearch: false,
       // This legacy limit must not silently discard an explicitly reopened file.
       maximumInputMessages: 1, retry: { initialDelayMs: 1 },
       request: async (request) => {
         inputs.push(request);
+        expect(JSON.stringify(request)).not.toContain("private-marker");
+        expect(JSON.stringify(request)).toContain("authorized invoice facts");
+        expect(JSON.stringify(request)).toContain("/invoices/original");
         if (followup && step === 2 && revokeDuringRetry) {
           readable = false;
           throw Object.assign(new Error("temporary connection failure"), { status: 503 });
@@ -187,7 +203,8 @@ it.each([{ filename: "invoice-scan.pdf", currentDocuments: 0, revokeDuringRetry:
     return runtime.sendMessage({ content: text, attachments: references.map(toConversationAttachmentReference),
       request: parseChatRequest({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: null,
         messages: [{ role: "user", content: [{ type: "text", text }, ...references.map(reference => ({ type: "document", attachment: reference }))] }],
-        tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} }) });
+        tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {},
+        metadata: { route: "/invoices/original" } }) });
   };
   try {
     for (let index = 0; index < 5; index++) {
@@ -196,7 +213,7 @@ it.each([{ filename: "invoice-scan.pdf", currentDocuments: 0, revokeDuringRetry:
       const reference = await browser.attachmentUpload!.upload({ source: new Blob([bytes], { type: mediaType }),
         idempotencyKey: `upload-${index}`, metadata: { conversationId: "conversation", filename: index === 0 ? filename : `recent-${index}.pdf`,
           mediaType, byteSize: bytes.length, kind: "document" }, signal: new AbortController().signal, onProgress: () => {} });
-      expect(await send(`Read invoice ${index}`, [reference]), JSON.stringify(diagnostics.mock.calls)).toMatchObject({ status: "completed" });
+      expect(await send(`Read invoice ${index} private-marker`, [reference]), JSON.stringify(diagnostics.mock.calls)).toMatchObject({ status: "completed" });
     }
     await browser.dispose(); await assistant.stopBackgroundWorkers();
     await sql.query("UPDATE handrail_ai_documents SET version=version+1, payload=jsonb_set(jsonb_set(payload,'{createdAt}','\"2000-01-01T00:00:00.000Z\"'),'{expiresAt}','\"2000-01-01T00:01:00.000Z\"') WHERE tenant_id=$1 AND scope_id LIKE 'assistant-draft:%' AND kind='attachment'", [context.tenantId]);
@@ -208,7 +225,7 @@ it.each([{ filename: "invoice-scan.pdf", currentDocuments: 0, revokeDuringRetry:
       source: new Blob([recent], { type: "application/pdf" }), idempotencyKey: `current-${index}`, metadata: {
         conversationId: "conversation", filename: `current-${index}.pdf`, mediaType: "application/pdf", byteSize: recent.length, kind: "document" },
       signal: new AbortController().signal, onProgress: () => {} }));
-    const result = await send("What is on the oldest scanned invoice?", current);
+    const result = await send("What is on the oldest scanned invoice? private-marker", current);
     expect(result, JSON.stringify(diagnostics.mock.calls)).toMatchObject(revokeDuringRetry
       ? { status: "failed", error: { code: "forbidden", retryable: false, message: "Access to the saved files is no longer available." } }
       : { status: "completed" });
@@ -216,6 +233,7 @@ it.each([{ filename: "invoice-scan.pdf", currentDocuments: 0, revokeDuringRetry:
     // Revocation after the first connection failure prevents any retry from
     // sending the already-resolved bytes again.
     expect(inputs).toHaveLength(revokeDuringRetry ? 8 : 9);
+    expect(contextCalls.mock.calls.length).toBeGreaterThan(currentDocuments ? 5 : 7);
     expect(JSON.stringify(inputs[5])).not.toContain(original.toString("base64"));
     const final = inputs.at(-1)!;
     const messages = JSON.stringify(final.input.filter(item => item.type !== "function_call_output"));
@@ -238,7 +256,13 @@ it.each([{ filename: "invoice-scan.pdf", currentDocuments: 0, revokeDuringRetry:
     expect(String(receipt?.output)).not.toContain("content_ref");
     expect(String(receipt?.output)).not.toContain(original.toString("base64"));
     const replay = await replayConversation({ conversationId: "conversation" as never, eventStore: bundle.events });
-    try { expect(replay.state.replay_error).toBeNull(); expect(replay.state.messages.filter(message => message.role === "user")).toHaveLength(6); }
+    try {
+      expect(replay.state.replay_error).toBeNull();
+      const savedMessages = replay.state.messages.filter(message => message.role === "user");
+      expect(savedMessages).toHaveLength(6);
+      expect(savedMessages.every(message => JSON.stringify(message.content).includes("private-marker"))).toBe(true);
+      expect(JSON.stringify(savedMessages)).not.toContain("authorized invoice facts");
+    }
     finally { replay.store.destroy(); }
   } finally { await browser.dispose(); await assistant.stopBackgroundWorkers(); }
 }, 60_000);

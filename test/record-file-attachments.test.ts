@@ -16,6 +16,7 @@ import { createToolPlugin } from "../src/tools/plugin.js";
 import { AI_RUNTIME_PROTOCOL_VERSION } from "../src/protocol.js";
 import { replayConversation } from "../src/conversation/replay.js";
 import { createAiApplication } from "../src/server/application.js";
+import { createRecordFileTools, recordFileAttachmentReview, type RecordFileToolDestination } from "../src/server/record-file-tools.js";
 
 const database = new PGlite();
 function adapt(db: Pick<PGlite, "query">): PostgresSqlClient {
@@ -311,3 +312,157 @@ it("checks current destination access before returning a cached tool success", a
   expect(await app.executeTool(input)).toMatchObject({ status: "completed", result: { is_error: true } });
   expect(execute).toHaveBeenCalledOnce(); expect(await f.count()).toBe(1);
 });
+
+const destinationTool: RecordFileToolDestination = {
+  destinationId: "record_documents", toolKey: "test_record", label: "the selected record", description: "Save its original document.",
+  targetSchema: { type: "object", additionalProperties: false, required: ["type", "id"],
+    properties: { type: { type: "string", enum: ["person"] }, id: { type: "string" } } },
+  metadataSchema: { type: "object", additionalProperties: false, required: ["displayName", "documentDate"],
+    properties: { displayName: { type: "string" }, documentDate: { type: "string" } } },
+  writeOptionsSchema: { type: "object", additionalProperties: false, required: ["expectedVersion"],
+    properties: { expectedVersion: { type: "integer", minimum: 1 } } },
+};
+const prepareName = "handrail_files_prepare_test_record", attachName = "handrail_files_attach_test_record";
+
+it("inspects preparation without writing an intent, and validates already-completed preparation replay", async () => {
+  const f = await fixture();
+  const input = { ...location(), idempotencyKey: "tool-operation", request: f.request };
+  const reviewed = await f.service.inspectPreparation(input);
+  expect(await f.store.read("conversation", reviewed.operationId)).toBeNull();
+  expect(await f.count()).toBe(0);
+  expect(await f.service.prepare(input)).toEqual(reviewed);
+  await f.service.execute({ ...location(), operationId: reviewed.operationId });
+  await sql.query("UPDATE fixture_record_files SET metadata='{}'::jsonb WHERE tenant=$1", [f.tenant]);
+  await expect(f.make().inspectPreparation(input)).rejects.toMatchObject({ code: "destination_mismatch" });
+  expect(await f.count()).toBe(1);
+});
+
+it("shares immutable review arguments and rechecks cached prepare/attach tools", async () => {
+  const f = await fixture(), tools = createRecordFileTools({ destinations: [destinationTool], serviceFor: () => f.make(), approvalMode: "policy" });
+  const app = await createAiApplication({ installContext: undefined, plugins: [tools.plugin], toolAdmission: tools.admission,
+    policy: () => ({ outcome: "allow" }), approvalPolicy: () => "allow_without_approval" });
+  const base = { discovery: { context: undefined }, applicationContext: undefined, location: { conversationId: "conversation", turnId: "turn" } };
+  const preparedCall = { ...base, call: { name: prepareName, tool_call_id: "prepare-call", arguments: {
+    fileHandle: f.request.fileHandle, target: f.request.target, metadata: f.request.metadata, writeOptions: f.request.writeOptions! } } };
+  const result = await app.executeTool(preparedCall);
+  expect(result).toMatchObject({ status: "completed", result: { is_error: false } });
+  if (result.status !== "completed") throw new Error("Preparation unexpectedly requested approval");
+  const content = result.result.content.find(part => part.type === "json")!;
+  if (content.type !== "json") throw new Error("Expected preparation result");
+  const prepared = content.value as { arguments: JsonObject };
+  expect(await f.count()).toBe(0);
+  expect(prepared.arguments).toEqual(recordFileAttachmentReview(await f.service.inspect({ ...location(), operationId: String(prepared.arguments.operationId) })));
+  expect(await app.executeTool(preparedCall)).toEqual(result);
+  const modified = structuredClone(prepared.arguments);
+  ((modified.review as JsonObject).metadata as JsonObject).displayName = "Unapproved document name";
+  const attachCall = { ...base, call: { name: attachName, tool_call_id: "attach-call", arguments: prepared.arguments } };
+  expect(await app.executeTool({ ...attachCall, call: { ...attachCall.call, arguments: modified } }))
+    .toMatchObject({ status: "completed", result: { is_error: true } });
+  expect(await f.count()).toBe(0);
+  const saved = await app.executeTool(attachCall);
+  expect(saved).toMatchObject({ status: "completed", result: { is_error: false } });
+  expect(await app.executeTool(attachCall)).toEqual(saved); expect(await f.count()).toBe(1);
+  await sql.query("DELETE FROM fixture_record_files WHERE tenant=$1", [f.tenant]);
+  expect(await app.executeTool(preparedCall)).toMatchObject({ status: "completed", result: { is_error: true } });
+  expect(await app.executeTool(attachCall)).toMatchObject({ status: "completed", result: { is_error: true } });
+  expect(f.destination.attach).toHaveBeenCalledOnce();
+});
+
+it.each(["confirmed", "rejected", "revoked"] as const)("registers the complete SDK file-to-record workflow with review and restart: %s", async decision => {
+  const f = await fixture(decision === "confirmed" ? "invoice.docx" : "invoice-scan.pdf");
+  const fact = <T extends string | null>(id: T) => ({ id, source: "server_derived" as const, trust: "authoritative" as const });
+  const context: HandrailAssistantAuthorizationContext = { principalId: "alice", tenantId: f.tenant, scopeId: "account",
+    attribution: { organization: fact("org"), project: fact("project"), service_environment: fact("test"),
+      known_user: fact("alice"), session: fact("session"), automation: fact(null) } };
+  const persistence = postgresFromClient(sql), diagnostics = vi.fn();
+  const bundle = persistence.forScope<HandrailAssistantAuthorizationContext>(context, { createConversationId: () => "conversation" as never });
+  await bundle.catalog.create({ authorizationContext: context, idempotencyKey: "new" as never });
+  await f.files.events.append({ conversationId: "conversation" as never, expectedRevision: 2 as never,
+    events: [parseConversationEvent({ version: 1, conversation_id: "conversation", event_id: "later", revision: 3,
+      occurred_at: "2026-09-15T12:01:00Z", actor: { type: "user", id: "alice" }, source: { type: "runtime" },
+      payload: { type: "message.created", message_id: "later", role: "user", content: [{ type: "text", text: "I will choose a record later." }] } })] });
+  let step = 0, reviewed: JsonObject = {};
+  const make = () => createHandrailAssistant({ id: "test", persistence, authorize: () => context, diagnostics,
+    automaticTitles: false, attachmentRetention: "conversation", attachmentCleanup: false,
+    recordFiles: { destinations: [destinationTool], destinationsFor: () => [f.destination] },
+    provider: openaiResponses({ model: "fixture", supportsToolSearch: false,
+      savedConversation: { maximumHistoricalMessages: 1, historicalAttachmentIds: [] },
+      request: async function* (request) {
+        const output = (callId: string) => {
+          const item = request.input.find(item => item.type === "function_call_output" && item.call_id === callId);
+          return JSON.parse(String(item?.output)).find((part: { type: string }) => part.type === "json")?.value as JsonObject;
+        };
+        if (step < 3) {
+          let name = "handrail_files_list", args: JsonObject = { after: null, limit: 20 };
+          if (step === 0) expect(JSON.stringify(request.input)).not.toContain(Buffer.from(f.bytes).toString("base64"));
+          if (step === 1) {
+            const listed = output("workflow-0");
+            expect(listed.status).toBe("listed");
+            const handle = ((listed.files as JsonObject[])[0]!).handle!;
+            name = prepareName; args = { fileHandle: handle, target: f.request.target, metadata: f.request.metadata, writeOptions: f.request.writeOptions! };
+          }
+          if (step === 2) {
+            const prepared = output("workflow-1");
+            expect(prepared).toMatchObject({ type: "handrail.record_file_prepared.v1", status: "prepared", executeTool: attachName });
+            reviewed = prepared.arguments as JsonObject;
+            expect(await f.count()).toBe(0);
+            expect(reviewed.review).toMatchObject({ target: f.request.target, metadata: f.request.metadata,
+              source: { fileName: f.source.filename, sha256: f.source.sha256 } });
+            name = attachName; args = reviewed;
+          }
+          yield { type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: `wf-${step}`, call_id: `workflow-${step}`, name, arguments: "" } };
+          yield { type: "response.function_call_arguments.done", output_index: 0, item_id: `wf-${step}`, arguments: JSON.stringify(args) };
+        } else {
+          const item = request.input.find(item => item.type === "function_call_output" && item.call_id === "workflow-2");
+          expect(String(item?.output).includes("handrail.record_file_attached.v1")).toBe(decision === "confirmed");
+          yield { type: "response.output_text.delta", delta: "The tool outcome was checked." };
+        }
+        step++;
+        yield { type: "response.completed", response: { usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } };
+      } }) });
+  let assistant = await make();
+  const browser = await createHandrailAiClient({ baseUrl: "https://app.test", startActivityPolling: false,
+    fetch: (url, init) => assistant.handle(new Request(url, init)),
+    conversations: { mode: "multiple", clientId: "browser" as never, authorize: () => "allow" } });
+  try {
+    const runtime = await browser.workspace!.open({ authorizationContext: context, conversationId: "conversation" as never });
+    const pending = await runtime.sendMessage({ content: "Save the earlier file to the record", request: {
+      protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: null, tools: [], tool_results: [],
+      messages: [{ role: "user", content: [{ type: "text", text: "Save the earlier file to the record" }] }],
+      generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} } });
+    expect(pending, JSON.stringify({ step, pending, failed: diagnostics.mock.calls.filter(([entry]) => entry.phase === "failed") }))
+      .toMatchObject({ status: "waiting_for_approval" });
+    expect(await f.count()).toBe(0); expect(step).toBe(3);
+    const proposal = (await bundle.approvals.listGroup({ permissionContext: context, groupId: "conversation" as never }))[0]!;
+    const replay = await replayConversation({ conversationId: "conversation" as never, eventStore: bundle.events });
+    try {
+      expect(replay.state.tool_calls.find(call => call.tool_call_id === "workflow-2")?.arguments).toEqual(reviewed);
+    } finally { replay.store.destroy(); }
+    await assistant.stopBackgroundWorkers(); assistant = await make();
+    if (decision === "revoked") f.revoke();
+    const post = () => assistant.handle(new Request("https://app.test/approvals/transition", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ conversationId: "conversation", proposalId: proposal.proposal_id, expectedVersion: 1,
+        status: decision === "rejected" ? "rejected" : "confirmed", idempotencyKey: "workflow-decision", idempotencyFingerprint: "workflow-decision" }) }));
+    expect((await post()).status).toBe(200);
+    await vi.waitFor(async () => {
+      const result = await replayConversation({ conversationId: "conversation" as never, eventStore: bundle.events });
+      try { expect(result.state.turns.at(-1)?.status, JSON.stringify(diagnostics.mock.calls
+        .filter(([entry]) => entry.phase === "failed").slice(0, 2).map(([entry]) => ({ operation: entry.operation, code: entry.code,
+          cause: entry.cause instanceof Error ? entry.cause.stack : entry.cause })))).toBe(decision === "revoked" ? "failed" : "completed"); }
+      finally { result.store.destroy(); }
+    }, { timeout: 10_000 });
+    expect(await f.count()).toBe(decision === "confirmed" ? 1 : 0);
+    if (decision === "confirmed") {
+      expect((await f.stored(String(reviewed.operationId)))!.bytes).toEqual(f.bytes);
+      expect(f.destination.attach).toHaveBeenCalledOnce();
+    } else expect(f.destination.attach).not.toHaveBeenCalled();
+    expect((await post()).status).toBe(200); expect(step).toBe(decision === "revoked" ? 3 : 4);
+    if (decision === "revoked") {
+      const saved = (await bundle.durableTurns.load("conversation", pending.turnId))!;
+      expect(saved.record.terminal).toMatchObject({ status: "failed", error: { retryable: false, code: "conflict" } });
+      const replay = await replayConversation({ conversationId: "conversation" as never, eventStore: bundle.events });
+      try { expect(replay.state.tool_calls.find(call => call.tool_call_id === "workflow-1")?.result?.is_error).toBe(false); }
+      finally { replay.store.destroy(); }
+    }
+  } finally { await browser.dispose(); await assistant.stopBackgroundWorkers(); }
+}, 30_000);

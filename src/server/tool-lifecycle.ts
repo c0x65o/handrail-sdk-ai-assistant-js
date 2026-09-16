@@ -7,6 +7,15 @@ type ToolLifecyclePayload = Extract<ConversationEventPayload, { type:
   "tool_call.requested" | "tool_call.discovered" | "tool_call.started" |
   "tool_call.approval_required" | "tool_call.result_recorded" }>;
 
+/** Recovery must stop rather than replace immutable evidence or expose a
+ * formerly authorized result after fresh admission has denied its reuse. */
+export class ToolLifecycleConflictError extends TypeError {
+  constructor() {
+    super("Tool lifecycle identity conflicts with recorded evidence");
+    this.name = "ToolLifecycleConflictError";
+  }
+}
+
 /** Records server-owned tool evidence once, even across execution replay and concurrent writers. */
 export async function recordToolLifecycle(
   store: ConversationEventStore,
@@ -26,7 +35,7 @@ export async function recordToolLifecycle(
       revision = retained.latestRevision;
       const existing = retained.entries.find(({ event }) => event.event_id === eventId);
       if (existing) {
-        if (!jsonValuesEqual(existing.event.payload, payload)) throw new TypeError("Tool lifecycle identity conflicts with recorded evidence");
+        if (!jsonValuesEqual(existing.event.payload, payload)) throw new ToolLifecycleConflictError();
         return;
       }
       if (!retained.hasMore) break;

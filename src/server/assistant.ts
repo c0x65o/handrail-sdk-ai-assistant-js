@@ -12,7 +12,11 @@ export { createRecordFileAttachments, createRecordFileAttachmentAdmission, creat
   type RecordFileAttachmentRequest, type RecordFileAttachmentIntent, type RecordFileAttachmentReceipt,
   type RecordFileAttachmentState, type RecordFileAttachmentStore, type RecordFileAttachmentDestination,
   type RecordFileAttachmentSource, type RecordFileAttachmentLocation, type RecordFileDestinationInput,
-  type RecordFileAttachmentFailure, type RecordFileAttachments } from "./record-file-attachments.js";
+  type RecordFileAttachmentFailure, type RecordFileAttachments, type RecordFileAttachmentPreparation } from "./record-file-attachments.js";
+export { createRecordFileTools, recordFileAttachmentReview, type RecordFileToolDestination, type RecordFileToolOptions } from "./record-file-tools.js";
+import { createRecordFileTools, type RecordFileToolDestination } from "./record-file-tools.js";
+import { createRecordFileAttachments, createPostgresRecordFileAttachmentStore, type RecordFileAttachmentDestination } from "./record-file-attachments.js";
+import type { SavedFileHandles } from "./saved-file-handles.js";
 import { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
 import { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
 export { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
@@ -58,7 +62,7 @@ import { ApprovalProposalStoreError, type ApprovalProposalStore } from "../conve
 import type { PostgresAssistantPersistence, PostgresAssistantPersistenceBundle } from "../postgres/index.js";
 import { createAiApplication, type AiApplication, type ApplicationApprovalPolicy } from "./application.js";
 import type { ApplicationToolActivityUpdate, ApplicationToolExecutor, ApplicationToolPolicy, ApplicationToolAdmission,
-  BoundedToolExecutorLimits } from "../tools/executor.js";
+  BoundedToolExecutorLimits, ApplicationToolExecutionLocation } from "../tools/executor.js";
 import type { ToolPlugin } from "../tools/plugin.js";
 import { createAIRuntimeUsageDelivery, type AIRuntimeUsageConfiguration } from "./usage-control.js";
 import { createApprovalExecutionCoordinator } from "../tools/approval-execution.js";
@@ -96,6 +100,18 @@ export interface HandrailAssistantProviderScope<TContext extends HandrailAssista
 export interface HandrailAssistantToolSupport<TContext extends HandrailAssistantAuthorizationContext> {
   readonly plugins: readonly ToolPlugin<ApplicationToolExecutor<TContext>, TContext, TContext, TContext>[];
   readonly admission?: ApplicationToolAdmission<TContext>;
+  /** The same scope-bound saved-file service used by provider listing/opening.
+   * Each operation checks current access; handles are never reconstructed by hosts. */
+  readonly savedFilesFor?: (location: ApplicationToolExecutionLocation) => SavedFileHandles;
+}
+
+export interface HandrailAssistantRecordFiles<TContext extends HandrailAssistantAuthorizationContext> {
+  readonly destinations: readonly RecordFileToolDestination[];
+  /** Current identity/business permissions and atomic domain writes remain in
+   * these app adapters. Called anew for admission, execution and receipt replay. */
+  readonly destinationsFor: (input: { readonly context: TContext; readonly location: ApplicationToolExecutionLocation }) =>
+    readonly RecordFileAttachmentDestination[] | Promise<readonly RecordFileAttachmentDestination[]>;
+  readonly approvalMode?: "always" | "policy";
 }
 
 export interface HandrailAssistantProvider<TContext extends HandrailAssistantAuthorizationContext> {
@@ -130,6 +146,9 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
     readonly batchSize?: number;
   };
   readonly tools?: readonly ToolPlugin<ApplicationToolExecutor<TContext>, TContext, TContext, TContext>[];
+  /** SDK-owned saved-file preparation, review, approval and verified record
+   * receipts. Requires provider saved-file support (for OpenAI: savedConversation). */
+  readonly recordFiles?: HandrailAssistantRecordFiles<TContext>;
   readonly toolPolicy?: ApplicationToolPolicy<TContext>;
   /** Resolves current principal/operation access for every tool attempt, including recovered exact retries. */
   readonly toolAdmission?: ApplicationToolAdmission<TContext>;
@@ -325,38 +344,52 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     let application = applications.get(key);
     if (!application) {
       const bundle = bundleFor(context);
-      application = toolSupportFor(context).then(support => createAiApplication({
-        plugins: [...(options.tools ?? []), ...support.plugins], installContext: context,
-        policy: options.toolPolicy ?? (() => ({ outcome: "allow" })),
-        ...(options.toolAdmission === undefined && support.admission === undefined ? {} : { toolAdmission: async input => {
-          if (options.toolAdmission && (await options.toolAdmission(input)).outcome !== "allow") return { outcome: "deny" as const };
-          return support.admission ? support.admission(input) : { outcome: "allow" as const };
-        } }),
-        approvalPolicy: options.approvalPolicy ?? (async ({ location, signal }) => {
-          // Read the admitted request, including during recovery. A later UI
-          // preference cannot alter an already running turn. This is only the
-          // confirmation policy; application/plugin authorization runs first.
-          if (!location) return "require_approval";
-          signal.throwIfAborted();
-          const document = await bundle.durableTurns.load(location.conversationId, location.turnId);
-          signal.throwIfAborted();
-          const request = document?.record.request as ChatRequest | null | undefined;
-          return request && composerApprovalModeFromRequest(request) === "automatic"
-            ? "allow_without_approval" : "require_approval";
-        }),
-        ...(options.toolExecutorLimits === undefined ? {} : { executorLimits: options.toolExecutorLimits }),
-        toolExecutionLedger: bundle.toolLedger,
-        approvalCoordinator: createApprovalExecutionCoordinator<TContext>({
-          proposalStore: approvalStoreFor(context), eventStore: bundle.events,
-          authorize: () => "allow",
-          verifyArguments: ({ binding, reviewedArguments, arguments: arguments_ }) => {
-            if (binding.type !== "opaque_reference" || reviewedArguments.type !== "opaque_reference") return "mismatch";
-            return binding.argumentReference === reviewedArguments.argument_ref &&
-              binding.argumentReference === assistantToolArgumentReference(arguments_) ? "match" : "mismatch";
-          },
-        }),
-        ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
-      }));
+      application = toolSupportFor(context).then(support => {
+        if (options.recordFiles && !support.savedFilesFor) throw new TypeError("Record attachments require provider saved-file support");
+        const recordTools = options.recordFiles ? createRecordFileTools<TContext>({
+          destinations: options.recordFiles.destinations, approvalMode: options.recordFiles.approvalMode ?? "policy",
+          serviceFor: async (current, location) => createRecordFileAttachments({
+            namespace: [current.tenantId, current.scopeId, assistantId, "record-files"],
+            files: support.savedFilesFor!(location),
+            store: createPostgresRecordFileAttachmentStore(bundle.persistence, current.tenantId),
+            destinations: await options.recordFiles!.destinationsFor({ context: current, location }),
+          }),
+        }) : undefined;
+        const admissions = [options.toolAdmission, support.admission, recordTools?.admission]
+          .filter((admission): admission is ApplicationToolAdmission<TContext> => admission !== undefined);
+        return createAiApplication({
+          plugins: [...(options.tools ?? []), ...support.plugins, ...(recordTools ? [recordTools.plugin] : [])], installContext: context,
+          policy: options.toolPolicy ?? (() => ({ outcome: "allow" })),
+          ...(admissions.length === 0 ? {} : { toolAdmission: async input => {
+            for (const admission of admissions) if ((await admission(input)).outcome !== "allow") return { outcome: "deny" as const };
+            return { outcome: "allow" as const };
+          } }),
+          approvalPolicy: options.approvalPolicy ?? (async ({ location, signal }) => {
+            // Read the admitted request, including during recovery. A later UI
+            // preference cannot alter an already running turn. This is only the
+            // confirmation policy; application/plugin authorization runs first.
+            if (!location) return "require_approval";
+            signal.throwIfAborted();
+            const document = await bundle.durableTurns.load(location.conversationId, location.turnId);
+            signal.throwIfAborted();
+            const request = document?.record.request as ChatRequest | null | undefined;
+            return request && composerApprovalModeFromRequest(request) === "automatic"
+              ? "allow_without_approval" : "require_approval";
+          }),
+          ...(options.toolExecutorLimits === undefined ? {} : { executorLimits: options.toolExecutorLimits }),
+          toolExecutionLedger: bundle.toolLedger,
+          approvalCoordinator: createApprovalExecutionCoordinator<TContext>({
+            proposalStore: approvalStoreFor(context), eventStore: bundle.events,
+            authorize: () => "allow",
+            verifyArguments: ({ binding, reviewedArguments, arguments: arguments_ }) => {
+              if (binding.type !== "opaque_reference" || reviewedArguments.type !== "opaque_reference") return "mismatch";
+              return binding.argumentReference === reviewedArguments.argument_ref &&
+                binding.argumentReference === assistantToolArgumentReference(arguments_) ? "match" : "mismatch";
+            },
+          }),
+          ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+        });
+      });
       applications.set(key, application);
     }
     return application;
@@ -901,5 +934,5 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   });
 }
 export { prepareSavedConversationRequest, createSavedConversationRequestPreparer, SavedConversationPreparationError, SavedConversationFileUnavailableError,
-  type SavedConversationRequestOptions, type SavedConversationFile,
+  type SavedConversationRequestOptions, type SavedConversationFile, type SavedConversationContextInput,
   type SavedConversationPreparerOptions, type SavedConversationTurnInput } from "./saved-conversation-request.js";

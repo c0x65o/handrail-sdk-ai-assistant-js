@@ -239,6 +239,40 @@ it('rejects competing host and SDK history builders', () => {
     prepareRequest: ({ request: value }) => value, request: async function* () {} })).toThrow('not both');
 });
 
+it.each(['private failure', 'invalid JSON', 'permission change'] as const)(
+  'blocks provider dispatch for business context with %s', async failure => {
+    const persistence = await savedHistory('image/png', 1);
+    const h = await setup({ savedConversation: { applicationContext: async () => {
+      if (failure === 'private failure') throw new Error('private database and credential details');
+      if (failure === 'invalid JSON') return { value: Infinity };
+      persistence.catalog.get.mockRejectedValue(Object.assign(new Error('private ownership detail'), { status: 403 }));
+      return { value: 'authorized facts are now stale' };
+    } } }, 'image/png', 10_000, undefined, persistence);
+    const result = await h.run();
+    expect(result).toMatchObject({ status: 'failed', error: { retryable: false,
+      code: failure === 'permission change' ? 'forbidden' : 'invalid_request' } });
+    expect(JSON.stringify(result)).not.toContain('private');
+    expect(h.providerRequest).not.toHaveBeenCalled();
+  });
+
+it('cancels business context and ignores facts returned after cancellation', async () => {
+  let release!: () => void;
+  const wait = new Promise<void>(resolve => { release = resolve; }), entered = vi.fn();
+  const persistence = await savedHistory('image/png', 1);
+  const h = await setup({ savedConversation: { applicationContext: async () => {
+    entered(); await wait; return { invoice: 'late facts' };
+  } } }, 'image/png', 10_000, undefined, persistence);
+  const result = h.run();
+  await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+  const cancellation = h.transport.capabilities.authoritativeCancellation;
+  if (!cancellation.supported) throw new Error('Expected authoritative cancellation');
+  expect(await cancellation.capability.cancelTurn({ conversationId: 'conversation-1', turnId: 'turn-1',
+    mutationId: 'cancel-1', idempotencyKey: 'cancel-1', reason: 'user' })).toMatchObject({ ok: true });
+  expect(await result).toMatchObject({ status: 'cancelled' });
+  release(); await Promise.resolve(); await Promise.resolve();
+  expect(h.providerRequest).not.toHaveBeenCalled();
+});
+
 it.each(['expired', 'not_found'] as const)('continues text follow-ups with an accurate omission notice for a %s prior SDK upload', async code => {
   const persistence = await savedHistory('image/png', 1);
   persistence.attachments.download.mockRejectedValue(new AttachmentStagingError(code));

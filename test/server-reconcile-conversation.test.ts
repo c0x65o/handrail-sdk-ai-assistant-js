@@ -307,6 +307,16 @@ describe("server stored-output reconciliation", () => {
     expect((await state()).turns[0]).toMatchObject({ status: "cancelled", cancellation_reason: "user" });
     expect((await state()).messages[0]?.content).toEqual([{ type: "text", text: "Stored answer" }]);
   });
+  it.each(["failed", "cancelled"] as const)("settles %s recovery after replaying only part of a retained prefix", async status => {
+    const { input, state } = await setup(status, [frames[0]!, frames[1]!, frames[0]!]);
+    expect(await reconcileDurableConversationTurn(input)).toBe(true);
+    const recovered = await state();
+    expect(recovered.turns[0]?.status).toBe(status);
+    expect(recovered.active_turn_id).toBeNull();
+    expect(recovered.messages[0]?.content).toEqual([{ type: "text", text: "Stored answer" }]);
+    await reconcileDurableConversationTurn(input);
+    expect((await state()).revision).toBe(recovered.revision);
+  });
   it("does not fabricate a successful completion when stored evidence is missing", async () => {
     const { input, state } = await setup("completed", []);
     await expect(reconcileDurableConversationTurn(input)).rejects.toThrow();

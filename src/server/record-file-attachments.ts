@@ -81,6 +81,10 @@ export interface RecordFileAttachmentStore {
   complete(intent: RecordFileAttachmentIntent, receipt: RecordFileAttachmentReceipt): Promise<void>;
 }
 export interface RecordFileAttachmentLocation { readonly conversationId: string; readonly signal: AbortSignal }
+export interface RecordFileAttachmentPreparation extends RecordFileAttachmentLocation {
+  readonly idempotencyKey: string;
+  readonly request: RecordFileAttachmentRequest;
+}
 export interface RecordFileDestinationInput extends RecordFileAttachmentLocation {
   readonly operationId: string;
   readonly request: RecordFileAttachmentRequest;
@@ -218,38 +222,60 @@ export function createRecordFileAttachments(options: {
     const current = await readSource(location, prepared.source.handle);
     if (canonical(current.source) !== canonical(prepared.source)) throw new RecordFileAttachmentError("source_changed");
   };
+  const inspectSaved = async (location: RecordFileAttachmentLocation, operationId: string) => {
+    const checked = await inspect(location, operationId);
+    if (checked.saved.receipt) {
+      const current = await awaitWithSignal(location.signal, () => checked.adapter.lookup(cloneInput(checked.call)));
+      if (!current) throw new RecordFileAttachmentError("destination_missing");
+      if (current.attachmentId !== checked.saved.receipt.attachmentId) throw new RecordFileAttachmentError("destination_mismatch");
+      await verifyDestination(checked, checked.saved.receipt);
+    }
+    return clone(checked.prepared);
+  };
+  const candidate = async (input: RecordFileAttachmentPreparation) => {
+    const location = { conversationId: string(input.conversationId), signal: input.signal };
+    const wanted = request(input.request), adapter = destination(wanted.destinationId);
+    const operationId = `file_save_${digest(canonical([namespace, location.conversationId, string(input.idempotencyKey)]))}`;
+    const { source } = await readSource(location, wanted.fileHandle);
+    if (!adapter.mediaTypes.includes(source.mediaType) || source.byteSize > adapter.maximumBytes) throw new RecordFileAttachmentError("unsupported_file");
+    const call = { ...location, operationId, request: wanted, source };
+    const authorize = () => awaitWithSignal(location.signal, () => adapter.authorize(cloneInput(call)));
+    await authorize();
+    const facts = { version: 1 as const, operationId, conversationId: location.conversationId, namespace, request: wanted, source };
+    const prepared: RecordFileAttachmentIntent = { ...facts, fingerprint: digest(canonical(facts)) };
+    return { location, prepared, authorize };
+  };
   return Object.freeze({
     /** Read-only admission/review. Use before normal SDK receipt replay as well
      * as before approval; never call execute from an admission hook. */
     async inspect(input: RecordFileAttachmentLocation & { readonly operationId: string }) {
       const location = { conversationId: string(input.conversationId), signal: input.signal };
       try {
-        const checked = await inspect(location, input.operationId);
-        if (checked.saved.receipt) {
-          const current = await awaitWithSignal(location.signal, () => checked.adapter.lookup(cloneInput(checked.call)));
-          if (!current) throw new RecordFileAttachmentError("destination_missing");
-          if (current.attachmentId !== checked.saved.receipt.attachmentId) throw new RecordFileAttachmentError("destination_mismatch");
-          await verifyDestination(checked, checked.saved.receipt);
-        }
-        return clone(checked.prepared);
+        return await inspectSaved(location, input.operationId);
       } catch (error) { return fail(error, location.signal, false); }
     },
-    async prepare(input: RecordFileAttachmentLocation & { readonly idempotencyKey: string; readonly request: RecordFileAttachmentRequest }) {
-      const location = { conversationId: string(input.conversationId), signal: input.signal };
+    /** Side-effect-free admission for preparation-tool retries. Derive the
+     * immutable operation identity here, never in each integrating app. */
+    async inspectPreparation(input: RecordFileAttachmentPreparation) {
       try {
-        const wanted = request(input.request), adapter = destination(wanted.destinationId);
-        const operationId = `file_save_${digest(canonical([namespace, location.conversationId, string(input.idempotencyKey)]))}`;
-        const { source } = await readSource(location, wanted.fileHandle);
-        if (!adapter.mediaTypes.includes(source.mediaType) || source.byteSize > adapter.maximumBytes) throw new RecordFileAttachmentError("unsupported_file");
-        const call = { ...location, operationId, request: wanted, source };
-        await awaitWithSignal(location.signal, () => adapter.authorize(cloneInput(call)));
-        const facts = { version: 1 as const, operationId, conversationId: location.conversationId, namespace, request: wanted, source };
-        const prepared: RecordFileAttachmentIntent = { ...facts, fingerprint: digest(canonical(facts)) };
+        const { location, prepared, authorize } = await candidate(input);
+        const saved = await awaitWithSignal(location.signal, () => options.store.read(location.conversationId, prepared.operationId));
+        if (saved) {
+          if (canonical(saved.intent) !== canonical(prepared)) throw new RecordFileAttachmentError("operation_conflict");
+          return await inspectSaved(location, prepared.operationId);
+        }
+        await authorize();
+        return clone(prepared);
+      } catch (error) { return fail(error, input.signal, false); }
+    },
+    async prepare(input: RecordFileAttachmentPreparation) {
+      try {
+        const { location, prepared, authorize } = await candidate(input);
         const saved = await awaitWithSignal(location.signal, () => options.store.prepare(clone(prepared)));
         if (canonical(saved.intent) !== canonical(prepared)) throw new RecordFileAttachmentError("operation_conflict");
-        await awaitWithSignal(location.signal, () => adapter.authorize(cloneInput(call)));
+        await authorize();
         return clone(prepared);
-      } catch (error) { return fail(error, location.signal, false); }
+      } catch (error) { return fail(error, input.signal, false); }
     },
     async execute(input: RecordFileAttachmentLocation & { readonly operationId: string }): Promise<RecordFileAttachmentReceipt> {
       const location = { conversationId: string(input.conversationId), signal: input.signal };

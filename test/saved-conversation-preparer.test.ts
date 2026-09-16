@@ -7,7 +7,7 @@ const conversationId = "saved-files" as ConversationId;
 const request: ChatRequest = { protocol_version: "handrail.ai-runtime.v1", continuation_of: null,
   messages: [{ role: "user", content: [{ type: "text", text: "Client history must not win" }] }],
   tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} };
-async function fixture() {
+async function fixture(options: Partial<SavedConversationPreparerOptions> = {}) {
   const eventStore = new InMemoryConversationEventStore();
   let revision = 0;
   const append = async (payload: Record<string, unknown>) => {
@@ -25,7 +25,7 @@ async function fixture() {
   const resolveAttachment = vi.fn<SavedConversationPreparerOptions["resolveAttachment"]>(async () => ({
     attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4,
   }));
-  const prepare = createSavedConversationRequestPreparer({ eventStore, authorize, resolveAttachment });
+  const prepare = createSavedConversationRequestPreparer({ eventStore, authorize, resolveAttachment, ...options });
   const controller = new AbortController();
   const run = () => prepare({ request, conversationId, turnId: "saved-turn", mutationId: "mutation", signal: controller.signal });
   return { run, append, authorize, resolveAttachment, controller };
@@ -83,4 +83,19 @@ it("refuses a canonical cancellation saved while a file read was running", async
     return { attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4 };
   });
   await expect(h.run()).rejects.toMatchObject({ code: "saved_input_unavailable" });
+});
+
+it.each(["permission", "new-file", "cancellation"] as const)("rechecks %s after asynchronous business context", async change => {
+  const h = await fixture({ applicationContext: async input => {
+    expect(input).toMatchObject({ conversationId, turnId: "saved-turn", mutationId: "mutation" });
+    expect(JSON.stringify(input.request)).toContain("Read this image");
+    expect(JSON.stringify(input.request)).not.toContain("Client history must not win");
+    if (change === "permission") h.authorize.mockRejectedValue(new Error("access revoked"));
+    else if (change === "new-file") await h.append({ type: "message.attachment_referenced", message_id: "saved-input",
+      attachment: { attachment_id: "att_extra", media_type: "image/png", size_bytes: 4 } });
+    else await h.append({ type: "turn.cancellation_requested", turn_id: "saved-turn", reason: "user" });
+    return { label: "fresh facts" };
+  } });
+  if (change === "permission") await expect(h.run()).rejects.toThrow("access revoked");
+  else await expect(h.run()).rejects.toMatchObject({ code: "saved_input_unavailable" });
 });

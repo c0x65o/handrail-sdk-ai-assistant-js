@@ -13,7 +13,44 @@ file reads, and rejects changed input or cancelled admission. Existing apps usin
 `prepareRequest` must migrate explicitly; the two options cannot be combined.
 An options object supports existing authorized storage rather than changing file
 identities. This history option does not itself change upload retention. See the
-explicit policy below. Prior-file listing/opening tools are still in progress.
+explicit policy below. Prior-file listing/opening tools are described below.
+
+### Business context without rebuilding history
+
+Apps can retain text redaction and fresh screen facts while the SDK prepares
+canonical history and selects files:
+
+```ts
+savedConversation: {
+  transformText: ({ text }) => redactBusinessSecrets(text),
+  applicationContext: async ({ context, request, signal }) => {
+    const principal = await requireCurrentPrincipal(context, signal);
+    return readAuthorizedScreenFacts(principal, request.metadata, signal);
+  },
+}
+```
+
+`transformText` is synchronous and can change only text, before historical text
+limits are applied. `applicationContext` receives a detached request containing
+SDK-prepared canonical messages and the original admitted metadata. It returns a
+plain JSON object (or `null`), bounded to 64 KiB, 4,096 values and 12 nested levels.
+The SDK inserts those facts as explicitly untrusted user data. Neither hook can
+replace file references or mutate canonical history through its input.
+
+Fresh domain authorization and canonical replay are checked again after the
+asynchronous callback. Cancellation and deadlines stop waiting even if a host
+callback does not cooperate. Callback exceptions and invalid context produce a
+fixed public failure without exposing host details or dispatching provider input.
+Hosts still own permissions and must disclose only appropriate business facts.
+Callbacks must be read-only: selection admission and reopening can invoke them
+more than once for the same turn.
+
+The same preparation runs when a prior file is explicitly opened. Original
+admitted metadata is loaded from the durable turn for reopening and physical
+provider retry authorization; navigating to another screen cannot silently change
+the admitted route. Facts and redacted text are provider copies, never rewritten
+saved events. Adoption requires a committed SDK revision containing these hooks;
+the previous `prepareRequest` override remains mutually exclusive.
 
 Optional historical files that an authorized storage read identifies as expired
 or missing are omitted with a notice that their contents were not included.
@@ -100,6 +137,35 @@ authorized metadata and byte callbacks as canonical history preparation.
 
 ## Attaching an original file to a record
 
+For a high-level assistant, configure `createHandrailAssistant({ recordFiles:
+{ destinations, destinationsFor } })`. Each descriptor provides a stable
+`destinationId`, a lowercase `toolKey`, human labels, and the domain JSON schemas
+for `target`, `metadata` and optional `writeOptions`. `destinationsFor` returns the
+current app domain adapters for the authorized context and saved turn location.
+Use a provider with saved-file support (`openaiResponses({ savedConversation:
+... })`); a custom provider wrapper must preserve its `createToolSupport` hook.
+
+The SDK registers `handrail_files_prepare_<toolKey>` and
+`handrail_files_attach_<toolKey>` and shares the provider's actual saved-file
+service, persistence and normal execution/approval boundary. Hosts do not copy
+the provider's private handle namespace. Preparation takes a listed file handle
+and the domain fields. It returns the exact attach arguments: an operation ID
+and a frozen review containing the original filename, MIME, size, checksum,
+target, metadata and write conditions. The SDK compares that review again on
+admission and execution; changing model-supplied review text cannot authorize a
+different operation. No business file is copied during preparation.
+
+The high-level default uses the assistant's existing `policy` approval mode;
+set `recordFiles.approvalMode: "always"` if these attachments must always be
+confirmed. Standalone `createRecordFileTools({ destinations, serviceFor })`
+defaults to `always`; install **both** its plugin and admission hook. The prepare
+and attach tools both check current access and completed destination read-back
+before returning cached results. Read-only `inspectPreparation` validates a
+pending preparation without creating its intent. If an earlier tool result
+can no longer be reused after a restart, recovery preserves its immutable
+evidence and terminates the turn without continuing provider work or copying a
+file. The user must review the saved outcome before starting another request.
+
 `createRecordFileAttachments` owns preparation, original-file verification,
 immutable operation identity, receipt persistence and destination read-back.
 It uses `createSavedFileHandles` and registered domain destinations. The host
@@ -148,8 +214,10 @@ Removing a completed destination attachment does not authorize recreation on
 retry. Cancellation can leave a committed domain outcome to reconcile; resume the
 same operation instead of inventing a new identity.
 
-The shared coordinator is tested with real files, a disposable PostgreSQL-compatible
-domain store, and the existing SDK HTTP approval/restart flow. Application-specific
+The shared coordinator and high-level list/prepare/review/attach workflow are
+tested with real files, a disposable PostgreSQL-compatible domain store, and the
+SDK HTTP approval/restart flow, including confirm, reject and permission
+revocation while review is pending. Application-specific
 destination adapters and their installed-consumer adoption remain separate work;
 this API's tests do not establish that any deployed app is using it.
 
