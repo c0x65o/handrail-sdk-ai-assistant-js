@@ -82,7 +82,10 @@ export function ConversationHistoryPanel(props: ConversationHistoryPanelProps) {
         <button type="button" aria-pressed={history.unreadOnly} aria-label={`Unread conversations (${history.unreadCount})`}
           onClick={() => history.setUnreadOnly(!history.unreadOnly)}>Unread ({history.unreadCount})</button>}
     </nav>
-    <ul aria-label="Conversations">{history.visible.map((descriptor) => {
+    <ul aria-label="Conversations" onScroll={event => {
+      const list = event.currentTarget;
+      if (list.scrollHeight - list.scrollTop - list.clientHeight < 100 && !history.loadMoreFailed) void history.loadMore();
+    }}>{history.visible.map((descriptor) => {
       const activity = history.activity.find((record) => record.conversationId === descriptor.conversationId);
       const label = props.getThreadLabel?.(descriptor.conversationId) ?? descriptor.title ?? "New conversation";
       const hasLifecycleAction = (descriptor.lifecycle === "active" && history.capabilities.archive.supported) ||
@@ -105,6 +108,10 @@ export function ConversationHistoryPanel(props: ConversationHistoryPanelProps) {
         {hasLifecycleAction && <HistoryLifecycleButton history={history} descriptor={descriptor}/>}
       </li>;
     })}</ul>
+    {history.hasMore && <button type="button" disabled={history.loading || history.loadingMore}
+      onClick={() => { void history.loadMore(); }}>
+      {history.loadingMore ? "Loading more conversations…" : history.loadMoreFailed ? "Retry loading more conversations" : "Load more conversations"}
+    </button>}
     {history.loading && history.descriptors.length === 0 && <p className="hr-history__notice" role="status">Loading conversations…</p>}
     {!history.loading && !history.loadFailed && history.visible.length === 0 && <p className="hr-history__notice">
       {history.view === "archived" ? "No archived conversations." : history.unreadOnly ? "No unread conversations." : "No conversations yet. Select New to start one."}</p>}

@@ -157,7 +157,9 @@ describe("server stored-output reconciliation", () => {
       conversations: { mode: "multiple", clientId: "browser" as never, authorize: () => "allow" } });
     try {
       await client.catalog.list({ authorizationContext: context, lifecycle: "active", pageSize: 20, order: { field: "updated_at", direction: "desc" } });
-      expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({ code: "reconciliation_failed" }));
+      // Listing no longer waits for repair. Its durable effects become visible
+      // asynchronously without delaying the metadata response.
+      await vi.waitFor(() => expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({ code: "reconciliation_failed" })));
       activityOffline = true;
       const runtime = await client.workspace!.open({ authorizationContext: context, conversationId: "conversation" as never });
       await runtime.synchronize!();
@@ -165,7 +167,7 @@ describe("server stored-output reconciliation", () => {
       await client.catalog.list({ authorizationContext: context, lifecycle: "active", pageSize: 20, order: { field: "updated_at", direction: "desc" } });
       expect(runtime.getSnapshot().active_turn_id).toBeNull();
       expect(runtime.getSnapshot().messages[0]?.content).toEqual([{ type: "text", text: "Stored answer" }]);
-      expect(activity.getSnapshot()[0]).toMatchObject({ turnStatus: "completed", unread: true, turnId: "turn" });
+      await vi.waitFor(() => expect(activity.getSnapshot()[0]).toMatchObject({ turnStatus: "completed", unread: true, turnId: "turn" }));
       // Catalog reconciliation updates the server; this polling-disabled client
       // must observe that exact result before it can acknowledge it as read.
       await client.activity!.refresh();
@@ -176,7 +178,7 @@ describe("server stored-output reconciliation", () => {
       await client.catalog.list({ authorizationContext: context, lifecycle: "active", pageSize: 20, order: { field: "updated_at", direction: "desc" } });
       if (historyEvents > 0) {
         expect(await input.events.checkpoints.read("conversation" as never)).not.toBeNull();
-        expect(readEvents.mock.calls.length).toBeGreaterThan(0);
+        await vi.waitFor(() => expect(readEvents.mock.calls.length).toBeGreaterThan(0));
         expect(readEvents.mock.calls.every(([read]) => read.after !== undefined)).toBe(true);
       }
       expect(activity.getSnapshot()[0]?.unread).toBe(false);

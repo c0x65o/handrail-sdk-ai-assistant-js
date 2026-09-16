@@ -23,6 +23,24 @@ const capabilities: ApplicationGatewayCapabilities = Object.freeze({
 });
 
 describe("createHandrailAiClient", () => {
+  it("owns a negotiated display window without eager history reads and clears it when the account client is disposed", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      const input = JSON.parse(String(init?.body)).input;
+      return Response.json({ ok: true, value: { schemaVersion: 1, status: "ready", conversationId: input.conversationId,
+        generation: 0, revision: 0, canonicalRevision: 0, activeTurnId: null, records: [], nextCursor: null } });
+    });
+    const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", fetch: fetcher,
+      capabilities: { ...capabilities, displayHistory: { version: 1, maximumPageSize: 50, maximumPageBytes: 262144 } } });
+    expect(fetcher).not.toHaveBeenCalled(); expect(client.displayWindow).not.toBeNull();
+    expect(client.synchronization).toBeNull();
+    await client.displayWindow!.select("chat");
+    expect(client.displayWindow!.getSnapshot()).toMatchObject({ conversationId: "chat", status: "ready" });
+    expect(fetcher).toHaveBeenCalledOnce(); expect(String(fetcher.mock.calls[0]![0]).endsWith("/conversations/history")).toBe(true);
+    await client.dispose(); expect(client.displayWindow!.getSnapshot().conversationId).toBeNull();
+    expect(client.displayWindow!.getSnapshot().records).toEqual([]);
+    await expect(client.displayWindow!.select("another-account")).rejects.toThrow("disposed");
+  });
+
   it("returns a saved single conversation while its real gateway resume is pending", async () => {
     const eventStore = new InMemoryConversationEventStore();
     const conversationId = "saved-single" as never;

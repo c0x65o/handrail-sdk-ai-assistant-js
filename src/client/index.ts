@@ -4,10 +4,13 @@ export * from "../attachments/downloader.js";
 export * from "../transcription-http.js";
 export * from "./presence.js";
 export * from "./synchronization.js";
+export * from "./display-window.js";
+export * from "../conversation/display-history.js";
 export {
   APPLICATION_GATEWAY_PROTOCOL_VERSION,
   ApplicationGatewayResourceError,
   createApplicationGatewayConversationCatalog,
+  createApplicationGatewayDisplayHistory,
   createApplicationGatewayTransport,
   createApplicationGatewayResourceClient,
   negotiateApplicationGatewayCapabilities,

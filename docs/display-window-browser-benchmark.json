@@ -1,0 +1,41 @@
+{
+  "browser": "Chromium",
+  "viewport": 390,
+  "initialRequests": 1,
+  "initialMessages": 20,
+  "maximumRenderedMessages": 60,
+  "prependAnchorDriftPixels": 0,
+  "delayedLayoutAnchorDriftPixels": 0,
+  "switchCancellation": "passed",
+  "keyboardFocus": "passed",
+  "responsiveWidth": "passed",
+  "frontend": [
+    {
+      "sourceMessages": 200,
+      "samples": 12,
+      "selectionToPaintP50Ms": 31.300000190734863,
+      "selectionToPaintP95Ms": 33.59999990463257,
+      "scriptMeanMs": 1.5539166666666668,
+      "layoutMeanMs": 0.631,
+      "browserHeapAfterGcBytes": 3573052,
+      "records": 20,
+      "bytes": 7100,
+      "requests": 12,
+      "domMessages": 20
+    },
+    {
+      "sourceMessages": 1000,
+      "samples": 12,
+      "selectionToPaintP50Ms": 31.200000286102295,
+      "selectionToPaintP95Ms": 31.699999809265137,
+      "scriptMeanMs": 1.4830000000000003,
+      "layoutMeanMs": 0.61875,
+      "browserHeapAfterGcBytes": 3611048,
+      "records": 20,
+      "bytes": 7124,
+      "requests": 12,
+      "domMessages": 20
+    }
+  ],
+  "limitation": "Synthetic SDK component with direct page fixtures; React development build. Browser heap includes Vite/React. Does not measure HTTP, production data, model streaming or Flutter rendering."
+}

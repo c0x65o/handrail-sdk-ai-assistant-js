@@ -103,8 +103,15 @@ describe("Postgres high-level adapters", () => {
   it("appends, idempotently reconciles, and cursor-reads canonical conversation events", async () => {
     const events: ConversationEvent[] = [];
     let lagLatestRead = false;
+    let displayRevision = 0;
     const query = async (sql: string, values: readonly unknown[] = []) => {
         if (sql.includes("pg_advisory_xact_lock")) return { rows: [], rowCount: 1 };
+        if (sql.includes("kind='conversation_deleted'")) return { rows: [], rowCount: 0 };
+        if (sql.startsWith("SELECT revision::text,generation::text,active_turn_id")) {
+          return { rows: [{ revision: String(displayRevision), generation: "0", active_turn_id: null }], rowCount: 1 };
+        }
+        if (sql.startsWith("UPDATE handrail_ai_display_heads")) displayRevision = Number(values[2]);
+        if (sql.includes("handrail_ai_display_")) return { rows: [], rowCount: 1 };
         if (sql.includes("event_id=ANY")) {
           const identifiers = values[1] as string[];
           const rows = events.filter((event) => identifiers.includes(event.event_id) ||

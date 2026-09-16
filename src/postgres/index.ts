@@ -14,6 +14,8 @@ export type { PostgresConversationCatalogTableOptions } from "./catalog-table.js
 export { enqueuePostgresConversationFileCleanup, drainPostgresConversationFileCleanup,
   startPostgresConversationFileCleanupWorker, type PostgresConversationFileCleanupOptions } from "./conversation-file-cleanup.js";
 import { createHash } from "node:crypto";
+import { postgresDisplayHistorySchema, projectPostgresDisplayEvents } from "./display-history.js";
+export { PostgresConversationDisplayHistory, postgresDisplayHistorySchema } from "./display-history.js";
 import { ConversationEventValidationError, parseConversationEvent, type ConversationEvent, type ConversationId, type ConversationRevision } from "../conversation/events.js";
 import {
   ConversationEventStoreConflictError,
@@ -214,6 +216,7 @@ export function createDiagnosedPostgresSqlClient(
 }
 
 export const handrailPostgresSchemaV1 = Object.freeze([
+  ...postgresDisplayHistorySchema,
   `CREATE TABLE IF NOT EXISTS handrail_ai_events (tenant_id text NOT NULL, conversation_id text NOT NULL, revision bigint NOT NULL, event_id text NOT NULL, payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, conversation_id, revision), UNIQUE (tenant_id, event_id))`,
   `ALTER TABLE handrail_ai_events ADD COLUMN IF NOT EXISTS mutation_id text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS handrail_ai_events_mutation ON handrail_ai_events (tenant_id, mutation_id) WHERE mutation_id IS NOT NULL`,
@@ -303,6 +306,12 @@ export class PostgresAiPersistence {
         if (event.revision !== next++) throw new TypeError("event revisions must be contiguous");
         await tx.query("INSERT INTO handrail_ai_events (tenant_id,conversation_id,revision,event_id,payload) VALUES ($1,$2,$3,$4,$5::text::jsonb)", [tenant, conversation, event.revision, id(event.event_id, "event_id"), JSON.stringify(event)]);
       }
+      // The generic persistence API also accepts application-specific events.
+      // Only canonical SDK events have a display projection contract.
+      let canonical: ConversationEvent[] | null;
+      try { canonical = input.events.map(event => parseConversationEvent(event)); }
+      catch (error) { if (!(error instanceof ConversationEventValidationError)) throw error; canonical = null; }
+      if (canonical) await projectPostgresDisplayEvents(tx, tenant, conversation, canonical);
       return Object.freeze(input.events.map(jsonClone));
     });
   }
@@ -1314,7 +1323,7 @@ export class PostgresConversationEventStore implements ConversationEventStore {
       return this.appendConflict("invalid_append", input, null, null);
     }
     try { return await this.persistence.client.transaction(async (tx) => {
-      await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [advisoryLockKey(this.tenantId, input.conversationId)]);
+      await assertPostgresConversationWritable(tx, this.tenantId, input.conversationId);
       const identifiers = events.flatMap((event) => [event.event_id, ...(event.mutation_id ? [event.mutation_id] : [])]);
       const duplicates = await tx.query<{ payload: ConversationEvent }>(
         "SELECT payload FROM handrail_ai_events WHERE tenant_id=$1 AND (event_id=ANY($2::text[]) OR mutation_id=ANY($2::text[]))",
@@ -1344,6 +1353,7 @@ export class PostgresConversationEventStore implements ConversationEventStore {
         "INSERT INTO handrail_ai_events (tenant_id,conversation_id,revision,event_id,mutation_id,payload) VALUES ($1,$2,$3,$4,$5,$6::text::jsonb)",
         [this.tenantId, input.conversationId, event.revision, event.event_id, event.mutation_id ?? null, JSON.stringify(event)],
       );
+      await projectPostgresDisplayEvents(tx, this.tenantId, input.conversationId, events);
       return Object.freeze({ status: "appended" as const, entries: Object.freeze(events.map(storedEvent)),
         latestRevision: events.at(-1)!.revision });
     }); } catch (error) { throw this.storeError(error, "append"); }

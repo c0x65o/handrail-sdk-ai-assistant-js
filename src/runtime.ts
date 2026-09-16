@@ -158,6 +158,11 @@ export interface ConversationRuntimeOptions<TRequest> {
   /** Back off unchanged, inactive conversations up to this interval. Defaults to the polling interval. */
   readonly idleSynchronizationIntervalMilliseconds?: number;
   readonly onSynchronizationError?: (cause: unknown) => void;
+  /** Observer notification after a protocol frame's canonical writes have
+   * settled (or its duplicate was verified). Terminal settlement still awaits
+   * the transport outcome. Callback errors never alter canonical execution. */
+  readonly onFrameApplied?: (input: { readonly turnId: ConversationTurnId; readonly frame: StreamEvent;
+    readonly revision: ConversationRevision | null }) => void;
   /** Bounded retry behavior. Defaults to createRetryPolicy(). */
   readonly retryPolicy?: RetryPolicy;
   /** Optional provider-context acceleration. Unsupported capabilities are a no-op. */
@@ -729,6 +734,10 @@ export async function createConversationRuntime<TRequest>(
     const liveFrameFingerprints = new Map<string, string>();
     activeObservations.set(turnId, observation);
     let transportResult: TurnObservationResult | null = null;
+    const reportApplied = (frame: StreamEvent) => {
+      try { options.onFrameApplied?.({ turnId, frame, revision: store.getSnapshot().revision }); }
+      catch { /* Presentation/projection notifications do not own execution. */ }
+    };
 
     try {
       try {
@@ -742,7 +751,7 @@ export async function createConversationRuntime<TRequest>(
             durableFrameFingerprints,
             liveFrameFingerprints,
           );
-          if (disposition === "duplicate") continue;
+          if (disposition === "duplicate") { reportApplied(frame); continue; }
 
           const drafts = draftsForNonterminalFrame(
             frameState,
@@ -758,6 +767,7 @@ export async function createConversationRuntime<TRequest>(
               protocol.safeSequence = frame.sequence;
             }
           }
+          reportApplied(frame);
         }
       } catch (cause) {
         if (cause instanceof ConversationRuntimeDestroyedError) throw cause;

@@ -317,6 +317,8 @@ export { useConversationHistory, type UseConversationHistoryOptions, type Conver
 export { useWorkspaceUploaders } from "./workspace-uploaders.js";
 
 export { ConversationTranscript, type ConversationTranscriptProps } from "./conversation-transcript.js";
+export { ConversationDisplayTranscript, useConversationDisplayWindow, type ConversationDisplayTranscriptProps,
+  type ConversationDisplayPosition, type ConversationDisplayPositionStore } from "./display-transcript.js";
 export { useComposerApprovalPreference } from "./composer-approval-preference.js";
 
 export { useBoundApprovalReview, type UseBoundApprovalReviewOptions } from "./use-bound-approval-review.js";

@@ -18,3 +18,4 @@ export * from "./title-generation.js";
 export * from "./tool-activity.js";
 
 export * from "./activity-projection.js";
+export * from "./display-history.js";

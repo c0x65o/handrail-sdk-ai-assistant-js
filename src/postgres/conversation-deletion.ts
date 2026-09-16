@@ -182,6 +182,10 @@ export async function deletePostgresConversationHistory(input: DeletePostgresCon
     [input.tenantId, input.conversationId]);
     await client.query("DELETE FROM handrail_ai_events WHERE tenant_id=$1 AND conversation_id=$2",
       [input.tenantId, input.conversationId]);
+    await client.query("DELETE FROM handrail_ai_display_records WHERE tenant_id=$1 AND conversation_id=$2",
+      [input.tenantId, input.conversationId]);
+    await client.query("DELETE FROM handrail_ai_display_heads WHERE tenant_id=$1 AND conversation_id=$2",
+      [input.tenantId, input.conversationId]);
     await client.query(`DELETE FROM handrail_ai_documents WHERE tenant_id=$1 AND
       ((kind IN ('checkpoint','turn_state','durable_turn','sync_state') AND scope_id=$2)
         OR (kind IN ('catalog','activity') AND record_id=$2)

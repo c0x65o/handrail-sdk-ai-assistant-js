@@ -1,5 +1,6 @@
 import {
   createApplicationGatewayConversationCatalog,
+  createApplicationGatewayDisplayHistory,
   createApplicationGatewayResourceClient,
   createApplicationGatewayTransport,
   negotiateApplicationGatewayCapabilities,
@@ -32,6 +33,7 @@ import type { PresenceParticipantKind } from "../presence/types.js";
 import { emitAiDiagnostic } from "../diagnostics.js";
 import { createTranscriptionHttpClient, resolveTranscriptionEndpoint } from "../transcription-http.js";
 import { createAttachmentDownloadClient, resolveAttachmentDownloadEndpoint } from "../attachments/downloader.js";
+import { ConversationDisplayWindow } from "./display-window.js";
 
 export interface HandrailAiClientBootstrapOptions<TEvent, TRequest, TAuthorizationContext, TSynchronization = unknown>
 extends ApplicationGatewayTransportOptions<TEvent, TSynchronization> {
@@ -107,6 +109,9 @@ export interface HandrailAiClient<TEvent, TRequest, TAuthorizationContext> {
   readonly attachmentDownload: ReturnType<typeof createAttachmentDownloadClient> | null;
   readonly presence: ApplicationGatewayPresenceClient | null;
   readonly synchronization: ConversationSyncAdapter | null;
+  /** Presentation-only bounded history. Never use its pages as canonical state. */
+  readonly displayHistory: ReturnType<typeof createApplicationGatewayDisplayHistory> | null;
+  readonly displayWindow: ConversationDisplayWindow | null;
   /** Returns a stable, client-owned controller for the conversation when presence was negotiated/configured. */
   presenceControllerFor(conversationId: ConversationId): PresenceController | null;
   buildRequest(input: { readonly content: string; readonly attachments?: readonly unknown[] }): TRequest;
@@ -147,6 +152,8 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
   }) : null;
   const transport = createApplicationGatewayTransport<TEvent, TRequest, TSynchronization>({ ...options, capabilities });
   const resources = createApplicationGatewayResourceClient(options);
+  const displayHistory = capabilities.displayHistory ? createApplicationGatewayDisplayHistory(options) : null;
+  const displayWindow = displayHistory ? new ConversationDisplayWindow({ reader: displayHistory }) : null;
   const activity = capabilities.activity === true && resources.listActivity
     ? new PollingConversationActivity({ load: () => resources.listActivity!(),
       ...(resources.subscribeActivity === undefined ? {} : {
@@ -219,7 +226,7 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
   }
   const conversationMode = singleConfiguration !== null ? "single" : multiple ? "multiple" : "none";
   return Object.freeze({ conversationMode, conversation, capabilities, transport, resources, activity, catalog, registry, workspace,
-    attachmentUpload, attachmentDownload, transcription, presence, synchronization,
+    attachmentUpload, attachmentDownload, transcription, presence, synchronization, displayHistory, displayWindow,
     presenceControllerFor(conversationId: ConversationId) {
       if (presenceAdapter === null || options.presenceIdentity === undefined) return null;
       const existing = presenceControllers.get(conversationId);
@@ -249,6 +256,7 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
       await activity.refresh();
     },
     async dispose() {
+      displayWindow?.dispose();
       activity?.stop();
       for (const controller of presenceControllers.values()) controller.destroy();
       presenceControllers.clear();

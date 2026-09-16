@@ -1,6 +1,7 @@
 import { flushSync } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConversationCatalog, ConversationCatalogDescriptor, ConversationCatalogIdempotencyKey } from "../conversation/catalog.js";
+import type { ConversationCatalog, ConversationCatalogCursor, ConversationCatalogDescriptor, ConversationCatalogIdempotencyKey } from "../conversation/catalog.js";
+import { ConversationCatalogError } from "../conversation/catalog.js";
 import type { ConversationId } from "../conversation/events.js";
 import type { ConversationWorkspaceOpenInput } from "../conversation/workspace.js";
 import type { ConversationRuntime } from "../runtime.js";
@@ -21,7 +22,7 @@ export interface UseConversationHistoryOptions<TRequest, TContext> {
   readonly authorizationContext: TContext;
   readonly activity?: ConversationActivityReadable;
   readonly pageSize?: number;
-  /** Bounded background hydration for previews. Defaults to 20; zero disables it. */
+  /** Optional background hydration for previews. Defaults to zero; opening a list never preloads other transcripts. */
   readonly preloadCount?: number;
   /** Retry failed history reads with bounded backoff. Defaults to true. Mutations never retry automatically. */
   readonly recover?: boolean;
@@ -40,8 +41,13 @@ interface HistoryState {
   readonly error: string | null;
   readonly busyId: ConversationId | "create" | null;
   readonly failedThreads: ReadonlySet<ConversationId>;
+  readonly nextCursor: ConversationCatalogCursor | null;
+  readonly loadingMore: boolean;
+  readonly loadMoreFailed: boolean;
+  readonly retainedSelection: ConversationCatalogDescriptor | null;
 }
-const EMPTY: HistoryState = { descriptors: [], loading: true, loadFailed: false, error: null, busyId: null, failedThreads: new Set() };
+const EMPTY: HistoryState = { descriptors: [], loading: true, loadFailed: false, error: null, busyId: null,
+  failedThreads: new Set(), nextCursor: null, loadingMore: false, loadMoreFailed: false, retainedSelection: null };
 const OPEN_ERROR = "This conversation could not be refreshed. Select another conversation or retry history.";
 const identity = (prefix: string) => `${prefix}-${globalThis.crypto.randomUUID()}` as ConversationCatalogIdempotencyKey;
 
@@ -49,9 +55,10 @@ const identity = (prefix: string) => `${prefix}-${globalThis.crypto.randomUUID()
 export function useConversationHistory<TRequest, TContext>(options: UseConversationHistoryOptions<TRequest, TContext>) {
   const { workspace, catalog, authorizationContext } = options;
   const pageSize = options.pageSize ?? 50;
-  const preloadCount = options.preloadCount ?? 20;
+  const preloadCount = options.preloadCount ?? 0;
   if (!Number.isSafeInteger(preloadCount) || preloadCount < 0 || preloadCount > 100) throw new TypeError("History preloadCount must be between 0 and 100.");
   const scope = useMemo(() => ({ active: false, load: 0, selection: 0, mutation: false, initialCreationConsidered: false,
+    view: "active" as "active" | "archived", paging: false, cursors: new Set<string>(),
     createKey: null as ConversationCatalogIdempotencyKey | null,
     mutationKeys: new Map<string, ConversationCatalogIdempotencyKey>(),
     refreshes: new Map<ConversationId, Promise<unknown>>() }), [workspace, catalog, authorizationContext]);
@@ -94,32 +101,39 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
   const refresh = useCallback(async () => {
     if (!isCurrent()) return;
     const generation = ++scope.load;
+    scope.paging = false;
+    scope.cursors.clear();
     const selection = scope.selection;
     const failedBefore = [...stateRef.current.failedThreads];
     const retained = () => isCurrent() && generation === scope.load;
-    publish((value) => ({ ...value, loading: true }));
+    publish((value) => ({ ...value, loading: true, loadingMore: false, loadMoreFailed: false }));
     try {
-      const found: ConversationCatalogDescriptor[] = [];
-      const cursors = new Set<string>();
-      let cursor: Awaited<ReturnType<typeof catalog.list>>["nextCursor"] | undefined;
-      do {
-        const page = await catalog.list({ authorizationContext, lifecycle: "all", pageSize,
-          order: { field: "updated_at", direction: "desc" }, ...(cursor ? { cursor } : {}) });
+      const page = await catalog.list({ authorizationContext, lifecycle: scope.view, pageSize,
+        order: { field: "updated_at", direction: "desc" } });
+      if (!retained()) return;
+      if (page.hasMore && !page.nextCursor) throw new Error("Conversation history pagination did not advance.");
+      const descriptors = [...new Map(page.items.map((descriptor) => [descriptor.conversationId, descriptor])).values()];
+      const selectedId = workspace.getSnapshot().selectedConversationId;
+      let retainedSelection: ConversationCatalogDescriptor | null = null;
+      // A selected older chat need not be on the refreshed first page. Read only
+      // its descriptor so title/lifecycle controls remain authoritative.
+      if (selectedId && !descriptors.some(row => row.conversationId === selectedId)) {
+        try { retainedSelection = (await catalog.get({ authorizationContext, conversationId: selectedId })).descriptor; }
+        catch (error) {
+          if (!(error instanceof ConversationCatalogError) || !["not_found", "forbidden"].includes(error.code)) throw error;
+          if (retained() && selection === scope.selection && workspace.getSnapshot().selectedConversationId === selectedId) workspace.select(null);
+        }
         if (!retained()) return;
-        found.push(...page.items);
-        if (!page.hasMore) break;
-        cursor = page.nextCursor;
-        if (!cursor || cursors.has(cursor)) throw new Error("Conversation history pagination did not advance.");
-        cursors.add(cursor);
-      } while (cursor);
-      const descriptors = [...new Map(found.map((descriptor) => [descriptor.conversationId, descriptor])).values()];
+      }
       publish((value) => ({ ...value, descriptors, loading: false, loadFailed: false,
+        retainedSelection,
+        nextCursor: page.hasMore ? page.nextCursor : null,
         failedThreads: new Set([...value.failedThreads].filter((id) => descriptors.some((descriptor) => descriptor.conversationId === id))) }));
       const attempted = new Set<ConversationId>();
       const active = descriptors.filter((descriptor) => descriptor.lifecycle === "active");
       // Failed saved history never creates a replacement conversation or blocks navigation.
       if (latestOptions.current.autoSelect !== false && workspace.getSnapshot().selectedConversationId === null) {
-        for (const descriptor of active) {
+        for (const descriptor of descriptors) {
           if (!retained() || selection !== scope.selection || workspace.getSnapshot().selectedConversationId !== null) break;
           try {
             attempted.add(descriptor.conversationId);
@@ -144,8 +158,41 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
     }
   }, [scope, catalog, authorizationContext, pageSize, preloadCount, workspace, isCurrent, publish, open]);
 
+  const loadMore = useCallback(async () => {
+    const cursor = stateRef.current.nextCursor;
+    if (!isCurrent() || scope.paging || stateRef.current.loading || !cursor) return;
+    const generation = scope.load;
+    scope.paging = true;
+    publish(value => ({ ...value, loadingMore: true, loadMoreFailed: false }));
+    try {
+      const page = await catalog.list({ authorizationContext, lifecycle: scope.view, pageSize,
+        order: { field: "updated_at", direction: "desc" }, cursor });
+      if (!isCurrent() || generation !== scope.load) return;
+      if (page.hasMore && (!page.nextCursor || page.nextCursor === cursor || scope.cursors.has(page.nextCursor))) {
+        throw new Error("Conversation history pagination did not advance.");
+      }
+      scope.cursors.add(cursor);
+      publish(value => {
+        const rows = new Map(value.descriptors.map(row => [row.conversationId, row]));
+        for (const row of page.items) {
+          const previous = rows.get(row.conversationId);
+          if (!previous || row.version > previous.version) rows.set(row.conversationId, row);
+        }
+        return { ...value, descriptors: [...rows.values()], nextCursor: page.hasMore ? page.nextCursor : null };
+      });
+    } catch {
+      if (isCurrent() && generation === scope.load) publish(value => ({ ...value, loadMoreFailed: true }));
+    } finally {
+      if (isCurrent() && generation === scope.load) {
+        scope.paging = false;
+        publish(value => ({ ...value, loadingMore: false }));
+      }
+    }
+  }, [scope, catalog, authorizationContext, pageSize, isCurrent, publish]);
+
   useEffect(() => {
     scope.active = true;
+    scope.view = "active";
     setView("active"); setUnreadOnly(false);
     return () => { scope.active = false; scope.load++; scope.selection++; scope.refreshes.clear(); };
   }, [scope]);
@@ -171,23 +218,14 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
   }, [scope, workspace, open, isCurrent, publish]);
 
   const changeView = useCallback((next: "active" | "archived") => {
+    if (!isCurrent() || scope.view === next) return;
+    scope.view = next;
     setView(next);
-    const descriptors = stateRef.current.descriptors.filter((item) => item.lifecycle === next);
-    if (descriptors.some((item) => item.conversationId === workspace.getSnapshot().selectedConversationId)) return;
-    const selection = ++scope.selection;
+    ++scope.selection;
     workspace.select(null);
-    if (latestOptions.current.autoSelect === false) return;
-    void (async () => {
-      for (const descriptor of descriptors) {
-        if (!isCurrent() || selection !== scope.selection) return;
-        try {
-          await open(descriptor.conversationId, true);
-          if (isCurrent() && selection === scope.selection) workspace.select(descriptor.conversationId);
-          return;
-        } catch { /* Keep failed history available for explicit selection/recovery. */ }
-      }
-    })();
-  }, [scope, workspace, open, isCurrent]);
+    publish(value => ({ ...EMPTY, busyId: value.busyId }));
+    void refresh();
+  }, [scope, workspace, isCurrent, publish, refresh]);
 
   const create = useCallback(async () => {
     if (!isCurrent() || scope.mutation) return;
@@ -203,7 +241,7 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
       await workspace.open({ ...input, select: false });
       if (!isCurrent()) return;
       scope.createKey = null;
-      if (selection === scope.selection) { workspace.select(input.conversationId); setView("active"); setUnreadOnly(false); }
+      if (selection === scope.selection) { workspace.select(input.conversationId); scope.view = "active"; setView("active"); setUnreadOnly(false); }
       await refresh();
     } catch { publish((value) => ({ ...value, error: "A new conversation could not be opened. Select New to retry." })); }
     finally { scope.mutation = false; publish((value) => ({ ...value, busyId: null })); }
@@ -237,7 +275,7 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
         publish((value) => ({ ...value, descriptors: value.descriptors.filter((item) => item.conversationId !== descriptor.conversationId) }));
       });
       await workspace.close?.(descriptor.conversationId);
-      if (restoring) setView("active");
+      if (restoring) { scope.view = "active"; setView("active"); }
       await refresh();
     } catch {
       if (isCurrent()) {
@@ -286,8 +324,9 @@ export function useConversationHistory<TRequest, TContext>(options: UseConversat
     return message ? conversationMessageText(message).replace(/\s+/gu, " ").slice(0, 120) : "Open conversation";
   };
   return { ...state, view, setView: changeView, unreadOnly, setUnreadOnly, unreadCount, visible, activity, snapshot,
-    selected: state.descriptors.find((descriptor) => descriptor.conversationId === snapshot.selectedConversationId) ?? null,
-    capabilities: catalog.capabilities, refresh, select, create, changeLifecycle, preview };
+    selected: state.descriptors.find((descriptor) => descriptor.conversationId === snapshot.selectedConversationId) ??
+      (state.retainedSelection?.conversationId === snapshot.selectedConversationId ? state.retainedSelection : null),
+    capabilities: catalog.capabilities, refresh, loadMore, hasMore: state.nextCursor !== null, select, create, changeLifecycle, preview };
 }
 
 export type ConversationHistoryController = ReturnType<typeof useConversationHistory>;

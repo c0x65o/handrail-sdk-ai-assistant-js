@@ -104,7 +104,13 @@ export interface DurableApplicationTransportOptions<TEvent, TRequest, TStoredReq
   readonly now?: () => number;
   readonly diagnostics?: AiDiagnosticSink;
   /** Published by the durable writer, even when no browser is observing the turn. */
-  readonly onTurnStatusChanged?: (status: DurableApplicationTurnStatusUpdate) => void | Promise<void>;
+  readonly onTurnStatusChanged?: (status: DurableApplicationTurnStatusUpdate,
+    document: DurableApplicationTurnDocument<TStoredRequest, TEvent>) => void | Promise<void>;
+  /** Backpressured projection hook after a frame is durably saved. Projection
+   * failures are diagnostic-only; the retained frames remain recoverable. */
+  readonly onEventPersisted?: (document: DurableApplicationTurnDocument<TStoredRequest, TEvent>) => void | Promise<void>;
+  /** Releases per-worker observers on completion, failure or lease loss. */
+  readonly onWorkerStopped?: (identity: { readonly conversationId: string; readonly turnId: string }) => void | Promise<void>;
 }
 export interface DurableApplicationTurnStatusUpdate {
   readonly conversationId: string;
@@ -232,7 +238,7 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
     if (!options.onTurnStatusChanged) return;
     const { conversationId, turnId, status, updatedAt } = document.record;
     try {
-      await options.onTurnStatusChanged({ conversationId, turnId, status, updatedAt, version: document.version });
+      await options.onTurnStatusChanged({ conversationId, turnId, status, updatedAt, version: document.version }, document);
     } catch (cause) {
       emitAiDiagnostic(options.diagnostics, { domain: "activity", operation: "durable_turn_status",
         phase: "failed", conversationId, turnId, code: "activity_update_failed", retryable: true, cause });
@@ -395,13 +401,18 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
       try {
         for await (const event of started.value.observation.events) {
           const eventCheckpoint = normalizeCheckpoint(options.checkpointForEvent(event));
-          await update(conversationId, turnId, (record) => {
+          const persisted = await update(conversationId, turnId, (record) => {
             if (record.lease?.ownerId !== workerId) throw new LeaseLostError();
             const currentTime = now();
             return { ...record, events: [...record.events, { sequence: record.events.length + 1,
               checkpoint: eventCheckpoint, event: clone(event) }],
               lease: { ownerId: workerId, expiresAt: timestamp(currentTime + leaseMilliseconds) }, updatedAt: timestamp(currentTime) };
           });
+          if (persisted && options.onEventPersisted) {
+            try { await options.onEventPersisted(persisted); }
+            catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "live_conversation_projection",
+              phase: "failed", conversationId, turnId, code: "projection_failed", retryable: true, cause }); }
+          }
         }
         const result = await started.value.observation.result; await settle(conversationId, turnId, result);
         emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "durable_turn",
@@ -425,7 +436,12 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
   };
   const kick = (conversationId: string, turnId: string): boolean => {
     const operationKey = key(conversationId, turnId); if (running.has(operationKey)) return false;
-    const operation = run(conversationId, turnId).finally(() => running.delete(operationKey)); running.set(operationKey, operation);
+    const operation = run(conversationId, turnId).finally(async () => {
+      try { await options.onWorkerStopped?.({ conversationId, turnId }); }
+      catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "live_conversation_projection",
+        phase: "failed", conversationId, turnId, code: "projection_cleanup_failed", retryable: true, cause }); }
+      finally { running.delete(operationKey); }
+    }); running.set(operationKey, operation);
     void operation.catch(() => undefined); return true;
   };
   const observe = async (document: DurableApplicationTurnDocument<TStoredRequest, TEvent>, resumeFrom: TurnResumePoint): Promise<TurnObservation<TEvent>> => {

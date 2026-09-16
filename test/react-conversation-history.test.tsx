@@ -36,23 +36,30 @@ async function fixture(count = 3) {
   return { catalog, workspace, authorizationContext, descriptors, createRuntime, activity };
 }
 
-it("loads all catalog pages, limits background previews, and filters active/archived/unread history", async () => {
+it("loads one catalog page at a time, limits opt-in previews, and requests archived history separately", async () => {
   const f = await fixture(5);
   await f.catalog.archive({ authorizationContext: f.authorizationContext, conversationId: f.descriptors[0]!.conversationId,
     expectedVersion: f.descriptors[0]!.version, idempotencyKey: "archive" as never });
   f.activity.upsert({ conversationId: f.descriptors[1]!.conversationId, turnStatus: "completed", unread: true });
   const list = vi.spyOn(f.catalog, "list");
   const { result } = renderHook(() => useConversationHistory({ ...f, pageSize: 2, preloadCount: 2, autoSelect: false }));
-  await waitFor(() => expect(result.current.descriptors).toHaveLength(5));
+  await waitFor(() => expect(result.current.descriptors).toHaveLength(2));
   await waitFor(() => expect(f.workspace.getSnapshot().threads).toHaveLength(2));
-  expect(list).toHaveBeenCalledTimes(3);
+  expect(list).toHaveBeenCalledTimes(1);
+  expect(result.current.hasMore).toBe(true);
+  await act(async () => { await result.current.loadMore(); });
+  expect(result.current.descriptors).toHaveLength(4);
+  expect(result.current.hasMore).toBe(false);
+  expect(list).toHaveBeenCalledTimes(2);
   expect(f.workspace.getSnapshot().selectedConversationId).toBeNull();
   expect(result.current.visible).toHaveLength(4);
   act(() => { result.current.setUnreadOnly(true); });
   expect(result.current.visible.map((row) => row.conversationId)).toEqual([f.descriptors[1]!.conversationId]);
   act(() => { result.current.setView("archived"); });
-  expect(result.current.visible.map((row) => row.conversationId)).toEqual([f.descriptors[0]!.conversationId]);
-  const opened = result.current.descriptors.find((row) => f.workspace.getSnapshot().threads.some((thread) => thread.conversationId === row.conversationId))!;
+  await waitFor(() => expect(result.current.visible.map((row) => row.conversationId)).toEqual([f.descriptors[0]!.conversationId]));
+  expect(list).toHaveBeenCalledTimes(3);
+  expect(list.mock.calls[2]![0].lifecycle).toBe("archived");
+  const opened = f.descriptors.find((row) => f.workspace.getSnapshot().threads.some((thread) => thread.conversationId === row.conversationId))!;
   expect(result.current.preview(opened)).toMatch(/^Saved preview/u);
 });
 
@@ -70,6 +77,76 @@ it("shows the complete assistant's saved threads by default and keeps compact hi
   view.rerender(<HandrailAssistantWorkspace {...props} historyLayout="compact"/>);
   expect(view.queryByRole("complementary", { name: "Conversation history" })).toBeNull();
   expect(view.getByText("Threads").closest("details")?.open).toBe(false);
+});
+
+it("does not fetch unseen catalog pages or hydrate unselected transcripts by default", async () => {
+  const f = await fixture(8);
+  const list = vi.spyOn(f.catalog, "list");
+  const { result } = renderHook(() => useConversationHistory({ ...f, pageSize: 2 }));
+  await waitFor(() => expect(result.current.snapshot.selectedConversationId).not.toBeNull());
+  expect(result.current.descriptors).toHaveLength(2);
+  expect(result.current.hasMore).toBe(true);
+  expect(list).toHaveBeenCalledTimes(1);
+  expect(f.createRuntime).toHaveBeenCalledTimes(1);
+  await act(async () => { await result.current.loadMore(); });
+  expect(result.current.descriptors).toHaveLength(4);
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(f.createRuntime).toHaveBeenCalledTimes(1);
+});
+
+it("keeps loaded rows on a failed next page and coalesces double clicks when retrying", async () => {
+  const f = await fixture(5);
+  const original = f.catalog.list.bind(f.catalog);
+  const list = vi.spyOn(f.catalog, "list");
+  const { result } = renderHook(() => useConversationHistory({ ...f, pageSize: 2, autoSelect: false }));
+  await waitFor(() => expect(result.current.descriptors).toHaveLength(2));
+  const firstPage = result.current.descriptors;
+  list.mockRejectedValueOnce(new Error("offline"));
+  await act(async () => { await result.current.loadMore(); });
+  expect(result.current.descriptors).toEqual(firstPage);
+  expect(result.current.loadMoreFailed).toBe(true);
+  const gate = deferred<void>();
+  list.mockImplementationOnce(async input => { await gate.promise; return original(input); });
+  let pending!: Promise<void>;
+  act(() => { pending = result.current.loadMore(); void result.current.loadMore(); });
+  expect(list).toHaveBeenCalledTimes(3);
+  await act(async () => { gate.resolve(); await pending; });
+  expect(result.current.loadMoreFailed).toBe(false);
+  expect(result.current.descriptors).toHaveLength(4);
+});
+
+it("discards a delayed active page after switching to the archived view", async () => {
+  const f = await fixture(5);
+  await f.catalog.archive({ authorizationContext: f.authorizationContext, conversationId: f.descriptors[0]!.conversationId,
+    expectedVersion: f.descriptors[0]!.version, idempotencyKey: "archive" as never });
+  const original = f.catalog.list.bind(f.catalog), gate = deferred<void>();
+  const list = vi.spyOn(f.catalog, "list");
+  const { result } = renderHook(() => useConversationHistory({ ...f, pageSize: 2, autoSelect: false }));
+  await waitFor(() => expect(result.current.descriptors).toHaveLength(2));
+  list.mockImplementationOnce(async input => { const page = await original(input); await gate.promise; return page; });
+  let pending!: Promise<void>;
+  act(() => { pending = result.current.loadMore(); });
+  act(() => result.current.setView("archived"));
+  await waitFor(() => expect(result.current.descriptors).toHaveLength(1));
+  await act(async () => { gate.resolve(); await pending; });
+  expect(result.current.visible.map(row => row.conversationId)).toEqual([f.descriptors[0]!.conversationId]);
+  expect(result.current.hasMore).toBe(false);
+  expect(result.current.loadingMore).toBe(false);
+});
+
+it("retains authoritative selected-chat metadata when refreshing a list with older pages open", async () => {
+  const f = await fixture(5);
+  const { result } = renderHook(() => useConversationHistory({ ...f, pageSize: 2, autoSelect: false }));
+  await waitFor(() => expect(result.current.descriptors).toHaveLength(2));
+  await act(async () => { await result.current.loadMore(); });
+  const older = result.current.descriptors[3]!;
+  await act(async () => { await result.current.select(older); });
+  const get = vi.spyOn(f.catalog, "get");
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.descriptors).toHaveLength(2);
+  expect(result.current.selected).toEqual(older);
+  expect(get).toHaveBeenCalledWith({ authorizationContext: f.authorizationContext, conversationId: older.conversationId });
+  expect(f.createRuntime).toHaveBeenCalledTimes(1);
 });
 
 it.each([false, true])("single-conversation presentation confirms Clear and recovers a version conflict: %s", async (versionConflict) => {
@@ -175,6 +252,9 @@ it("preserves the selected runtime after rejected archive and releases it only a
   await act(async () => { await result.current.changeLifecycle(f.descriptors[0]!); });
   expect(() => runtime.store.subscribe(() => undefined)).toThrow("destroyed");
   expect(archive.mock.calls[0]![0].idempotencyKey).toBe(archive.mock.calls[1]![0].idempotencyKey);
+  expect(result.current.descriptors).toHaveLength(0);
+  act(() => result.current.setView("archived"));
+  await waitFor(() => expect(result.current.descriptors).toHaveLength(1));
   expect(result.current.descriptors[0]!.lifecycle).toBe("archived");
   await act(async () => { await result.current.changeLifecycle(result.current.descriptors[0]!); });
   expect(result.current.descriptors[0]!.lifecycle).toBe("active");

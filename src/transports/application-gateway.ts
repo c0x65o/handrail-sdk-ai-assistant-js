@@ -1,4 +1,7 @@
 import { parseServerSentEvents } from "./sse.js";
+import { ConversationDisplayHistoryError, CONVERSATION_DISPLAY_LIMITS, parseConversationDisplayPage,
+  type ConversationDisplayHistory, type ConversationDisplayPageInput, type ConversationDisplayContentInput,
+  type ConversationDisplayChangesInput } from "../conversation/display-history.js";
 import type { TranscriptionHttpCapability } from "../transcription-http.js";
 import type { AttachmentReference } from "../protocol.js";
 import type { AttachmentUploadAdapter } from "../attachments/types.js";
@@ -63,6 +66,8 @@ export interface ApplicationGatewayCapabilities {
   readonly documentInput?: false | DocumentInputCapabilityDescriptor;
   readonly presence: boolean;
   readonly synchronization: boolean;
+  /** Complete message records, separate from canonical audit synchronization. */
+  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number };
   readonly activity?: boolean;
   /** Omitted by older gateways; never assume saved files have public URLs. */
   readonly attachmentDownloads?: false | AttachmentDownloadCapability;
@@ -129,6 +134,7 @@ export interface ApplicationGatewayOptions<TEvent, TRequest, TContext extends Ap
   readonly capabilities?: Partial<Omit<ApplicationGatewayCapabilities, "protocolVersion" | "authoritativeCancellation">>;
   readonly maximumRequestBytes?: number;
   readonly conversations?: ConversationCatalog<TContext>;
+  readonly displayHistoryFor?: (context: TContext) => ConversationDisplayHistory;
   readonly approvals?: ApprovalProposalStore<TContext>;
   readonly titleGeneration?: ApplicationGatewayTitleGeneration<TContext>;
   readonly handlers?: ApplicationGatewayResourceHandlers<TContext>;
@@ -171,7 +177,7 @@ function failure(error: TransportError): Response {
   return json({ ok: false, error }, transportStatus(error));
 }
 
-type ApplicationGatewayResourceDomain = "conversation_catalog" | "approval_proposals";
+type ApplicationGatewayResourceDomain = "conversation_catalog" | "approval_proposals" | "display_history";
 
 interface ApplicationGatewayResourceFailure {
   readonly domain: ApplicationGatewayResourceDomain;
@@ -187,6 +193,11 @@ function resourceFailure(
 
 function publicFailure(error: unknown): Response {
   if (error instanceof Response) return error;
+  if (error instanceof ConversationDisplayHistoryError) {
+    return resourceFailure({ code: error.code === "invalid_input" ? "invalid_request"
+      : error.code === "not_found" ? "not_found" : "conflict", message: error.message, retryable: false },
+    { domain: "display_history", code: error.code });
+  }
   if (error instanceof ConversationCatalogError) {
     const code: TransportError["code"] = error.code === "invalid_input" ? "invalid_request"
       : error.code === "not_found" ? "not_found"
@@ -224,8 +235,23 @@ function authorizationFailure(error: unknown): Response {
 }
 
 async function body<T>(request: Request, maximumBytes: number): Promise<T> {
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength > maximumBytes) throw new Response(null, { status: 413 });
+  const reader = request.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (reader) {
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > maximumBytes) { await reader.cancel(); throw new Response(null, { status: 413 }); }
+        chunks.push(chunk.value);
+      }
+    } finally { reader.releaseLock(); }
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as T; }
   catch { throw new Response(null, { status: 400 }); }
 }
@@ -355,6 +381,8 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
     ...(options.capabilities?.attachmentDownloads === undefined ? {} : { attachmentDownloads: options.capabilities.attachmentDownloads }),
     ...(options.capabilities?.transcription === undefined ? {} : { transcription: options.capabilities.transcription }),
     synchronization: options.capabilities?.synchronization ?? false,
+    ...(options.displayHistoryFor ? { displayHistory: { version: 1 as const,
+      maximumPageSize: CONVERSATION_DISPLAY_LIMITS.maximumPageSize, maximumPageBytes: CONVERSATION_DISPLAY_LIMITS.maximumPageBytes } } : {}),
     ...(options.capabilities?.documentInput === undefined ? {} : { documentInput: options.capabilities.documentInput }),
     ...(options.capabilities?.assistant === undefined ? {} : { assistant: options.capabilities.assistant }),
     resources: Object.freeze({ conversations: options.conversations?.capabilities ?? false,
@@ -404,6 +432,22 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
           return handler ? handler(request, authorizationContext) : new Response(null, { status: 501 });
         }
         if (action === "conversations") {
+          if (pathname.endsWith("/conversations/history")) {
+            if (!options.displayHistoryFor) return new Response(null, { status: 501 });
+            const input = await body<{ operation?: unknown; input?: unknown }>(request, Math.min(maximumBytes, 8192));
+            if (!input || typeof input !== "object" || !input.input || typeof input.input !== "object" || Array.isArray(input.input)) {
+              throw new ConversationDisplayHistoryError("invalid_input", "Invalid history request");
+            }
+            const history = options.displayHistoryFor(authorizationContext);
+            const value = input.operation === "page" ? await history.page(input.input as ConversationDisplayPageInput)
+              : input.operation === "changes" ? await history.changes(input.input as ConversationDisplayChangesInput)
+              : input.operation === "content" ? await history.content(input.input as ConversationDisplayContentInput)
+                : null;
+            if (value === null) throw new ConversationDisplayHistoryError("invalid_input", "Invalid history operation");
+            const response = json({ ok: true, value });
+            response.headers.set("cache-control", "private, no-store");
+            return response;
+          }
           if (!options.conversations) return new Response(null, { status: 501 });
           const input = await body<Record<string, unknown>>(request, maximumBytes);
           const operation = pathname.slice(pathname.lastIndexOf("/") + 1);
@@ -811,6 +855,96 @@ export function createApplicationGatewayResourceClient(
     appendMutations: (input) => invoke<AppendMutationsResult>("/synchronization", { operation: "append_mutations", input }),
   };
   return Object.freeze(client);
+}
+
+/** Bounded display reads with cancellation. Negotiate displayHistory before use;
+ * old servers retain their explicit canonical synchronization contract. */
+export function createApplicationGatewayDisplayHistory(
+  options: Pick<ApplicationGatewayTransportOptions<unknown>, "baseUrl" | "fetch" | "protectedRequest"> & {
+    readonly historyTimeoutMilliseconds?: number;
+  },
+) {
+  const fetcher = options.fetch ?? globalThis.fetch;
+  const timeout = options.historyTimeoutMilliseconds ?? 30_000;
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 300_000) throw new TypeError("Invalid display history timeout");
+  const url = `${options.baseUrl.replace(/\/+$/u, "")}/conversations/history`;
+  const abortable = <T>(work: Promise<T>, signal?: AbortSignal): Promise<T> => {
+    if (!signal) return work;
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => { signal.removeEventListener("abort", abort); reject(signal.reason ?? new DOMException("Aborted", "AbortError")); };
+      if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+      work.then(value => { signal.removeEventListener("abort", abort);
+        if (signal.aborted) { if (value instanceof Response) void value.body?.cancel().catch(() => {}); return; }
+        resolve(value);
+      }, error => { signal.removeEventListener("abort", abort); reject(error); });
+    });
+  };
+  const request = async <T>(operation: string, input: unknown, maximumBytes: number, signal: AbortSignal): Promise<T> => {
+    signal?.throwIfAborted();
+    const payload = JSON.stringify({ operation, input });
+    if (encoder.encode(payload).byteLength > 8192) throw new TypeError("Display history request is too large");
+    const initial: RequestInit = { method: "POST", headers: { "content-type": "application/json" },
+      body: payload, ...(signal ? { signal } : {}) };
+    const protectedInit = await abortable(Promise.resolve(options.protectedRequest?.({ url, ...initial }) ?? initial), signal);
+    signal?.throwIfAborted();
+    const response = await abortable(fetcher(url, { ...initial, ...protectedInit, redirect: "error", ...(signal ? { signal } : {}) }), signal);
+    const reader = response.body?.getReader();
+    if (!reader) throw new TypeError("Empty display history response");
+    const chunks: Uint8Array[] = []; let size = 0;
+    try {
+      for (;;) {
+        const next = await abortable(reader.read(), signal);
+        if (next.done) break;
+        size += next.value.byteLength;
+        if (size > maximumBytes) throw new TypeError("Display history response exceeded its byte budget");
+        chunks.push(next.value);
+      }
+    } finally { void reader.cancel().catch(() => {}); reader.releaseLock(); }
+    signal?.throwIfAborted();
+    const bytes = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const result = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as { ok?: boolean; value?: T; error?: Partial<TransportError>;
+      resourceError?: ApplicationGatewayResourceFailure };
+    if (!response.ok || result?.ok !== true || result?.value === undefined) {
+      throw new ApplicationGatewayResourceError({ message: result?.error?.message ?? "History is unavailable",
+        transportCode: result?.error?.code ?? "unavailable", retryable: result?.error?.retryable ?? true,
+        ...(result?.resourceError ? { resourceError: result.resourceError } : {}) });
+    }
+    return result.value;
+  };
+  const invoke = async <T>(operation: string, input: unknown, maximumBytes: number, external?: AbortSignal): Promise<T> => {
+    external?.throwIfAborted();
+    const controller = new AbortController();
+    const abort = () => controller.abort(external?.reason);
+    external?.addEventListener("abort", abort, { once: true });
+    const deadline = setTimeout(() => controller.abort(new DOMException("History took too long to load", "TimeoutError")), timeout);
+    try { return await request<T>(operation, input, maximumBytes, controller.signal); }
+    finally { clearTimeout(deadline); external?.removeEventListener("abort", abort); }
+  };
+  const pageBudget = (input: ConversationDisplayPageInput | ConversationDisplayChangesInput) => {
+    const bytes = input.maximumBytes ?? CONVERSATION_DISPLAY_LIMITS.defaultPageBytes;
+    const count = input.limit ?? CONVERSATION_DISPLAY_LIMITS.defaultPageSize;
+    if (!Number.isSafeInteger(bytes) || bytes < 8192 || bytes > CONVERSATION_DISPLAY_LIMITS.maximumPageBytes ||
+      !Number.isSafeInteger(count) || count < 1 || count > CONVERSATION_DISPLAY_LIMITS.maximumPageSize) {
+      throw new TypeError("Invalid display history page bounds");
+    }
+    return bytes + 1024;
+  };
+  return Object.freeze({
+    page: async (input: ConversationDisplayPageInput, signal?: AbortSignal) =>
+      parseConversationDisplayPage(await invoke("page", input, pageBudget(input), signal), input) as Awaited<ReturnType<ConversationDisplayHistory["page"]>>,
+    content: async (input: ConversationDisplayContentInput, signal?: AbortSignal) => {
+      const chunk = await invoke<Awaited<ReturnType<ConversationDisplayHistory["content"]>>>("content", input, 65536, signal);
+      if (!chunk || chunk.encoding !== "json-text" || typeof chunk.text !== "string" || Array.from(chunk.text).length > 8192 ||
+        !Number.isSafeInteger(chunk.revision) || chunk.revision < 1 || input.revision !== undefined && chunk.revision !== input.revision ||
+        chunk.nextOffset !== null && chunk.nextOffset !== (input.offset ?? 0) + Array.from(chunk.text).length) {
+        throw new TypeError("Invalid display history content response");
+      }
+      return chunk;
+    },
+    changes: async (input: ConversationDisplayChangesInput, signal?: AbortSignal) =>
+      parseConversationDisplayPage(await invoke("changes", input, pageBudget(input), signal), input) as Awaited<ReturnType<ConversationDisplayHistory["changes"]>>,
+  });
 }
 
 async function readGatewayStream<TEvent>(

@@ -1,0 +1,184 @@
+{
+  "environment": {
+    "node": "v22.23.1",
+    "engine": "PGlite, one connection, in-process",
+    "rssBytes": 809603072,
+    "maximumRssKiB": 824516
+  },
+  "reports": [
+    {
+      "events": 20000,
+      "projectedMessages": 200,
+      "canonicalEventBytes": 7615788,
+      "backfill": {
+        "steps": 20,
+        "milliseconds": 1025.042
+      },
+      "firstPage": {
+        "messages": 7,
+        "wireBytes": 59008,
+        "queries": 1,
+        "samples": 30,
+        "p50Milliseconds": 4.577,
+        "p95Milliseconds": 6.415,
+        "databaseP95Milliseconds": 5.211,
+        "databaseBytes": 60543,
+        "heapDeltaP95Bytes": 678160
+      },
+      "additionalReads": {
+        "olderAnchor": {
+          "samples": 15,
+          "queries": 1,
+          "maximumWireBytes": 58971,
+          "p50Milliseconds": 4.024,
+          "p95Milliseconds": 4.901
+        },
+        "newerAnchor": {
+          "samples": 15,
+          "queries": 1,
+          "maximumWireBytes": 59008,
+          "p50Milliseconds": 4.278,
+          "p95Milliseconds": 6.308
+        },
+        "recentChanges": {
+          "samples": 15,
+          "queries": 1,
+          "maximumWireBytes": 8562,
+          "p50Milliseconds": 2.692,
+          "p95Milliseconds": 3.475
+        },
+        "idleChanges": {
+          "samples": 15,
+          "queries": 1,
+          "maximumWireBytes": 216,
+          "p50Milliseconds": 2.198,
+          "p95Milliseconds": 6.261
+        }
+      }
+    },
+    {
+      "events": 100000,
+      "projectedMessages": 1000,
+      "canonicalEventBytes": 38255790,
+      "backfill": {
+        "steps": 100,
+        "milliseconds": 4586.387
+      },
+      "firstPage": {
+        "messages": 7,
+        "wireBytes": 59012,
+        "queries": 1,
+        "samples": 30,
+        "p50Milliseconds": 4.033,
+        "p95Milliseconds": 4.63,
+        "databaseP95Milliseconds": 3.508,
+        "databaseBytes": 60560,
+        "heapDeltaP95Bytes": 662704
+      },
+      "additionalReads": {
+        "olderAnchor": {
+          "samples": 15,
+          "queries": 1,
+          "maximumWireBytes": 59011,
+          "p50Milliseconds": 4.433,
+          "p95Milliseconds": 5.483
+        },
+        "newerAnchor": {
+          "samples": 15,
+          "queries": 1,
+          "maximumWireBytes": 59011,
+          "p50Milliseconds": 3.609,
+          "p95Milliseconds": 4.923
+        },
+        "recentChanges": {
+          "samples": 15,
+          "queries": 1,
+          "maximumWireBytes": 8566,
+          "p50Milliseconds": 2.01,
+          "p95Milliseconds": 2.738
+        },
+        "idleChanges": {
+          "samples": 15,
+          "queries": 1,
+          "maximumWireBytes": 219,
+          "p50Milliseconds": 1.828,
+          "p95Milliseconds": 2.26
+        }
+      }
+    }
+  ],
+  "memoryPhases": [
+    {
+      "phase": "schema-ready",
+      "rss": 553811968,
+      "heapTotal": 54685696,
+      "heapUsed": 14708448,
+      "external": 502242833,
+      "arrayBuffers": 75433530
+    },
+    {
+      "phase": "seeded-20000",
+      "rss": 603422720,
+      "heapTotal": 51015680,
+      "heapUsed": 14692456,
+      "external": 292290302,
+      "arrayBuffers": 92572557
+    },
+    {
+      "phase": "backfilled-20000",
+      "rss": 613695488,
+      "heapTotal": 56258560,
+      "heapUsed": 15512272,
+      "external": 282299823,
+      "arrayBuffers": 82146814
+    },
+    {
+      "phase": "read-20000",
+      "rss": 614289408,
+      "heapTotal": 52326400,
+      "heapUsed": 15650984,
+      "external": 281892688,
+      "arrayBuffers": 82035266
+    },
+    {
+      "phase": "seeded-100000",
+      "rss": 793595904,
+      "heapTotal": 52326400,
+      "heapUsed": 15717184,
+      "external": 451240040,
+      "arrayBuffers": 251521223
+    },
+    {
+      "phase": "backfilled-100000",
+      "rss": 809545728,
+      "heapTotal": 60452864,
+      "heapUsed": 16062608,
+      "external": 454529450,
+      "arrayBuffers": 254243404
+    },
+    {
+      "phase": "read-100000",
+      "rss": 809525248,
+      "heapTotal": 52064256,
+      "heapUsed": 15912472,
+      "external": 453507714,
+      "arrayBuffers": 253454535
+    }
+  ],
+  "isolatedPartitions": {
+    "count": 30,
+    "totalMilliseconds": 71.931
+  },
+  "limits": {
+    "defaultWireBytes": 65536,
+    "maximumWireBytes": 262144,
+    "maximumPageRecords": 50,
+    "queriesPerPage": 1,
+    "localReadP95SmokeCeilingMilliseconds": 50
+  },
+  "limitations": [
+    "Synthetic local storage only; not production HTTP timing.",
+    "Heap/RSS include the database engine; browser rendering and Flutter memory are not measured.",
+    "Backfill is a one-time migration cost; provider-context replay is a separate path."
+  ]
+}

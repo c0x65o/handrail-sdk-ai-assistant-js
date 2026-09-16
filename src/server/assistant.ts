@@ -24,6 +24,10 @@ export { createAssistantToolRuntime, assistantToolArgumentReference, type Assist
 export { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { createToolActivityObserver, type HandrailAssistantToolObserver } from "./tool-observer.js";
 import { createHash } from "node:crypto";
+import { ConversationMaintenanceQueue } from "./conversation-maintenance.js";
+import { createLiveConversationProjection, type LiveConversationProjection } from "./live-conversation-projection.js";
+import { PostgresConversationDisplayHistory } from "../postgres/display-history.js";
+import type { ConversationDisplayHistory, ConversationDisplayPage } from "../conversation/display-history.js";
 import { AttachmentStagingError } from "../attachments/staging.js";
 import { createAttachmentContentValidator, STANDARD_ATTACHMENT_MEDIA_TYPES } from "./attachment-content.js";
 import { createAssistantConversationFiles, assistantConversationFileMaintenanceScope, type AssistantConversationFiles } from "./assistant-conversation-files.js";
@@ -270,6 +274,8 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const applications = new Map<string, Promise<AiApplication<TContext, TContext, unknown>>>();
   const transports = new Map<string, Promise<ConversationTransport<StreamEvent, ChatRequest>>>();
   const durableTransports = new Map<string, DurableApplicationTransport<StreamEvent, ChatRequest>>();
+  const liveProjectionClosers = new Set<() => Promise<void>>();
+  let liveProjectionStopped = false;
   const activityDeliveries = new Map<string, LiveConversationActivityDelivery>();
   const presenceDelivery = options.presence === undefined
     ? createInMemoryLivePresenceDelivery()
@@ -546,6 +552,16 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
         });
       }).then(async (delegate) => {
+        type ProjectionEntry = { projection: Promise<LiveConversationProjection | null>; delivered: number; failed: boolean;
+          close: () => Promise<void> };
+        // This map belongs to the trusted context's active workers, never to
+        // browser selection. Worker settlement/lease loss removes every entry.
+        const projections = new Map<string, ProjectionEntry>();
+        const projectionKey = (conversationId: string, turnId: string) => JSON.stringify([conversationId, turnId]);
+        const reportProjectionFailure = (conversationId: string, turnId: string, cause: unknown) => {
+          emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "live_conversation_projection",
+            phase: "failed", conversationId, turnId, code: "projection_failed", retryable: true, cause });
+        };
         const durable = createDurableApplicationTransport<StreamEvent, ChatRequest, ChatRequest>({
           delegate: qualifyDurableApplicationTurnStarts(delegate, bundleFor(context).events),
           store: bundleFor(context).durableTurns as never,
@@ -569,7 +585,60 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           // both belong to this assistant host. Its cancellation still reaches
           // the original worker through the shared durable turn record.
           workerId: `context-${digest(JSON.stringify([workerId, key]))}`,
-          onTurnStatusChanged: async ({ conversationId, turnId, status }) => {
+          async onEventPersisted(document) {
+            if (liveProjectionStopped) return;
+            const { conversationId, turnId } = document.record, id = projectionKey(conversationId, turnId);
+            let entry = projections.get(id);
+            if (!entry) {
+              const bundle = bundleFor(context);
+              const created: ProjectionEntry = {
+                delivered: 0, failed: false,
+                projection: createLiveConversationProjection({ conversationId, turnId, events: bundle.events,
+                  authorize: async () => {
+                    if (liveProjectionStopped) throw new Error("Live projection is shutting down");
+                    await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
+                  }, ...(bundle.usageReceiptSink ? { usageReceiptSink: bundle.usageReceiptSink } : {}) }),
+                close: async () => {
+                  if (projections.get(id) === created) projections.delete(id);
+                  liveProjectionClosers.delete(created.close);
+                  await created.projection.then(projection => projection?.disconnect()).catch(() => {});
+                },
+              };
+              entry = created; projections.set(id, entry); liveProjectionClosers.add(entry.close);
+            }
+            if (entry.failed) return;
+            try {
+              const projection = await entry.projection;
+              if (!projection || liveProjectionStopped) return;
+              // On a worker restart the canonical runtime verifies the saved
+              // prefix; steady-state delivery indexes only newly persisted frames.
+              while (entry.delivered < document.record.events.length) {
+                const item = document.record.events[entry.delivered]!;
+                if (item.sequence !== entry.delivered + 1) throw new Error("Durable frame order is invalid");
+                await projection.push(item.event); entry.delivered++;
+              }
+            } catch (cause) {
+              // Do not repeatedly replay history for every subsequent token
+              // after a failure. Terminal reconciliation remains durable fallback.
+              entry.failed = true;
+              await entry.projection.then(projection => projection?.disconnect()).catch(() => {});
+              reportProjectionFailure(conversationId, turnId, cause);
+            }
+          },
+          async onWorkerStopped({ conversationId, turnId }) {
+            await projections.get(projectionKey(conversationId, turnId))?.close();
+          },
+          onTurnStatusChanged: async ({ conversationId, turnId, status }, document) => {
+            if (status !== "pending" && status !== "running") {
+              const entry = projections.get(projectionKey(conversationId, turnId));
+              if (entry) {
+                try {
+                  const projection = await entry.projection;
+                  if (!entry.failed && projection && document.record.terminal) await projection.finish(document.record.terminal);
+                } catch (cause) { reportProjectionFailure(conversationId, turnId, cause); }
+                finally { await entry.close(); }
+              }
+            }
             await reconcileSafely(context, conversationId, turnId);
             if (status !== "pending" && status !== "running") await continueApprovalsSafely(context, conversationId);
           },
@@ -623,16 +692,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     return transport;
   };
   const catalog = Object.freeze({
-    list: async (input: Parameters<ConversationCatalog<TContext>["list"]>[0]) => {
-      const page = await catalogFor(input.authorizationContext).list(input);
-      for (const descriptor of page.items) {
-        await reconcileSafely(input.authorizationContext, descriptor.conversationId);
-        await continueApprovalsSafely(input.authorizationContext, descriptor.conversationId);
-        // Also covers imported conversations without a durable turn document.
-        void titles.afterActivity(descriptor.conversationId, input.authorizationContext);
-      }
-      return page;
-    },
+    list: (input: Parameters<ConversationCatalog<TContext>["list"]>[0]) => catalogFor(input.authorizationContext).list(input),
     create: (input: Parameters<ConversationCatalog<TContext>["create"]>[0]) => catalogFor(input.authorizationContext).create(input),
     get: (input: Parameters<ConversationCatalog<TContext>["get"]>[0]) => catalogFor(input.authorizationContext).get(input),
     rename: (input: Parameters<ConversationCatalog<TContext>["rename"]>[0]) => catalogFor(input.authorizationContext).rename(input),
@@ -830,11 +890,24 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     if (options.titleGeneration !== undefined) return options.titleGeneration(input, context, signal);
     return titles.generate(input.conversationId, context);
   };
+  const maintenance = new ConversationMaintenanceQueue({ onError: cause => emitAiDiagnostic(options.diagnostics, {
+    domain: "persistence", operation: "conversation_maintenance", phase: "failed",
+    code: "maintenance_failed", retryable: true, cause,
+  }) });
+  const maintenanceIdentity = (context: TContext) => JSON.stringify([
+    context.tenantId, context.scopeId, context.principalId, context.attribution.session?.id ?? null,
+  ]);
   const gateway: ApplicationGateway = {
     handle(request) {
       // The gateway authenticates before reading capabilities. Keep that context
       // local to this request, including when transport resolution overlaps.
       let context: TContext;
+      // Retain only list requests, before the gateway consumes their bodies.
+      // The bounded queue releases these credentials on completion/shutdown.
+      const maintenanceRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/list")
+        ? request.clone() : null;
+      const historyRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/history")
+        ? request.clone() : null;
       return createApplicationGateway({
         authorize: async (request, action) => {
           context = await options.authorize(request, action);
@@ -842,7 +915,57 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         },
         transportFor,
         checkpointForEvent,
-        conversations: { ...catalog, get capabilities() { return catalogFor(context).capabilities; } },
+        displayHistoryFor(current): ConversationDisplayHistory {
+          const identity = maintenanceIdentity(current);
+          const authorize = async (conversationId: string) => {
+            const fresh = historyRequest ? await options.authorize(historyRequest.clone(), "conversations") : current;
+            if (maintenanceIdentity(fresh) !== identity) throw new Response(null, { status: 403 });
+            await ownsConversation(fresh, conversationId);
+          };
+          const history = new PostgresConversationDisplayHistory(options.persistence.persistence.client,
+            current.tenantId, current.scopeId, authorize);
+          const prepare = <T extends ConversationDisplayPage>(page: T): T => {
+              if (page.status === "preparing" && historyRequest) {
+                const key = JSON.stringify(["history-backfill", identity, page.conversationId]);
+                const step = async () => {
+                  const progress = await history.backfill(page.conversationId);
+                  // Durable watermark survives process restarts; each small step
+                  // reauthenticates and goes to the back of the shared work queue.
+                  if (progress.hasMore) maintenance.enqueue(key, step);
+                };
+                maintenance.enqueue(key, step);
+              }
+              return page;
+          };
+          return {
+            page: async input => prepare(await history.page(input)),
+            changes: async input => prepare(await history.changes(input)),
+            content: input => history.content(input),
+          };
+        },
+        conversations: { ...catalog, get capabilities() { return catalogFor(context).capabilities; },
+          async list(input) {
+            const page = await catalog.list(input);
+            if (maintenanceRequest) {
+              const identity = maintenanceIdentity(context);
+              for (const descriptor of page.items) {
+                maintenance.enqueue(JSON.stringify([identity, descriptor.conversationId]), async () => {
+                  // A session may have expired or changed permissions since listing.
+                  // Authenticate again before accessing history or resuming approvals.
+                  const current = await options.authorize(maintenanceRequest.clone(), "conversations");
+                  if (maintenanceIdentity(current) !== identity) return;
+                  await ownsConversation(current, descriptor.conversationId);
+                  await reconcileSafely(current, descriptor.conversationId);
+                  await continueApprovalsSafely(current, descriptor.conversationId);
+                  // Imported conversations may have no durable turn document.
+                  // Keep title work within this background concurrency slot.
+                  await titles.afterActivity(descriptor.conversationId, current);
+                });
+              }
+            }
+            return page;
+          },
+        },
         approvals,
         titleGeneration: { generate: generateTitle },
         handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence,
@@ -914,7 +1037,12 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           phase: "failed", code: "unavailable", retryable: true }) });
     }
   } catch (error) { usageDelivery.stop(); await attachmentCleanup?.stop(); throw error; }
-  const stopBackgroundWorkers = async () => { usageDelivery.stop(); await attachmentCleanup?.stop(); await retainedDraftCleanup?.stop(); };
+  const stopBackgroundWorkers = async () => {
+    usageDelivery.stop();
+    liveProjectionStopped = true;
+    await Promise.all([...liveProjectionClosers].map(close => close()));
+    await Promise.all([maintenance.stop(), attachmentCleanup?.stop(), retainedDraftCleanup?.stop()]);
+  };
   return Object.freeze({
     version: HANDRAIL_ASSISTANT_VERSION,
     id: assistantId,

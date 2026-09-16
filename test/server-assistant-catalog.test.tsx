@@ -29,6 +29,8 @@ const context = (principalId: string): Context => ({ principalId, tenantId: "ten
 });
 
 async function fixture(hostCatalog = true) {
+  const historyRead = vi.fn(async () => {});
+  let authorized = true;
   const target = new InMemoryConversationCatalog<Context>({ authorize: () => "allow" });
   const created = await target.create({ authorizationContext: context("reader"), conversationId: "conversation" as never,
     title: "Shared", idempotencyKey: "create" as never });
@@ -42,20 +44,24 @@ async function fixture(hostCatalog = true) {
   }));
   // Negotiation does not exercise persistence; this is the existing injected SQL boundary.
   const pool: PostgresPoolLike = {
-    async query<TRow extends Record<string, unknown>>() { return { rows: [] as TRow[], rowCount: 0 }; },
+    async query<TRow extends Record<string, unknown>>(sql: string) {
+      if (sql.includes("handrail_ai_events")) await historyRead();
+      return { rows: [] as TRow[], rowCount: 0 };
+    },
     async connect() { throw new Error("not used"); },
   };
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let readerStarted!: () => void;
   const started = new Promise<void>((resolve) => { readerStarted = resolve; });
+  const authorize = vi.fn((request: Request) => {
+    const user = request.headers.get("x-user");
+    if (!user || !authorized) throw new Error("unauthenticated");
+    return context(user);
+  });
   const assistant = await createHandrailAssistant({ id: "catalog", persistence: postgres(pool),
     recoverPendingOnContext: false, automaticTitles: false,
-    authorize: (request) => {
-      const user = request.headers.get("x-user");
-      if (!user) throw new Error("unauthenticated");
-      return context(user);
-    },
+    authorize,
     ...(hostCatalog ? { conversationCatalogFor: catalogFor } : {}),
     provider: { metadata: { provider_id: "test", model_id: "test", capabilities: {
       streaming: true, text: true, tool_calls: true, parallel_tool_calls: false, reasoning: false,
@@ -73,7 +79,8 @@ async function fixture(hostCatalog = true) {
     fetch: (input, init) => assistant.handle(new Request(input, init)),
     protectedRequest: (input) => ({ ...input, headers: { "x-user": user } }),
   });
-  return { assistant, client, started, release, catalogFor, rename, descriptor: created.descriptor,
+  return { assistant, client, started, release, catalogFor, rename, descriptor: created.descriptor, historyRead, authorize,
+    revoke: () => { authorized = false; },
     setCapabilities: (value: ConversationCatalogCapabilities) => { currentCapabilities = value; } };
 }
 
@@ -91,6 +98,38 @@ function Actions({ catalog, descriptor }: { catalog: ConversationCatalog<unknown
 }
 
 describe("assistant host catalog negotiation", () => {
+  const listRequest = () => new Request("https://example.test/ai/conversations/list", {
+    method: "POST", headers: { "x-user": "editor", "content-type": "application/json" },
+    body: JSON.stringify({ lifecycle: "all", pageSize: 50, order: { field: "updated_at", direction: "desc" } }),
+  });
+
+  it("returns metadata before reading history and coalesces recovery while history is stalled", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.historyRead.mockImplementation(() => gate);
+    try {
+      const response = await f.assistant.handle(listRequest());
+      expect(response.status).toBe(200);
+      expect((await response.json()).value.items).toEqual([f.descriptor]);
+      expect(f.historyRead).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(f.historyRead).toHaveBeenCalledTimes(1));
+      const again = await f.assistant.handle(listRequest());
+      expect(again.status).toBe(200);
+      expect(f.historyRead).toHaveBeenCalledTimes(1);
+    } finally { release(); await f.assistant.stopBackgroundWorkers(); }
+  });
+
+  it("reauthenticates deferred maintenance before accessing saved history", async () => {
+    const f = await fixture();
+    try {
+      expect((await f.assistant.handle(listRequest())).status).toBe(200);
+      f.revoke();
+      await vi.waitFor(() => expect(f.authorize).toHaveBeenCalledTimes(2));
+      expect(f.historyRead).not.toHaveBeenCalled();
+    } finally { await f.assistant.stopBackgroundWorkers(); }
+  });
+
   it("isolates concurrent authenticated negotiations and refreshes actions and reasons for the same identity", async () => {
     const f = await fixture();
     const readerPending = f.client("reader");
