@@ -1,0 +1,18 @@
+{
+  "browser": "153.0.8010.12",
+  "source": "built public client, standard React workspace, real IndexedDB and local HTTP uploads",
+  "checks": {
+    "uploadedExactlyOnceAcrossSwitchesAndReloads": true,
+    "originalBytesAndUploadKeyPreserved": true,
+    "survivesRuntimeCacheEviction": true,
+    "accountIsolation": true,
+    "explicitRemovalSurvivesReload": true,
+    "admittedDraftCleanupAfterReload": true,
+    "newerTextAndFilePreserved": true,
+    "exactAdmissionReplayWithoutDeviceMetadata": true,
+    "pageAndServerErrors": 0
+  },
+  "limitations": [
+    "Synthetic local Chromium; no application preview, production data, published SDK adoption, or device testing."
+  ]
+}

@@ -8,16 +8,16 @@ export class IdleContextRegistry {
   }) {}
   retain(key: string): () => void {
     const entry = this.#entries.get(key) ?? { pins: 0, touchedAt: this.#now() };
-    entry.pins++; entry.touchedAt = this.#now(); this.#entries.set(key, entry);
+    entry.pins++; entry.touchedAt = this.#now(); this.#entries.delete(key); this.#entries.set(key, entry);
     let released = false;
     return () => {
       if (released) return; released = true;
-      entry.pins--; entry.touchedAt = this.#now(); this.sweep();
+      entry.pins--; entry.touchedAt = this.#now(); this.#entries.delete(key); this.#entries.set(key, entry); this.sweep();
     };
   }
   touch(key: string): void {
     const entry = this.#entries.get(key) ?? { pins: 0, touchedAt: this.#now() };
-    entry.touchedAt = this.#now(); this.#entries.set(key, entry);
+    entry.touchedAt = this.#now(); this.#entries.delete(key); this.#entries.set(key, entry);
   }
   #now() { return this.options.now?.() ?? Date.now(); }
   sweep(): void {

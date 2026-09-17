@@ -19,6 +19,7 @@ import {
 
 import {
   ConversationCatalogError,
+  ConversationLocalErasureError,
   DEFAULT_CONVERSATION_CATALOG_ORDER,
   type ArchiveConversationResult,
   type ClearConversationResult,
@@ -51,6 +52,7 @@ export type ConversationPickerOperation =
   | "permanent_delete";
 
 export type ConversationPickerErrorCode =
+  | "local_cleanup_failed"
   | "invalid_input"
   | "not_found"
   | "version_conflict"
@@ -68,6 +70,8 @@ export interface ConversationPickerError {
   readonly operation: ConversationCatalogAuthorizationAction | "open";
   readonly message: string;
   readonly retryable: boolean;
+  /** Only retries device cleanup after a confirmed remote deletion. */
+  readonly retryCleanup?: () => Promise<void>;
 }
 
 export interface ConversationPickerOperationState {
@@ -203,6 +207,9 @@ function safeError(
   error: unknown,
   operation: ConversationCatalogAuthorizationAction | "open",
 ): ConversationPickerError {
+  if (error instanceof ConversationLocalErasureError) {
+    return Object.freeze({ code: "local_cleanup_failed", operation, message: error.message, retryable: true, retryCleanup: error.retry });
+  }
   if (error instanceof ConversationCatalogError) {
     return Object.freeze({
       code: error.code,
@@ -542,6 +549,8 @@ export function useConversationPicker<TAuthorizationContext, TRuntime = unknown>
       setOperation(null);
     } catch (caught) {
       if (generation.current !== requestGeneration || mutationRequest.current !== request) return;
+      if (operationName === "permanent_delete" && caught instanceof ConversationLocalErasureError &&
+          caught.result.conversationId === conversationId) apply(caught.result as TResult);
       setOperation(null);
       setError(safeError(caught, operationName));
     }
@@ -1015,9 +1024,18 @@ export const ConversationPickerErrorMessage = forwardRef<
   PickerConditionalProps
 >(function ConversationPickerErrorMessage(props, forwardedRef) {
   const controller = usePicker(props.controller);
+  const current = useRef(controller); current.current = controller;
+  const [retrying, setRetrying] = useState<ConversationPickerError | null>(null);
+  const error = controller.error;
   return conditionalParagraph(
-    controller.error !== null,
-    controller.error?.message,
+    error !== null,
+    error?.retryCleanup ? <>{error.message} <button type="button" disabled={retrying === error}
+      onClick={() => {
+        setRetrying(error);
+        void error.retryCleanup!().then(() => {
+          if (current.current.error === error) current.current.clearError();
+        }).catch(() => { /* Preserve the actionable local cleanup error. */ }).finally(() => setRetrying(value => value === error ? null : value));
+      }}>Retry device cleanup</button></> : error?.message,
     { role: "alert", ...props },
     forwardedRef,
   );

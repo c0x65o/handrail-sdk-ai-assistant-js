@@ -325,5 +325,8 @@ export { useComposerApprovalPreference } from "./composer-approval-preference.js
 
 export { useBoundApprovalReview, type UseBoundApprovalReviewOptions } from "./use-bound-approval-review.js";
 export { ConversationLargeMessage, type ConversationMessageTextReader } from "./large-message.js";
+export { ConversationDeferredRecords } from "./deferred-records.js";
 
 export { ConversationPendingApprovals } from "./pending-approvals.js";
+
+export { ConversationPagedApprovalReview, type ConversationPagedApprovalReviewProps } from "./paged-approval-review.js";

@@ -146,8 +146,7 @@ node --expose-gc scripts/check-recovery-postgres.mjs \
 ```
 
 The script creates, stops and removes its own local cluster and accepts no remote
-database URL. Remaining foundation work includes long-lived authorization/provider-cache
-retirement and provider-input/memory qualification. These are not claimed by the
+database URL. Provider-input/memory qualification remains separate from this recovery work. These are not claimed by the
 discovery and graceful-drain tests.
 
 
@@ -216,3 +215,38 @@ later keys. Keys (1,024 characters) and cursors (4,096) are bounded metadata and
 must not contain credentials. SDK shutdown aborts and joins the source call.
 Tests cover 161 identities, revocation/role refresh, held reads, queue pressure,
 invalid pages and recovery beyond the legacy 128-identity prefix.
+
+
+## Idle server resource retirement
+
+The assistant retains at most 32 idle execution contexts and retires idle
+contexts after 60 seconds (checked once a minute). Active HTTP operations,
+transport construction and admitted workers protect their exact context. Role
+or session changes still construct different transports. A recreated transport
+has a new live lease-owner generation; it cannot claim a prior live lease merely
+because the trusted context or configured worker name matches. Idle retirement
+removes provider/tool/application references together. Failed provider/plugin
+construction is removed immediately so the next authorized request can retry. In-flight observations
+finish against durable state; retirement does not cancel their saved turn.
+
+Scope persistence adapters use a 128-entry working set. They own no separate
+connection; saved usage and decisions remain in PostgreSQL. Larger unattended
+installations must supply the trusted identity source so evicted scopes with
+pending work are revisited. Usage flushing takes a bounded snapshot of cached
+adapters instead of iterating a map that concurrent requests can reorder.
+
+Activity channels have a separate 32-idle-channel working set and protect live
+subscribers. The last subscriber releases its pub-sub listener, including a
+subscription still connecting. Worker progress resolves the current channel at
+publish time, so an idle channel's recreation cannot detach later listeners from
+an older transport. Shutdown closes and joins these subscriptions. New channel
+instances have distinct delivery identities even within the same millisecond.
+
+Activity HTTP streaming honors read backpressure. Each local subscriber retains
+at most 256 notification envelopes; a stalled subscriber closes at that limit
+and resumes through the existing durable snapshot/poll path. Slow connections
+cannot shift that backlog into an unbounded HTTP stream buffer. Notifications
+are not canonical events and their closure does not discard saved messages,
+approvals or turns. Tests exercise held subscription teardown/reopen, snapshot
+failure cleanup, stalled HTTP consumers and active-worker survival through 40
+other cached contexts.

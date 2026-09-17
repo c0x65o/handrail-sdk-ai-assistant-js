@@ -1,0 +1,268 @@
+{
+  "browser": "153.0.8010.12",
+  "source": "built public client, standard React workspace, real IndexedDB and local HTTP uploads",
+  "textRetention": {
+    "heapBeforeRejectedEdits": 4256340,
+    "heapAfterRejectedEdits": 4638056,
+    "heapGrowthBudgetBytes": 8388608,
+    "rejectedPasteBytes": 1048576,
+    "rejectionMilliseconds": [
+      344,
+      331,
+      386,
+      274,
+      237,
+      223,
+      309,
+      298,
+      331,
+      341
+    ]
+  },
+  "checks": {
+    "oversizedTextRejectedBeforeStorage": true,
+    "validDraftAndRevisionPreserved": true,
+    "failedTextSaveSurvivesTranscriptEviction": true,
+    "acceptedTextRetainedUntilSendSettles": true,
+    "accountTextBytes": 524288,
+    "maximumEditorTextBytes": 65536,
+    "repeatedOversizedPastes": 10,
+    "uploadedExactlyOnceAcrossSwitchesAndReloads": true,
+    "originalBytesAndUploadKeyPreserved": true,
+    "survivesRuntimeCacheEviction": true,
+    "accountIsolation": true,
+    "explicitRemovalSurvivesReload": true,
+    "admittedDraftCleanupAfterReload": true,
+    "newerTextAndFilePreserved": true,
+    "exactAdmissionReplayWithoutDeviceMetadata": true,
+    "pageAndServerErrors": 0
+  },
+  "limitations": [
+    "Synthetic local Chromium; no application preview, production data, published SDK adoption, or device testing."
+  ],
+  "regression": {
+    "focusedTestsPassed": 120,
+    "focusedTestFiles": 7,
+    "workers": 1,
+    "build": "passed",
+    "typecheck": "passed",
+    "scopedLint": "passed",
+    "durableStoresChanged": false,
+    "accountOwner": {
+      "cleanUnusedEditors": 8,
+      "maximumLiveAndClosingOwners": 64,
+      "maximumRetainedValues": 32,
+      "maximumRetainedReferences": 128
+    },
+    "consumerContracts": [
+      {
+        "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4",
+        "config": "tsconfig.json",
+        "sdkVersion": "0.2.56",
+        "qualification": "local built declarations; installed Git dependency unchanged",
+        "roots": [
+          "src/client/assistant/MillsAssistantRuntime.tsx",
+          "src/server/assistant/handrail-ai-gateway.ts"
+        ],
+        "sourceFiles": 1340,
+        "errors": 0,
+        "milliseconds": 10941,
+        "rssBytes": 708509696
+      },
+      {
+        "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
+        "config": "tsconfig.browser.json",
+        "sdkVersion": "0.2.56",
+        "qualification": "local built declarations; installed Git dependency unchanged",
+        "roots": [
+          "src/browser/features/cents/CentsDrawer.tsx"
+        ],
+        "sourceFiles": 307,
+        "errors": 0,
+        "milliseconds": 2073,
+        "rssBytes": 285708288
+      },
+      {
+        "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
+        "config": "tsconfig.server.json",
+        "sdkVersion": "0.2.56",
+        "qualification": "local built declarations; installed Git dependency unchanged",
+        "roots": [
+          "src/server/cents/native-runtime.ts"
+        ],
+        "sourceFiles": 884,
+        "errors": 0,
+        "milliseconds": 12966,
+        "rssBytes": 775204864
+      },
+      {
+        "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/spartan-cyber-services-spartan-cyber-erp-v3",
+        "config": "tsconfig.json",
+        "sdkVersion": "0.2.56",
+        "qualification": "local built declarations; installed Git dependency unchanged",
+        "roots": [
+          "src/client/features/aegis-assistant/HandrailAiAssistant.tsx",
+          "src/server/aegis/handrail-ai-gateway.ts",
+          "src/client/features/contracts/page.tsx",
+          "tests/aegis-resource-changes.test.ts"
+        ],
+        "sourceFiles": 1914,
+        "errors": 0,
+        "milliseconds": 26033,
+        "rssBytes": 1304748032
+      }
+    ],
+    "pagedWorkspace": {
+      "browser": "153.0.8010.12",
+      "reactBuild": "production, public dist exports",
+      "desktopWidth": 1280,
+      "pendingApprovalWidths": [
+        320,
+        390
+      ],
+      "pendingApprovalExtraMessagePages": 0,
+      "backgroundSettlement": {
+        "notifications": 1,
+        "metadataReads": 3,
+        "hiddenTranscriptRequests": 0
+      },
+      "singleConversationWidths": [
+        320,
+        390
+      ],
+      "maximumRenderedMessages": 90,
+      "maximumIdleSessions": 4,
+      "budgets": {
+        "selectionToPaintMaximumMs": 1000,
+        "browserHeapAfterGcBytes": 33554432,
+        "maximumHttpBodyBytes": 65536
+      },
+      "metrics": [
+        {
+          "sourceMessages": 200,
+          "equivalentStreamingEvents": 20000,
+          "samples": 12,
+          "selectionToPaintP50Ms": 44.700000286102295,
+          "selectionToPaintP95Ms": 54.69999980926514,
+          "scriptMeanMs": 34.23799999999999,
+          "layoutMeanMs": 3.904083333333333,
+          "browserHeapAfterGcBytes": 5857688,
+          "retained": {
+            "selected": "chat-200-12",
+            "threads": 4,
+            "loadedThreads": 1,
+            "records": 30,
+            "bytes": 13980,
+            "relatedBytes": 2
+          },
+          "prependAnchorDriftPixels": 0.15625,
+          "initialHttp": [
+            {
+              "path": "/api/200/capabilities",
+              "bytes": 642
+            },
+            {
+              "path": "/api/200/conversations/list",
+              "bytes": 1147
+            },
+            {
+              "path": "/api/200/conversations/get",
+              "bytes": 261
+            },
+            {
+              "path": "/api/200/conversations/history",
+              "operation": "control",
+              "bytes": 221
+            },
+            {
+              "path": "/api/200/conversations/history",
+              "operation": "control",
+              "bytes": 221
+            },
+            {
+              "path": "/api/200/conversations/history",
+              "operation": "page",
+              "bytes": 14176
+            },
+            {
+              "path": "/api/200/conversations/history",
+              "operation": "page",
+              "bytes": 195
+            }
+          ],
+          "catalogPagesFetched": 1,
+          "messagePagesFetchedIncludingNavigation": 18,
+          "browserResourcesWithoutCompletedBody": 1,
+          "maximumHttpBodyBytes": 14207,
+          "maximumBrowserMeasuredBodyBytes": 14207,
+          "maximumBrowserTransferBytes": 14507
+        },
+        {
+          "sourceMessages": 1000,
+          "equivalentStreamingEvents": 100000,
+          "samples": 12,
+          "selectionToPaintP50Ms": 44.69999980926514,
+          "selectionToPaintP95Ms": 55.69999980926514,
+          "scriptMeanMs": 33.96341666666667,
+          "layoutMeanMs": 3.2790000000000004,
+          "browserHeapAfterGcBytes": 5983172,
+          "retained": {
+            "selected": "chat-1000-12",
+            "threads": 4,
+            "loadedThreads": 1,
+            "records": 30,
+            "bytes": 14014,
+            "relatedBytes": 2
+          },
+          "prependAnchorDriftPixels": 0.15625,
+          "initialHttp": [
+            {
+              "path": "/api/1000/capabilities",
+              "bytes": 642
+            },
+            {
+              "path": "/api/1000/conversations/list",
+              "bytes": 1153
+            },
+            {
+              "path": "/api/1000/conversations/get",
+              "bytes": 262
+            },
+            {
+              "path": "/api/1000/conversations/history",
+              "operation": "control",
+              "bytes": 224
+            },
+            {
+              "path": "/api/1000/conversations/history",
+              "operation": "control",
+              "bytes": 224
+            },
+            {
+              "path": "/api/1000/conversations/history",
+              "operation": "page",
+              "bytes": 14213
+            },
+            {
+              "path": "/api/1000/conversations/history",
+              "operation": "page",
+              "bytes": 198
+            }
+          ],
+          "catalogPagesFetched": 1,
+          "messagePagesFetchedIncludingNavigation": 18,
+          "browserResourcesWithoutCompletedBody": 1,
+          "maximumHttpBodyBytes": 14244,
+          "maximumBrowserMeasuredBodyBytes": 14244,
+          "maximumBrowserTransferBytes": 14544
+        }
+      ],
+      "limitations": [
+        "Local synthetic HTTP server; no production network, database, provider or business payloads.",
+        "200/1000 complete-message fixtures represent 20k/100k streaming events; the browser never receives event logs.",
+        "Real PostgreSQL adapter/concurrency timing is measured separately; these results are not summed into a production estimate.",
+        "No file upload, voice session or concurrent writer is exercised by this render benchmark."
+      ]
+    }
+  }
+}

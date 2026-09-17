@@ -29,6 +29,7 @@ it("coalesces held source reads, retries a full queue and joins an aborted looku
   let release!: () => void, full = true;
   const held = new Promise<void>(done => { release = done; });
   const page = vi.fn(async (_input: { cursor: string | null }) => {
+    void _input;
     await held; return { keys: ["account"], cursor: "next" };
   });
   const scanner = new RecoveryContextSourceScanner({ page, resolve: async key => key }, () => !full);

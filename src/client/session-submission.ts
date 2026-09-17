@@ -3,11 +3,14 @@ import { parseConversationEvent, type ConversationClientId, type ConversationId,
 import type { ConversationRuntimeSendMessageInput } from "../runtime.js";
 import type { AppendMutationsInput, ConversationSyncMutationEvent } from "../sync/types.js";
 import type { StartTurnInput } from "../transports/types.js";
+import { parseDraftOrigin, type ConversationDraftOrigin } from "./draft-origin.js";
 
 /** Retain before any network write; replay the exact admission/start after an
  * uncertain reply. This is user content and requires account/API-scoped storage. */
 export interface ApplicationConversationSubmission<TRequest = unknown> {
-  readonly version: 1;
+  readonly localDraft?: ConversationDraftOrigin;
+  /** Version 2 requires origin-aware cleanup; v1 readers must fail closed. */
+  readonly version: 1 | 2;
   readonly messageId: ConversationMessageId;
   readonly admission: AppendMutationsInput;
   readonly start: StartTurnInput<TRequest>;
@@ -18,6 +21,8 @@ export interface ApplicationConversationPendingStore<TRequest = unknown> {
   retain(submission: ApplicationConversationSubmission<TRequest>): Promise<void>;
   /** Remove only if the stored value still matches this exact submission. */
   acknowledge(submission: ApplicationConversationSubmission<TRequest>): Promise<void>;
+  /** Confirmed permanent deletion only. Reject late retains for this identity. */
+  eraseConversation?(conversationId: string): Promise<void>;
 }
 
 /** Account-lifetime fallback. Hosts requiring reload recovery install a durable
@@ -25,8 +30,10 @@ export interface ApplicationConversationPendingStore<TRequest = unknown> {
  * sends are never evicted to make room for another conversation. */
 export class InMemoryApplicationConversationPendingStore<TRequest = unknown> implements ApplicationConversationPendingStore<TRequest> {
   private readonly saved = new Map<string, { value: ApplicationConversationSubmission<TRequest>; json: string; bytes: number }>();
+  private readonly deleted = new Set<string>();
   async load(conversationId: string): Promise<ApplicationConversationSubmission<TRequest> | null> { return this.saved.get(conversationId)?.value ?? null; }
   async retain(input: ApplicationConversationSubmission<TRequest>): Promise<void> {
+    if (this.deleted.has(input.start.conversationId)) throw new Error("Conversation was permanently deleted");
     const value = parseApplicationConversationSubmission<TRequest>(input, input.start.conversationId), json = JSON.stringify(value);
     const existing = this.saved.get(value.start.conversationId);
     if (existing) { if (existing.json !== json) throw new Error("A different message is awaiting confirmation"); return; }
@@ -37,7 +44,8 @@ export class InMemoryApplicationConversationPendingStore<TRequest = unknown> imp
   async acknowledge(value: ApplicationConversationSubmission<TRequest>): Promise<void> {
     if (this.saved.get(value.start.conversationId)?.json === JSON.stringify(value)) this.saved.delete(value.start.conversationId);
   }
-  dispose(): void { this.saved.clear(); }
+  async eraseConversation(id: string): Promise<void> { this.deleted.add(id); this.saved.delete(id); }
+  dispose(): void { this.saved.clear(); this.deleted.clear(); }
 }
 
 const maximumBytes = 1024 * 1024;
@@ -56,6 +64,7 @@ function snapshot<T>(value: T): T {
 /** Capture caller-owned data before the first await. Callbacks remain local. */
 export function captureApplicationConversationInput<TRequest>(input: ConversationRuntimeSendMessageInput<TRequest>): ConversationRuntimeSendMessageInput<TRequest> {
   return snapshot({ content: input.content, request: input.request,
+    ...(input.localDraft === undefined ? {} : { localDraft: parseDraftOrigin(input.localDraft) }),
     ...(input.attachments ? { attachments: input.attachments } : {}) });
 }
 const id = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256 &&
@@ -66,7 +75,8 @@ export function parseApplicationConversationSubmission<TRequest>(input: unknown,
   conversationId: string): ApplicationConversationSubmission<TRequest> {
   const value = snapshot(input) as Partial<ApplicationConversationSubmission<TRequest>>;
   const fail = (): never => { throw new TypeError("Invalid saved conversation submission"); };
-  if (!value || value.version !== 1 || !id(value.messageId) || !value.start || !value.admission) return fail();
+  if (!value || value.version !== 1 && value.version !== 2 || !id(value.messageId) || !value.start || !value.admission ||
+      (value.version === 2) !== (value.localDraft !== undefined)) return fail();
   const { admission, start } = value;
   if (admission.conversationId !== conversationId || start.conversationId !== conversationId ||
     !id(start.conversationTurnId) || !id(start.mutationId) || !id(start.idempotencyKey) || start.request === undefined ||
@@ -89,6 +99,7 @@ export function parseApplicationConversationSubmission<TRequest>(input: unknown,
       : payload.type !== "message.attachment_referenced" || payload.message_id !== value.messageId) return fail();
   }
   if (start.mutationId !== admission.mutations[0]!.mutationId) return fail();
+  if (value.localDraft !== undefined && (parseDraftOrigin(value.localDraft).fileIds?.length ?? 0) > admission.mutations.length - 2) return fail();
   return value as ApplicationConversationSubmission<TRequest>;
 }
 
@@ -117,7 +128,8 @@ export function prepareApplicationConversationSubmission<TRequest>(options: {
       source: payload.type === "turn.started" ? { type: "runtime" } : { type: "client", client_id: clientId }, payload }) as ConversationSyncMutationEvent;
     return { mutationId: event.mutation_id, events: [event] as const };
   });
-  return parseApplicationConversationSubmission<TRequest>({ version: 1, messageId,
+  return parseApplicationConversationSubmission<TRequest>({ version: input.localDraft === undefined ? 1 : 2, messageId,
+    ...(input.localDraft === undefined ? {} : { localDraft: parseDraftOrigin(input.localDraft) }),
     admission: { conversationId, expectedRevision: revision === 0 ? null : revision as ConversationRevision, mutations },
     start: { conversationId, conversationTurnId: turnId, mutationId: mutations[0]!.mutationId,
       idempotencyKey: `start_${operationId}`, request: input.request } }, conversationId);

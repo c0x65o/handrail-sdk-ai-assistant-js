@@ -7,6 +7,11 @@
     390
   ],
   "pendingApprovalExtraMessagePages": 0,
+  "backgroundSettlement": {
+    "notifications": 1,
+    "metadataReads": 3,
+    "hiddenTranscriptRequests": 0
+  },
   "singleConversationWidths": [
     320,
     390
@@ -23,11 +28,11 @@
       "sourceMessages": 200,
       "equivalentStreamingEvents": 20000,
       "samples": 12,
-      "selectionToPaintP50Ms": 43.69999980926514,
-      "selectionToPaintP95Ms": 52.19999980926514,
-      "scriptMeanMs": 30.469666666666665,
-      "layoutMeanMs": 3.289,
-      "browserHeapAfterGcBytes": 5874548,
+      "selectionToPaintP50Ms": 39.700000286102295,
+      "selectionToPaintP95Ms": 56.40000009536743,
+      "scriptMeanMs": 28.7525,
+      "layoutMeanMs": 3.2355,
+      "browserHeapAfterGcBytes": 5884124,
       "retained": {
         "selected": "chat-200-12",
         "threads": 4,
@@ -82,11 +87,11 @@
       "sourceMessages": 1000,
       "equivalentStreamingEvents": 100000,
       "samples": 12,
-      "selectionToPaintP50Ms": 41.90000009536743,
-      "selectionToPaintP95Ms": 46.80000019073486,
-      "scriptMeanMs": 29.195666666666657,
-      "layoutMeanMs": 2.7891666666666666,
-      "browserHeapAfterGcBytes": 5876592,
+      "selectionToPaintP50Ms": 41.700000286102295,
+      "selectionToPaintP95Ms": 47.09999990463257,
+      "scriptMeanMs": 28.493333333333336,
+      "layoutMeanMs": 2.8974999999999995,
+      "browserHeapAfterGcBytes": 5659880,
       "retained": {
         "selected": "chat-1000-12",
         "threads": 4,

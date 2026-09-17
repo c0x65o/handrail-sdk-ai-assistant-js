@@ -1,6 +1,15 @@
 import { expect, it, vi } from "vitest";
 import { IdleContextRegistry } from "../src/server/idle-contexts.js";
 
+it("keeps the most recently touched resource when accesses share a clock tick", () => {
+  const retire = vi.fn();
+  const registry = new IdleContextRegistry({ now: () => 1, maximumIdle: 2, canRetire: () => true, retire });
+  registry.touch("a"); registry.touch("b"); registry.touch("a"); registry.touch("c"); registry.sweep();
+  expect(retire.mock.calls).toEqual([["b"]]);
+  const release = registry.retain("a"); registry.touch("d"); release();
+  expect(retire.mock.calls).toEqual([["b"], ["c"]]);
+});
+
 it("bounds idle context retention while protecting concurrent requests and active workers", () => {
   let time = 0;
   const busy = new Set(["worker"]), retire = vi.fn();

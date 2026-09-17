@@ -8,6 +8,28 @@ import type { ConversationComposerResult } from "../src/react/index.js";
 import { parseChatRequest, type ChatRequest } from "../src/protocol.js";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+it("announces a rejected edit separately from storage failure and keeps the editor usable", () => {
+  const input = composer();
+  const view = render(<StandardChatComposer composer={{ ...input, draftInputError: "A draft can contain up to 64 KiB of text." }} voiceControls={null}/>);
+  expect(screen.getByRole("alert").textContent).toContain("64 KiB");
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("A draft");
+  expect(screen.queryByRole("button", { name: "Retry saving draft" })).toBeNull();
+  view.rerender(<StandardChatComposer composer={{ ...input, draftInputError: null }} voiceControls={null}/>);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+it("exposes file restoration and storage retry without dropping the selected files", async () => {
+  const retry = vi.fn(async () => undefined), reload = vi.fn(async () => undefined), input = composer();
+  const view = render(<StandardChatComposer composer={{ ...input, attachmentPersistence: { status: "loading", error: null, retry, reload } }} voiceControls={null}/>);
+  expect(screen.getByRole("status").textContent).toBe("Restoring files…");
+  expect((screen.getByRole("button", { name: "Add files and images" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(view.container.querySelector('input[type="file"]')!.hasAttribute("disabled")).toBe(true);
+  view.rerender(<StandardChatComposer composer={{ ...input, attachmentPersistence: { status: "error", error: "Files could not be saved.", retry, reload } }} voiceControls={null}/>);
+  expect(screen.getByRole("alert").textContent).toContain("Files could not be saved.");
+  fireEvent.click(screen.getByRole("button", { name: "Retry saving files" }));
+  expect(retry).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole("button", { name: "Replace selections with saved files" }));
+  expect(reload).toHaveBeenCalledOnce();
+});
 function composer() {
   return { draft: "A draft", setDraft: vi.fn(), attachments: [], errors: [], canSend: true, isSending: false,
     acquireSubmissionBlock: vi.fn(() => vi.fn()), submit: vi.fn(async (event) => { event?.preventDefault(); return null; }), stop: vi.fn(),

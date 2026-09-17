@@ -1,4 +1,6 @@
+import { approvalDisplayProposalBinding, parseConversationApprovalDisplayDecision, type ConversationApprovalDisplayDecisionInput } from "../conversation/approval-display-review.js";
 import { parseServerSentEvents } from "./sse.js";
+import { parseConversationApprovalDisplayReview, type ConversationApprovalDisplayReviewInput } from "../conversation/approval-display-review.js";
 import { parseConversationDisplayControl, CONVERSATION_DISPLAY_CONTROL_MAXIMUM_BYTES,
   type ConversationDisplayControlInput } from "../conversation/display-control.js";
 import { ConversationDisplayHistoryError, CONVERSATION_DISPLAY_LIMITS, parseConversationDisplayPage,
@@ -69,7 +71,7 @@ export interface ApplicationGatewayCapabilities {
   readonly presence: boolean;
   readonly synchronization: boolean;
   /** Complete message records, separate from canonical audit synchronization. */
-  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true; readonly messageText?: true; readonly pendingApprovals?: true };
+  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true; readonly messageText?: true; readonly recordText?: true; readonly approvalReview?: true; readonly pendingApprovals?: true };
   readonly activity?: boolean;
   /** Omitted by older gateways; never assume saved files have public URLs. */
   readonly attachmentDownloads?: false | AttachmentDownloadCapability;
@@ -140,6 +142,9 @@ export interface ApplicationGatewayOptions<TEvent, TRequest, TContext extends Ap
   /** Advertise only when every scoped display store supplies control(). */
   readonly displayControl?: true;
   readonly displayMessageText?: true;
+  /** Formatted, revision-pinned structured records, one bounded section at a time. */
+  readonly displayRecordText?: true;
+  readonly displayApprovalReview?: true;
   /** Scoped store supports pending_approvals and approval display views. */
   readonly displayPendingApprovals?: true;
   readonly approvals?: ApprovalProposalStore<TContext>;
@@ -320,23 +325,27 @@ export function createConversationActivityHttpHandler(
   return async (request: Request): Promise<Response> => {
     if (request.method === "GET" && options.delivery) {
       const subscription = options.delivery.subscribe(request.signal);
-      const initial = await store.list();
+      let initial: readonly ConversationActivityRecord[];
+      try { initial = await store.list(); }
+      catch (error) { subscription.close(); throw error; }
       const encoder = new TextEncoder();
+      const frames = (async function* () {
+        try {
+          for (const record of initial) yield encoder.encode(`event: activity\ndata: ${JSON.stringify({ record })}\n\n`);
+          for await (const envelope of subscription) yield encoder.encode(
+            `id: ${envelope.deliveryId}\nevent: activity\ndata: ${JSON.stringify(envelope)}\n\n`);
+        } finally { subscription.close(); }
+      })();
+      let cancelled = false;
       return new Response(new ReadableStream<Uint8Array>({
-        async start(controller) {
+        async pull(controller) {
           try {
-            for (const record of initial) {
-              controller.enqueue(encoder.encode(`event: activity\ndata: ${JSON.stringify({ record })}\n\n`));
-            }
-            for await (const envelope of subscription) {
-              controller.enqueue(encoder.encode(`id: ${envelope.deliveryId}\nevent: activity\ndata: ${JSON.stringify(envelope)}\n\n`));
-            }
-            controller.close();
-          } catch (error) {
-            controller.error(error);
-          }
+            const frame = await frames.next();
+            if (cancelled) return;
+            if (frame.done) controller.close(); else controller.enqueue(frame.value);
+          } catch (error) { subscription.close(); if (!cancelled) controller.error(error); }
         },
-        cancel() { subscription.close(); },
+        async cancel() { cancelled = true; subscription.close(); await frames.return(); },
       }), { headers: { "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache, no-transform", connection: "keep-alive" } });
     }
@@ -392,6 +401,8 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
       maximumPageSize: CONVERSATION_DISPLAY_LIMITS.maximumPageSize, maximumPageBytes: CONVERSATION_DISPLAY_LIMITS.maximumPageBytes,
       ...(options.displayControl ? { control: true as const } : {}),
       ...(options.displayPendingApprovals ? { pendingApprovals: true as const } : {}),
+      ...(options.displayRecordText ? { recordText: true as const } : {}),
+      ...(options.displayApprovalReview ? { approvalReview: true as const } : {}),
       ...(options.displayMessageText ? { messageText: true as const } : {}) } } : {}),
     ...(options.capabilities?.documentInput === undefined ? {} : { documentInput: options.capabilities.documentInput }),
     ...(options.capabilities?.assistant === undefined ? {} : { assistant: options.capabilities.assistant }),
@@ -453,6 +464,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
               : input.operation === "changes" ? await history.changes(input.input as ConversationDisplayChangesInput)
               : input.operation === "control" && history.control ? await history.control(input.input as ConversationDisplayControlInput)
               : input.operation === "content" ? await history.content(input.input as ConversationDisplayContentInput)
+              : input.operation === "approval_review" && history.approvalReview ? await history.approvalReview(input.input as ConversationApprovalDisplayReviewInput)
                 : null;
             if (value === null) throw new ConversationDisplayHistoryError("invalid_input", "Invalid history operation");
             const response = json({ ok: true, value });
@@ -477,6 +489,25 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
           if (!options.approvals) return new Response(null, { status: 501 });
           const input = await body<Record<string, unknown>>(request, maximumBytes);
           const operation = pathname.slice(pathname.lastIndexOf("/") + 1);
+          if (operation === "transition-display" && options.displayApprovalReview) {
+            const i = input as unknown as ConversationApprovalDisplayDecisionInput;
+            if (typeof i.conversationId !== "string" || !i.conversationId || i.conversationId.length > 512 ||
+              typeof i.proposalId !== "string" || !i.proposalId || i.proposalId.length > 512 ||
+              !Number.isSafeInteger(i.expectedVersion) || i.expectedVersion < 1 ||
+              !["confirmed", "rejected"].includes(i.status) || !/^[a-f0-9]{64}$/u.test(i.proposalBinding)) {
+              throw new ConversationDisplayHistoryError("invalid_input", "Invalid approval decision");
+            }
+            const proposal = await options.approvals.get({ proposalId: i.proposalId as never, permissionContext: authorizationContext });
+            if (!proposal) throw new ConversationDisplayHistoryError("not_found", "Approval not found");
+            if (approvalDisplayProposalBinding(i.conversationId, proposal, i.expectedVersion) !== i.proposalBinding) {
+              throw new ConversationDisplayHistoryError("content_changed", "Approval changed. Reload before deciding.");
+            }
+            const result = await options.approvals.transition({ ...input, permissionContext: authorizationContext } as unknown as TransitionApprovalProposalInput<TContext>);
+            const value = parseConversationApprovalDisplayDecision({ schemaVersion: 1, conversationId: i.conversationId,
+              proposalId: result.proposal_id, proposalVersion: result.proposal_version, status: result.status,
+              proposalBinding: approvalDisplayProposalBinding(i.conversationId, result, i.expectedVersion) }, i);
+            const response = json({ ok: true, value }); response.headers.set("cache-control", "private, no-store"); return response;
+          }
           const value = operation === "create" ? await options.approvals.create({ ...input, permissionContext: authorizationContext } as unknown as CreateApprovalProposalInput<TContext>)
             : operation === "get" ? await options.approvals.get({ ...input, permissionContext: authorizationContext } as unknown as GetApprovalProposalInput<TContext>)
             : operation === "list-group" ? await options.approvals.listGroup({ ...input, permissionContext: authorizationContext } as unknown as ListApprovalProposalGroupInput<TContext>)
@@ -892,13 +923,14 @@ export function createApplicationGatewayDisplayHistory(
   };
   const request = async <T>(operation: string, input: unknown, maximumBytes: number, signal: AbortSignal): Promise<T> => {
     signal?.throwIfAborted();
-    const payload = JSON.stringify({ operation, input });
+    const target = operation === "approval_decision" ? `${options.baseUrl.replace(/\/+$/u, "")}/approvals/transition-display` : url;
+    const payload = JSON.stringify(operation === "approval_decision" ? input : { operation, input });
     if (encoder.encode(payload).byteLength > 8192) throw new TypeError("Display history request is too large");
     const initial: RequestInit = { method: "POST", headers: { "content-type": "application/json" },
       body: payload, ...(signal ? { signal } : {}) };
-    const protectedInit = await abortable(Promise.resolve(options.protectedRequest?.({ url, ...initial }) ?? initial), signal);
+    const protectedInit = await abortable(Promise.resolve(options.protectedRequest?.({ url: target, ...initial }) ?? initial), signal);
     signal?.throwIfAborted();
-    const response = await abortable(fetcher(url, { ...initial, ...protectedInit, redirect: "error", ...(signal ? { signal } : {}) }), signal);
+    const response = await abortable(fetcher(target, { ...initial, ...protectedInit, redirect: "error", ...(signal ? { signal } : {}) }), signal);
     const reader = response.body?.getReader();
     if (!reader) throw new TypeError("Empty display history response");
     const chunks: Uint8Array[] = []; let size = 0;
@@ -942,16 +974,21 @@ export function createApplicationGatewayDisplayHistory(
     return bytes + 1024;
   };
   return Object.freeze({
+    decideApproval: async (input: ConversationApprovalDisplayDecisionInput, signal?: AbortSignal) =>
+      parseConversationApprovalDisplayDecision(await invoke("approval_decision", input, 8192, signal), input),
+    approvalReview: async (input: ConversationApprovalDisplayReviewInput, signal?: AbortSignal) =>
+      parseConversationApprovalDisplayReview(await invoke("approval_review", input, 65536, signal), input),
     control: async (input: ConversationDisplayControlInput, signal?: AbortSignal) =>
       parseConversationDisplayControl(await invoke("control", input, CONVERSATION_DISPLAY_CONTROL_MAXIMUM_BYTES + 1024, signal), input),
     page: async (input: ConversationDisplayPageInput, signal?: AbortSignal) =>
       parseConversationDisplayPage(await invoke("page", input, pageBudget(input), signal), input) as Awaited<ReturnType<ConversationDisplayHistory["page"]>>,
     content: async (input: ConversationDisplayContentInput, signal?: AbortSignal) => {
       const chunk = await invoke<Awaited<ReturnType<ConversationDisplayHistory["content"]>>>("content", input, 65536, signal);
-      if (!chunk || chunk.encoding !== (input.format === "message-text" ? "plain-text" : "json-text") || typeof chunk.text !== "string" || Array.from(chunk.text).length > 8192 ||
+      const plain = input.format === "message-text" || input.format === "record-text";
+      if (!chunk || chunk.encoding !== (plain ? "plain-text" : "json-text") || typeof chunk.text !== "string" || Array.from(chunk.text).length > 8192 ||
         !Number.isSafeInteger(chunk.revision) || chunk.revision < 1 || input.revision !== undefined && chunk.revision !== input.revision ||
         chunk.nextOffset !== null && (chunk.text.length === 0 ||
-          input.format === "message-text" && Array.from(chunk.text).length !== 8192 ||
+          plain && Array.from(chunk.text).length !== 8192 ||
           chunk.nextOffset !== (input.offset ?? 0) + Array.from(chunk.text).length)) {
         throw new TypeError("Invalid display history content response");
       }

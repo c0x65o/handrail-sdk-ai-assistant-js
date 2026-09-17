@@ -266,6 +266,15 @@ export interface PermanentlyDeleteConversationResult {
   readonly deletedVersion: ConversationCatalogVersion;
 }
 
+/** Local cleanup can fail after the remote deletion has already succeeded.
+ * Retrying this error clears device state only; it never reissues the deletion. */
+export class ConversationLocalErasureError extends Error {
+  constructor(readonly result: PermanentlyDeleteConversationResult, readonly retry: () => Promise<void>) {
+    super("The conversation was deleted, but its data could not be cleared from this device. Retry device cleanup.");
+    this.name = "ConversationLocalErasureError";
+  }
+}
+
 /**
  * Provider-, storage-, authentication-, and runtime-neutral lifecycle boundary.
  *

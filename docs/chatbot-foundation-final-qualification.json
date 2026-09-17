@@ -1,0 +1,298 @@
+{
+  "date": "2026-09-17T10:26:32.986349+00:00",
+  "scope": "Completed local SDK foundation implementation and qualification; no release, SDK installation or production mutation",
+  "goalId": "a9c30098-b7d1-4453-aa3f-45d0f89aca0b",
+  "tests": {
+    "javascript": {
+      "passed": 2465,
+      "files": 225,
+      "workers": 1,
+      "milliseconds": 327478
+    },
+    "dartClient": {
+      "passed": 226,
+      "workers": 1,
+      "gatewaySdk": "explicit local built JS source qualification"
+    },
+    "flutterWidgets": {
+      "passed": 220,
+      "workers": 1
+    },
+    "packageContract": {
+      "passed": 31
+    },
+    "restartFixtureAfterMemoryFix": {
+      "passed": 7,
+      "workers": 1
+    }
+  },
+  "checks": [
+    {
+      "name": "js_build",
+      "exitCode": 0,
+      "milliseconds": 11564,
+      "log": "/tmp/handrail-foundation-final-js_build.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js",
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "logSha256": "90f8a46be25239d90de19d3fcb8bea5aa60725c2faec939279b310a22266fcda"
+    },
+    {
+      "name": "js_lint",
+      "exitCode": 0,
+      "milliseconds": 2068,
+      "log": "/tmp/handrail-foundation-final-js_lint.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js",
+      "command": [
+        "npx",
+        "eslint",
+        "src/client/application-session.ts",
+        "test/application-session.test.ts",
+        "test/react-composer.test.tsx",
+        "test/react-conversation-history.test.tsx",
+        "test/server-live-gateway.test.ts",
+        "test/server-reconcile-conversation.test.ts"
+      ],
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "package_contract",
+      "exitCode": 0,
+      "milliseconds": 14404,
+      "log": "/tmp/handrail-foundation-final-package_contract.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js",
+      "command": [
+        "node",
+        "--test",
+        "test/package-contract.test.mjs"
+      ],
+      "logSha256": "33a42c45511a5119b8e0d66000efef62829bed3e3ee0053328c4e9536e499d8c"
+    },
+    {
+      "name": "dart_analysis",
+      "exitCode": 0,
+      "milliseconds": 1139,
+      "log": "/tmp/handrail-foundation-final-dart_analysis.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter/packages/handrail_ai_client",
+      "command": [
+        "/opt/handrail/.handrail/flutter-sdk/bin/dart",
+        "analyze",
+        "--fatal-infos"
+      ],
+      "logSha256": "927812f15272c5406260cee26ae8ae5fc42ab1b29a872de866b1f673449f7f71"
+    },
+    {
+      "name": "dart_tests",
+      "exitCode": 0,
+      "milliseconds": 29502,
+      "log": "/tmp/handrail-foundation-final-dart_tests.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter/packages/handrail_ai_client",
+      "command": [
+        "/opt/handrail/.handrail/flutter-sdk/bin/dart",
+        "test",
+        "--concurrency=1",
+        "--reporter=expanded"
+      ],
+      "logSha256": "b775f5b9f41d5b0f52c5d980d0ca1175cc4770e9fe5503b29f00d77aa31cc09f"
+    },
+    {
+      "name": "flutter_analysis",
+      "exitCode": 0,
+      "milliseconds": 2279,
+      "log": "/tmp/handrail-foundation-final-flutter_analysis.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter/packages/handrail_ai_widgets",
+      "command": [
+        "/opt/handrail/.handrail/flutter-sdk/bin/flutter",
+        "analyze",
+        "--no-pub",
+        "--fatal-infos"
+      ],
+      "logSha256": "dbb4f12350fa5b18cdf3d4b5e87b95b139a375eba28b260194058331bbcad9e6"
+    },
+    {
+      "name": "flutter_tests",
+      "exitCode": 0,
+      "milliseconds": 61122,
+      "log": "/tmp/handrail-foundation-final-flutter_tests.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter/packages/handrail_ai_widgets",
+      "command": [
+        "/opt/handrail/.handrail/flutter-sdk/bin/flutter",
+        "test",
+        "--no-pub",
+        "--concurrency=1",
+        "--reporter=expanded"
+      ],
+      "logSha256": "b3669e9f15cc9742caf137fa9b1e11cc5760b7efcffef515440662dbef9aca84"
+    },
+    {
+      "name": "mobile_contract_0",
+      "exitCode": 0,
+      "milliseconds": 9096,
+      "log": "/tmp/handrail-foundation-final-mobile_contract_0.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter",
+      "command": [
+        "node",
+        "tool/check-consumer-contract.mjs",
+        "/opt/handrail/.handrail/flutter-sdk",
+        "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp-mobile",
+        "lib/features/cents/cents_sdk.dart",
+        "lib/features/cents/cents_sheet.dart"
+      ],
+      "logSha256": "0cddfdc4c00c91e3cfd9c8650837624a7d104654ab32ace1536ad92c37a739a0"
+    },
+    {
+      "name": "mobile_contract_1",
+      "exitCode": 0,
+      "milliseconds": 15363,
+      "log": "/tmp/handrail-foundation-final-mobile_contract_1.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter",
+      "command": [
+        "node",
+        "tool/check-consumer-contract.mjs",
+        "/opt/handrail/.handrail/flutter-sdk",
+        "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4-mobile",
+        "lib/repositories/sdk_assistant_repository.dart",
+        "lib/screens/assistant_screen.dart"
+      ],
+      "logSha256": "300e5c81030f5fbf62e7f50535fc49f695e35d40ed9bbb4e8246f75db441a9b7"
+    },
+    {
+      "name": "mobile_contract_2",
+      "exitCode": 0,
+      "milliseconds": 12197,
+      "log": "/tmp/handrail-foundation-final-mobile_contract_2.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter",
+      "command": [
+        "node",
+        "tool/check-consumer-contract.mjs",
+        "/opt/handrail/.handrail/flutter-sdk",
+        "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/scs-erp-mobile",
+        "lib/src/aegis/aegis_sdk_repository.dart",
+        "lib/src/aegis/aegis_conversation_screen.dart"
+      ],
+      "logSha256": "83265fd2bea70e4f0cf887529638dabb2199df0b9ea987521e38a87184ff1754"
+    },
+    {
+      "name": "final_typecheck",
+      "exitCode": 0,
+      "milliseconds": 20772,
+      "log": "/tmp/handrail-foundation-final-final_typecheck.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js",
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "logSha256": "308b76c12e44d4020b988701fc61fe0365f894bc82cdfbd32e42f15cfddca65a"
+    },
+    {
+      "name": "restart_fixture_lint",
+      "exitCode": 0,
+      "milliseconds": 1178,
+      "log": "/tmp/handrail-foundation-final-restart_fixture_lint.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js",
+      "command": [
+        "npx",
+        "eslint",
+        "test/server-approval-pause.integration.test.ts"
+      ],
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "restart_fixture",
+      "exitCode": 0,
+      "milliseconds": 15893,
+      "log": "/tmp/handrail-foundation-final-restart_fixture.log",
+      "workingDirectory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "test/server-approval-pause.integration.test.ts",
+        "--maxWorkers=1",
+        "--minWorkers=1"
+      ],
+      "logSha256": "5d04e412c86a69f60f648abb384e58842808f77d49d660222fefffa3f9328aee"
+    }
+  ],
+  "memoryInvestigation": {
+    "fullSuiteBeforeFixtureReuseMaximumRssKiB": 2115940,
+    "largestSampledWorker": {
+      "file": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/server-approval-pause.integration.test.ts",
+      "rssKiB": 2083196
+    },
+    "cause": "Seven separately created/closed embedded PostgreSQL WASM VMs in approval-pause fixture; production Node/PostgreSQL memory measured separately.",
+    "change": "One embedded database per file with a fresh tenant per test; each assistant still recreates against durable SQL as before.",
+    "afterFixtureReuse": {
+      "exitCode": 0,
+      "milliseconds": 15839,
+      "maximumRssKiB": 829384,
+      "workers": 1,
+      "databaseInstances": 1,
+      "testTenantIsolation": "random tenant per case"
+    },
+    "limitation": "Process RSS includes Vitest, PostgreSQL WASM and JS runtime, not application retained content."
+  },
+  "webConsumerCompiles": {
+    "source": "consumer-contract-qualification.json",
+    "result": "all four web/server entrypoint groups passed during bounded approval review qualification; final send-error change does not alter public declarations"
+  },
+  "mobileConsumerCompiles": [
+    {
+      "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp-mobile",
+      "roots": [
+        "lib/features/cents/cents_sdk.dart",
+        "lib/features/cents/cents_sheet.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 9047
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4-mobile",
+      "roots": [
+        "lib/repositories/sdk_assistant_repository.dart",
+        "lib/screens/assistant_screen.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 15298
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/scs-erp-mobile",
+      "roots": [
+        "lib/src/aegis/aegis_sdk_repository.dart",
+        "lib/src/aegis/aegis_conversation_screen.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 12148
+    }
+  ],
+  "benchmarkEvidence": [
+    "display-history-postgres-benchmark.json",
+    "recovery-postgres-benchmark.json",
+    "paged-workspace-browser-benchmark.json",
+    "provider-preparation-qualification.json",
+    "approval-review-browser-qualification.json",
+    "attachment-draft-browser-qualification.json",
+    "local-erasure-browser-qualification.json",
+    "Flutter docs/display-render-benchmark.json"
+  ],
+  "finalAuditFixes": [
+    "Handle definitive pre-admission rejection separately from uncertain network failure in JS and Flutter. Preserve drafts/files and release only the exact send journal; recovered Flutter selection is usable for correction.",
+    "Run real Node server preparer after jsdom composer intake without browser stubs for Node primitives.",
+    "Update shutdown, legacy capability and attachment-owner test fixtures to their actual contracts.",
+    "Avoid repeated PostgreSQL WASM VM allocation in the approval restart matrix."
+  ],
+  "releaseBoundaries": [
+    "No commit, push, PR, deployment, production SQL or SDK project configuration changes were performed by this continuation.",
+    "Public HTTPS full-SHA SDK pins and matching lockfiles require a later authorized release/adoption; no unpublished pin was invented.",
+    "Physical device profiling and deployed consumer behavior are later rollout checks.",
+    "Cold canonical model input and full prior-file catalogs still scale with canonical history; list/initial display do not hydrate them.",
+    "Existing histories need additive schema/backfill; steady-state display measurements exclude one-time backfill."
+  ]
+}

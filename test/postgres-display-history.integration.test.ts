@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseConversationEvent, createInitialConversationState, reduceConversationEvent, type ConversationEvent } from "../src/index.js";
 import { PostgresAiPersistence, PostgresConversationEventStore, PostgresConversationDisplayHistory,
   deletePostgresConversationHistory, type PostgresSqlClient } from "../src/postgres/index.js";
+import { assistantToolArgumentReference } from "../src/conversation/approval-arguments.js";
 
 const database = new PGlite();
 const statements: { sql: string; values: readonly unknown[]; rows: readonly Record<string, unknown>[] }[] = [];
@@ -38,6 +39,77 @@ async function append(conversation: string, payloads: readonly Record<string, un
 }
 
 describe("indexed display history", () => {
+  it("reviews oversized bound arguments in authorized sections and rejects mismatched or changed bindings", async () => {
+    const args = { destination: "person@example.test", body: "🙂\"\\\n".repeat(12_000) };
+    await append("large-approval", [
+      { type: "tool_call.requested", turn_id: "turn", tool_call_id: "call", name: "send", arguments: args },
+      { type: "approval.proposal_created", turn_id: "turn", tool_call_id: "call", tool_name: "send", proposal_id: "approval",
+        reviewed_arguments: { type: "opaque_reference", argument_ref: assistantToolArgumentReference(args) }, status: "pending", proposal_version: 1, expires_at: null },
+    ]);
+    const input = { conversationId: "large-approval", proposalId: "approval", generation: 0 };
+    let offset = 0, binding: string | undefined, serialized = "";
+    for (;;) {
+      statements.length = 0;
+      const page = await display().approvalReview({ ...input, offset, ...(binding ? { binding } : {}) });
+      if (page.status !== "ready") throw new Error("Expected prepared review");
+      expect(statements).toHaveLength(1);
+      expect(Buffer.byteLength(JSON.stringify(statements[0]!.rows))).toBeLessThan(65536);
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(65536);
+      expect(page.review).toMatchObject({ proposalVersion: 1, toolName: "send", argumentReference: assistantToolArgumentReference(args) });
+      binding = page.review.binding; serialized += page.review.text;
+      if (page.review.nextOffset === null) break;
+      offset = page.review.nextOffset;
+    }
+    expect(JSON.parse(serialized)).toEqual(args);
+    await expect(display().approvalReview({ ...input, offset: 8192 })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(display().approvalReview({ ...input, binding: "0".repeat(64) })).rejects.toMatchObject({ code: "content_changed" });
+    await expect(display("other").approvalReview(input)).rejects.toMatchObject({ code: "not_found" });
+    await expect(display("tenant", "other-owner").approvalReview({ ...input, binding: binding! })).rejects.toMatchObject({ code: "content_changed" });
+    const check = vi.fn(async () => {});
+    check.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("revoked"));
+    await expect(new PostgresConversationDisplayHistory(client, "tenant", "scope", check).approvalReview(input)).rejects.toThrow("revoked");
+    await append("large-approval", [{ type: "tool_call.started", turn_id: "turn", tool_call_id: "call" }], 3);
+    await expect(display().approvalReview({ ...input, binding: binding! })).rejects.toMatchObject({ code: "content_changed" });
+    const changed = await display().approvalReview(input); expect(changed.status).toBe("ready");
+    await append("large-approval", [{ type: "approval.proposal_status_changed", proposal_id: "approval", proposal_version: 2, status: "rejected" }], 4);
+    await expect(display().approvalReview(input)).rejects.toMatchObject({ code: "content_changed" });
+  });
+
+  it("backfills legacy review summaries separately and never substitutes raw arguments for a redacted review", async () => {
+    await append("legacy-review", [
+      { type: "tool_call.requested", turn_id: "turn", tool_call_id: "call", name: "send", arguments: { private: "never render" } },
+      { type: "approval.proposal_created", turn_id: "turn", tool_call_id: "call", tool_name: "send", proposal_id: "approval",
+        reviewed_arguments: { type: "redacted_json", value: { destination: "reviewable" } }, status: "pending", proposal_version: 1, expires_at: null },
+    ]);
+    await client.query(`UPDATE handrail_ai_display_records SET control_payload=NULL WHERE tenant_id='tenant' AND conversation_id='legacy-review'`);
+    const input = { conversationId: "legacy-review", proposalId: "approval", generation: 0 };
+    statements.length = 0;
+    expect(await display().approvalReview(input)).toMatchObject({ status: "preparing", review: null });
+    expect(statements).toHaveLength(1);
+    expect(statements[0]!.rows[0]!.content).toBeNull();
+    expect(await display().backfillReviewControls("legacy-review")).toEqual({ processed: 1, hasMore: true });
+    expect(await display().approvalReview(input)).toMatchObject({ status: "preparing" });
+    expect(await display().backfillReviewControls("legacy-review")).toEqual({ processed: 1, hasMore: false });
+    const page = await display().approvalReview(input);
+    if (page.status !== "ready") throw new Error("Expected ready");
+    expect(JSON.parse(page.review.text)).toEqual({ destination: "reviewable" });
+    expect(JSON.stringify(page)).not.toContain("never render");
+    await append("legacy-review", [{ type: "conversation.cleared" }], 3);
+    await expect(display().approvalReview(input)).rejects.toMatchObject({ code: "stale_cursor" });
+    expect(await display().backfillReviewControls("legacy-review")).toEqual({ processed: 0, hasMore: false });
+  });
+
+  it("refuses a tool whose recorded argument reference does not match its proposal", async () => {
+    await append("wrong-review", [
+      { type: "tool_call.requested", turn_id: "turn", tool_call_id: "call", name: "send", arguments: { amount: 100 } },
+      { type: "approval.proposal_created", turn_id: "turn", tool_call_id: "call", tool_name: "send", proposal_id: "approval",
+        reviewed_arguments: { type: "opaque_reference", argument_ref: assistantToolArgumentReference({ amount: 1 }) }, status: "pending", proposal_version: 1, expires_at: null },
+    ]);
+    statements.length = 0;
+    await expect(display().approvalReview({ conversationId: "wrong-review", proposalId: "approval", generation: 0 })).rejects.toMatchObject({ code: "content_changed" });
+    expect(statements[0]!.rows[0]!.content).toBeNull();
+  });
+
   it("loads bounded active/latest/requested controls without reading turn bodies or canonical history", async () => {
     await append("controls", [messages(1)[0]!,
       { type: "turn.started", turn_id: "old", input_message_ids: ["message-1"] },
@@ -308,6 +380,32 @@ describe("indexed display history", () => {
       ids.push(...page.records.map(record => record.id)); cursor = page.nextCursor;
     } while (cursor);
     expect(new Set(ids).size).toBe(10); expect(ids).toHaveLength(10);
+  });
+
+  it("formats oversized tool records in bounded pinned sections without loading record bodies into the server", async () => {
+    const arguments_ = { destination: "person@example.test", text: "🙂\"\\\n".repeat(12_000) };
+    await append("record-reader", [{ type: "tool_call.requested", turn_id: "turn", tool_call_id: "tool", name: "send_message", arguments: arguments_ }]);
+    const page = await display().page({ conversationId: "record-reader", view: { type: "turn", turnId: "turn" } });
+    expect(page.records.find(row => row.kind === "tool")).toMatchObject({ deferred: true, value: null });
+    const input = { conversationId: "record-reader", generation: 0, kind: "tool" as const, id: "tool", revision: 1, format: "record-text" as const };
+    let offset: number | null = 0, whole = "";
+    do {
+      statements.length = 0;
+      const part = await display().content({ ...input, offset });
+      expect(part.encoding).toBe("plain-text");
+      expect(Array.from(part.text).length).toBeLessThanOrEqual(8192);
+      expect(Buffer.byteLength(JSON.stringify(part))).toBeLessThan(65536);
+      expect(statements).toHaveLength(1);
+      expect(Buffer.byteLength(JSON.stringify(statements[0]!.rows))).toBeLessThan(65536);
+      whole += part.text; offset = part.nextOffset;
+    } while (offset !== null);
+    expect(whole).toContain('\n    "');
+    expect(JSON.parse(whole).arguments).toEqual(arguments_);
+    await expect(display("other").content(input)).rejects.toMatchObject({ code: "not_found" });
+    await append("record-reader", [{ type: "tool_call.started", turn_id: "turn", tool_call_id: "tool" }], 2);
+    await expect(display().content({ ...input, offset: 8192 })).rejects.toMatchObject({ code: "content_changed" });
+    await append("record-reader", [{ type: "conversation.cleared" }], 3);
+    await expect(display().content(input)).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("backs up no request with an implicit replay; backfill resumes after appends and restarts", async () => {

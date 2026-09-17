@@ -1,0 +1,114 @@
+{
+  "source": "Local synthetic complete canonical checkpoints, one fresh process per measurement case; no database/network/provider/browser timings.",
+  "baselineRevision": "81564f969be0ccc2c3a38c3362388476918a4521",
+  "baselineDependencies": "Same current compiled replay/protocol dependencies isolate preparer changes.",
+  "node": "v22.23.1",
+  "rows": [
+    {
+      "name": "before",
+      "events": 20000,
+      "canonicalMessages": 201,
+      "checkpointBytes": 1811189,
+      "samples": 5,
+      "preparationP95Milliseconds": 45.967,
+      "averageReads": {
+        "checkpoint": 2,
+        "page": 2,
+        "head": 2,
+        "checkpointBytes": 3622378
+      },
+      "providerMessages": 3,
+      "providerBodyBytes": 16389,
+      "providerOutputSha256": "35136e5c62c487028bdcfed43bf5f9f683f56dbdc0a6bd3881bd4c1bbad40583",
+      "collectedHeapDuringContextDeltaBytes": 3376288,
+      "collectedHeapAfterDeltaBytes": 52984
+    },
+    {
+      "name": "after",
+      "events": 20000,
+      "canonicalMessages": 201,
+      "checkpointBytes": 1811189,
+      "samples": 5,
+      "preparationP95Milliseconds": 35.917,
+      "averageReads": {
+        "checkpoint": 1,
+        "page": 1,
+        "head": 2,
+        "checkpointBytes": 1811189
+      },
+      "providerMessages": 3,
+      "providerBodyBytes": 16389,
+      "providerOutputSha256": "35136e5c62c487028bdcfed43bf5f9f683f56dbdc0a6bd3881bd4c1bbad40583",
+      "collectedHeapDuringContextDeltaBytes": 23896,
+      "collectedHeapAfterDeltaBytes": 47128
+    },
+    {
+      "name": "before",
+      "events": 100000,
+      "canonicalMessages": 1001,
+      "checkpointBytes": 9096793,
+      "samples": 5,
+      "preparationP95Milliseconds": 290.919,
+      "averageReads": {
+        "checkpoint": 2,
+        "page": 2,
+        "head": 2,
+        "checkpointBytes": 18193586
+      },
+      "providerMessages": 3,
+      "providerBodyBytes": 16389,
+      "providerOutputSha256": "fd273758711feda628ea784af8a29706b8553337e49cff00a0a7366f9e1799b1",
+      "collectedHeapDuringContextDeltaBytes": 16845752,
+      "collectedHeapAfterDeltaBytes": 53136
+    },
+    {
+      "name": "after",
+      "events": 100000,
+      "canonicalMessages": 1001,
+      "checkpointBytes": 9096793,
+      "samples": 5,
+      "preparationP95Milliseconds": 225.247,
+      "averageReads": {
+        "checkpoint": 1,
+        "page": 1,
+        "head": 2,
+        "checkpointBytes": 9096793
+      },
+      "providerMessages": 3,
+      "providerBodyBytes": 16389,
+      "providerOutputSha256": "fd273758711feda628ea784af8a29706b8553337e49cff00a0a7366f9e1799b1",
+      "collectedHeapDuringContextDeltaBytes": 23912,
+      "collectedHeapAfterDeltaBytes": 47064
+    }
+  ],
+  "concurrent": {
+    "scopes": 30,
+    "representedEventsPerScope": 20000,
+    "sameConversationIds": true,
+    "ownerIsolation": true,
+    "admissionMilliseconds": 1002.59,
+    "collectedHeapDuringContextsDeltaBytes": 1596992
+  },
+  "budgets": {
+    "providerBodyBytes": 32768,
+    "retainedDuringContextBytes": 2097152,
+    "concurrentRetainedBytes": 12582912,
+    "unchangedCheckpointReads": 1,
+    "unchangedTailReads": 1
+  },
+  "limitations": [
+    "Cold canonical checkpoint loading and prior-file catalogs still scale with retained canonical state.",
+    "This is server model preparation, independent of bounded display pagination. Timing includes local JSON checkpoint decoding.",
+    "Collected heap deltas include V8 warmup/collection noise; they are not total process memory or exact content size.",
+    "Current provider text policy is 20 historical messages / 24000 characters plus admitted current input; no canonical truncation."
+  ],
+  "validation": {
+    "testsPassed": 153,
+    "testFiles": 9,
+    "workers": 1,
+    "build": "passed",
+    "typecheck": "passed",
+    "scopedLint": "passed",
+    "release": "local only; no dependency changes or deployment"
+  }
+}

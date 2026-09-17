@@ -1625,6 +1625,7 @@ export class PostgresConversationCatalog<TAuthorizationContext> implements Conve
         row = page.rows[0] ? catalogDescriptor(page.rows[0]) : null;
         if (!row && create) {
           const { conversationMode: _mode, ...options } = this.options;
+          void _mode;
           row = (await new PostgresConversationCatalog({ ...options, persistence }).create({ authorizationContext: context,
             idempotencyKey: key as never })).descriptor;
         }

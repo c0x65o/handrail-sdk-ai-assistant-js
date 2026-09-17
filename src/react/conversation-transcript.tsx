@@ -7,6 +7,7 @@ import { conversationTimeline, type ConversationActivityGroup, type Conversation
 import type { ConversationApprovalProposalRecord, ConversationMessageRecord,  ConversationToolCallRecord } from "../conversation/state.js";
 import { useSmartTranscriptFollow } from "./transcript-follow.js";
 import { Message } from "./primitives.js";
+import { ConversationDeferredRecords } from "./deferred-records.js";
 
 export interface ConversationTranscriptProps extends Omit<HTMLAttributes<HTMLDivElement>, "children">, ConversationTimelineOptions {
   readonly state: ConversationState;
@@ -54,6 +55,9 @@ function PagedConversationTranscript({ session, state, proposals, includeToolRes
     {snapshot.error && <div role="alert"><p>{snapshot.error.message}</p>
       {snapshot.error.retryable && <button type="button" onClick={() => { void session.refresh().catch(() => undefined); }}>Retry conversation</button>}</div>}
     {(state.unresolvedCitationCount ?? 0) > 0 && <p role="status">Some citation sources are not loaded in this activity window.</p>}
+    {session.supportsRecordText && <ConversationDeferredRecords conversationId={snapshot.conversationId}
+      generation={snapshot.window.generation} records={snapshot.related} read={session.readRecordText}
+      onRefresh={() => { void session.showLatestRelated().catch(() => undefined); }}/>}
     {snapshot.hasMoreRelated && <button type="button" onClick={() => { void session.loadMoreRelated().catch(() => undefined); }}>Load more activity</button>}
     {snapshot.relatedTruncated && <p>Showing part of this chat’s activity. <button type="button"
       onClick={() => { void session.showLatestRelated().catch(() => undefined); }}>Show latest activity</button></p>}

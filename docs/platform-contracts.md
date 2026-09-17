@@ -32,7 +32,8 @@ The host must close that session in `finally`. Deadlines and cancellation depend
 on cooperation from the injected client and its underlying transport. Do not
 cache an identity-bearing connection in a long-lived assistant plugin. See
 [feedback integration qualification](./feedback-integration.md) for the pinned
-canonical connector evidence and the unresolved enhancement readback contract.
+canonical connector evidence, server composition and remaining authoritative
+recovery dependencies. Source-derived fixtures do not qualify the platform route.
 
 Disconnecting a stream is not cancellation. Cancellation uses its own authorized, idempotent mutation. Resume only from a checkpoint durably applied on that device. Presence/typing is expiring and non-authoritative and must not enter transcripts, checkpoints, retention exports, or audit claims. Durable events, proposals, and execution results require tenant-scoped keys, atomic optimistic concurrency, defensive parsing, bounded reads, and encrypted transport/storage supplied by the host.
 

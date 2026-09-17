@@ -1,226 +1,201 @@
-# Feedback integration qualification — 2026-09-17
+# Server feedback integration — preparation, not live acceptance
 
-This candidate repairs two demonstrated shared SDK gaps: MCP draft-07 tool
-schemas now validate using their declared dialect, and cancellation during
-discovery authorization or connection establishment stops subsequent work.
-It does **not** establish a production feedback integration or real-model dev
-acceptance. The canonical enhancement readback contract currently fails through
-the pinned connector. No intake, model call, service, deployment, or project
-configuration mutation was performed.
+The JS candidate provides `createFeedbackTools` from
+`@handrail/ai-assistant/server/application` and the runnable host composition
+[trusted-server-feedback.mjs](../examples/trusted-server-feedback.mjs). It uses
+`createHandrailAssistant`, the existing provider transport, ToolPlugin, current
+admission, durable approval, gateway and Postgres seams. It creates no listener,
+queue, replacement assistant, model binding, migration or intake endpoint.
+Only server text/application-gateway is qualified here. Browser/mobile clients
+remain gateway clients; voice/realtime and new consumer adoption are excluded.
 
-## Exact source and dependency evidence
+## Source authority and history
 
-| Package | Observed version | Public committed source |
+Read the published `handrail-ai-sdk-implementation-contract`, publication
+`legacy-kb-revision:664f7487-aeda-476a-8aed-35d93426b07b`, and current source.
+Its host identity, policy, persistence and credential boundaries apply. Its
+`@handrail/ai` spelling and same-repository Flutter path are stale: this checkout
+is `@handrail/ai-assistant@0.2.56`, with Flutter in the separate sibling repo.
+The historical handoff's feedback-v2 adapter-composition KB wording was not
+freshly verified. Installed MCP independently implements canonical HTTP clients;
+it does not import the two reporter packages. Runtime configuration and canonical
+discovery determine enablement, not the presence of an npm reporter package.
+
+| Source | Observed version | Full public HTTPS Git pin |
 | --- | --- | --- |
-| `@handrail/mcp` | 0.2.1 | `https://github.com/c0x65o/handrail-mcp.git#eb879d767d05c7c2e15748f6fe7838294b980d82` |
-| `@handrail/bug-reporter` | 0.4.50 | `https://github.com/c0x65o/handrail-sdk-bug-reporter-js.git#7dfb33f548448f864cf957f19d96f8b5a27bc787` |
-| `@handrail/enhancement-reporter` | 0.3.46 | `https://github.com/c0x65o/handrail-sdk-enhancement-reporter-js.git#ec7cde72fe44b1cb3c6905d4a43d9629ec6ad2ce` |
+| Installed MCP | 0.2.1 | `https://github.com/c0x65o/handrail-mcp.git#eb879d767d05c7c2e15748f6fe7838294b980d82` |
+| Previously inspected bug reporter | 0.4.50 | `https://github.com/c0x65o/handrail-sdk-bug-reporter-js.git#7dfb33f548448f864cf957f19d96f8b5a27bc787` |
+| Previously inspected enhancement reporter | 0.3.46 | `https://github.com/c0x65o/handrail-sdk-enhancement-reporter-js.git#ec7cde72fe44b1cb3c6905d4a43d9629ec6ad2ce` |
 
-These are source observations, not a compatibility-catalog or deployment
-attestation. MCP is a dev dependency for the offline qualification; the two
-reporters were source-inspected, not installed. MCP itself depends on
-`@modelcontextprotocol/sdk@1.30.0` and `zod@4.4.3`. The qualification declares the
-MCP SDK dependency directly because it imports `Client` and `InMemoryTransport`.
-The package manager lock records the exact commit. No runtime dependency was
-added to the provider-neutral SDK.
+MCP and `@modelcontextprotocol/sdk@1.30.0` remain locked dev dependencies for
+qualification/example composition. The reporters are not installed here. No
+dependency upgrade, runtime SDK dependency, publication or release is claimed.
+The two request-scoped reporter server factories remain host integration options;
+this example uses the installed MCP transport's actual exported server instead.
 
-MCP exports `.`, `./client`, and `./server`. Its root exports
-`createConnectorServer`, `loadFeedbackRuntime`, `resolveFeedbackConfig`, and
-`FEEDBACK_TOOL_NAMES`. `createConnectorServer` returns a standard MCP `server`;
-the example connects it to `Client` through `InMemoryTransport.createLinkedPair()`.
-This is an actual supported in-process MCP transport, not a new endpoint.
+Original owner intervention, initial pause/resume, failed attempts and original
+handoff remain authoritative history. Independent review
+`e9d8ed1d-f4a1-4270-abcf-9d1864ffce56` tested executor fingerprint
+`50f2ee9d0cb5fbf360d64aa317dac1ab42f52a3b78329b83a3f7524885259daa`
+at HEAD `81564f969be0ccc2c3a38c3362388476918a4521`. Its 40 regressions and four
+lifecycle probes passed; qualification was 9/1 and package execution omitted the
+tracked `.env.example`. Those are historical outcomes, not this candidate's checks.
+The old schema/cancellation repairs are already committed; they were not reapplied.
+Current unrelated workspace changes are preserved and fingerprinted separately.
 
-Both reporter packages export `.`, `/server`, `/react`, and `/package.json`.
-The bug server exports `createRequestScopedBugReporter(config).forRequest(context)`;
-its resolver is invoked per policy/submission attempt. Enhancement exports
-`createRequestScopedEnhancementReporter(config).forRequest(context)` asynchronously,
-requires a current session resolver, and creates a request-local transport.
-Both also export same-origin server handlers. Node requirements are >=18 for
-the bug package and >=20 for enhancement/MCP; this SDK requires >=20.
+## Canonical contracts and the corrected fixture
 
-### Guidance drift
+Bug discovery requires schema version 1, matching project/environment and a
+verified reporter. Enhancement discovery requires v1, enabled reporting,
+`known_users_direct_session`, and matching capability/project/service environment.
+Both submit tools are independently exposed only after successful discovery:
+`handrail_bug_reporter_v1_submit` and `handrail_enhancement_reporter_v1_submit`.
 
-The attached published feedback v2 KB says MCP composes independently installed
-reporter server adapters. Committed MCP 0.2.1 instead implements independent
-canonical HTTP transports, imports neither reporter package, and explicitly
-tests that independence. Reporter absence as an npm package therefore does not
-disable MCP tools; missing/disabled *runtime configuration* does. Resolve this
-publication discrepancy before claiming compatibility with both contracts.
-Do not add unused reporter dependencies to pretend package presence is checked.
+Bug receipt validation requires `status: submitted`, matching `bugId` and
+`response.bug_id`, the original `response.event_id`, and
+`response.reporter_identity.verification_result === true`. Enhancement requires
+`contract_version: v1`, `request.submission_kind: enhancement`, a nonempty
+`request.id`, and boolean `replayed`. HTTP success is insufficient. Enhancement
+receipts do not echo principal/scope/idempotency fields; none are fabricated.
+Provider/client output retains only `{kind, reportId}`.
 
-The SDK implementation KB still names `@handrail/ai` and a same-repository
-Flutter directory. Current source is `@handrail/ai-assistant@0.2.55`, and Flutter
-is a separate sibling repository. Older direct Work Request intake guidance is
-superseded for customer feedback. Moving Git examples in package READMEs are
-superseded by the assignment's full-SHA public HTTPS dependency requirement.
+Planner/reviewer inspected actual Handrail `enhancement-reporting.js` at
+`bc7258425feeda51633b7b140304873f074abfd0`, SHA256
+`8e43bfaa3efc608ab6f7d5d0e89fc2fbf4d4f6485083a4987f2315a7bdcaa8f8`.
+At lines 874–878 the owned flat `publicRequest` gains `contract_version: v1`.
+The corrected HTTP fixture models that source projection; the historical
+unversioned response remains a negative test. **Neither fixture executes the
+actual platform service/route nor proves release, platform recovery or live intake.**
+Preserve repair `6ab5086a-96e4-4ce9-90a6-b4ec7b9312ab`, WR
+`be7b9a53-993a-476e-a1a4-7f910dcb5e25`, and manifest proposal
+`f961fa8e-db70-4388-9e3a-5bf298c98fe0`. This candidate does not bypass their gates.
 
-## Identity, tools, receipts, and the concrete blocker
+## Host composition and responsibilities
 
-The model must never choose identity. MCP receives the authenticated current raw
-application session only in trusted server configuration. Bug transport sends
-it in `x-handrail-application-session-token`; enhancement transport sends it in
-`x-handrail-application-session`. Credentials use server-side bearer headers.
-Neither belongs in tool arguments, provider context, persisted conversation
-events, diagnostics, or client responses. Do not put a session in the high-level
-assistant authorization context: that context is cached and used in execution
-scope derivation. Re-resolve current identity and authorization at execution and
-before receipt replay; discovery alone grants no execution authority.
+Import `createFeedbackGateway` into an existing authorized Node host and supply:
 
-Canonical discovery is required independently for each reporter:
+- `assistant`: existing provider adapter/wrapper and exact model, migrated
+  `PostgresAssistantPersistence`, authenticated `authorize`, conversation and
+  approval authorization, normal diagnostics and lifecycle configuration.
+- `feedback.binding`: a non-secret immutable identity for the exact
+  project/environment/service binding; `enabled(kind)` returns strict booleans.
+- `feedback.authorize`: resolve current principal, scope, reporting permission,
+  conversation access and current revocations on every invocation/replay.
+- `feedback.resolveIntent`: read the original durable explicit user intent from
+  trusted history for the given conversation/turn/kind. It must not use provider
+  call IDs or allocate a new identity on retry. Multiple requests in one message
+  require separate durable host intent identities. No fixture identity is a
+  production implementation of this host-owned mapping.
+- `resolveCurrent`: resolve the current raw session and reporter tuple from
+  trusted server storage, verifying principal/tenant/scope. No raw session belongs
+  in the cached assistant context. The example projects the authorization context
+  and opens/closes an actual MCP session for each operation; only definitions
+  survive plugin installation. Server enable flags must be literal booleans.
 
-- Bug: exact project/environment, service-bound server configuration, and
-  `schema_version: 1` policy with `reporter.identity_verified === true`.
-- Enhancement: `contract_version: "v1"`, `enhancement_reporting.enabled === true`,
-  authenticated `known_users_direct_session` principal, and matching capability,
-  project, and service environment IDs.
+Mount `.handle` or `.express` behind existing authentication, origin/CSRF checks,
+rate and request-size limits. Clients must save their canonical user message and
+turn through normal SDK synchronization before starting the provider turn. Keep
+host-selected confirmation controls: this feedback plugin always requests review
+through existing SDK approvals. Reporting never grants remediation/deployment
+permission. Stop the assistant's background workers on host shutdown.
 
-MCP's config parser also accepts `1`, `yes`, and `on`; the enhancement KB requires
-literal `true`. A future host must parse the server enable value strictly before
-passing configuration. Missing fields, a missing session, or failed canonical
-discovery must expose no corresponding submission tools. The optional feedback
-readiness tool is not permission to submit.
+The lower-level `createFeedbackTools` returns `plugin`, `admission`, and the
+protected host `reconcile` function. Install **both** plugin and admission.
+When combining other tools, route their admission to their existing policies;
+this feedback admission denies unknown tools. No credential-bearing connector
+should be cached in a plugin. Catalogs are installed per authenticated assistant
+context; newly enabled reporters require host reconstruction of that context.
+Current disablement/admission is checked again even with an older catalog.
 
-Tool definitions come from actual MCP discovery. The submit operations are
-`handrail_bug_reporter_v1_submit` and
-`handrail_enhancement_reporter_v1_submit`. Their v1 names are compatible with
-the feedback v2 composition name. Bugs use server-derived `event_id` (8–160
-characters); enhancements use `idempotency_key` (1–255) and
-`external_conversation_id` (1–512). Freeze the payload with the durable user
-message/intent before dispatch. A provider tool-call ID is not durable intent.
-Each distinct intent needs its own identity, including within one conversation.
+## Stable intent, frozen payload, uncertainty and recovery
 
-Authoritative source evidence was read through Handrail source tools at observed
-HEAD `f55b1a9f9b7167cdfb34b0ae479b212963e2a245`; retained source content hashes
-identify the actual read bytes, which are stronger evidence than HEAD alone in
-a dirty checkout:
+The SDK derives a digest from binding, tenant, scope, principal, conversation,
+durable host intent and feedback kind. It removes `event_id`, `idempotency_key`
+and `external_conversation_id` from the model-facing schemas and derives those
+fields server-side. Payloads are frozen using existing Postgres CAS documents;
+changed content under the same intent fails closed. No raw credential, session,
+HTTP envelope or remote error is stored in these documents.
 
-- `src/server/services/mobile-bug-reports.js:5267`: submit returns `bug_id`,
-  `event_id`, `reporter_identity`, and optional grouping evidence. MCP wraps this
-  as `{status: "submitted", statusCode, bugId, response}` and adds `connector`
-  metadata to the MCP structured content. HTTP success or `status: submitted`
-  alone is not a verified receipt. Match `bugId` to `response.bug_id`, the frozen
-  event ID, and verified reporter provenance; retain a minimal identifier view.
-- `src/server/services/enhancement-reporting.js:626,790`: submit returns
-  `{contract_version: "v1", request, replayed, assessment, assessment_warning}`.
-  `request.id` is the canonical enhancement ID, with `submission_kind:
-  "enhancement"`, status, terminal flag and other presentation fields. It is
-  **not** an Assistant Bridge request or an intake-submission ID. That projection
-  does not echo identity/scope/idempotency fields; do not invent them.
-- `src/server/api/enhancement-reporting.js:92` and service line 874: owned lookup
-  returns `publicRequest` directly, without a `contract_version` field. MCP
-  `src/feedback-clients.js` requires that field on every enhancement response.
-  The reproducible result is `feedback_transport_contract_mismatch` on canonical
-  lookup. The offline acceptance assertion remains failed; no wrapper is forged
-  to make it pass. Connector/API owners must reconcile the versioned response
-  contract before this integration can safely use authoritative readback.
+`PostgresAiPersistence.getOrExecuteTool` commits the existing durable admission
+claim before HTTP dispatch. Completed minimal receipts replay across plugin
+recreation and provider call-ID changes. Cancellation, timeout, invalid receipts,
+transport failure and crashes leave admission intact without a completed receipt.
+No automatic redispatch, lease expiry, claim deletion or new retry identity is
+allowed. Host storage retention must preserve these claims and frozen payloads
+for as long as duplicate prevention is required; conversation deletion must not
+silently erase them. Storage encryption/retention/migrations remain host-owned.
 
-MCP's feedback HTTP transport creates its own timeout controller and its tool
-handlers do not forward MCP cancellation into it. Closing a client is therefore
-not proof the remote effect stopped. Uncertain writes must retain their frozen
-identity/body and reconcile using an authorized canonical receipt/readback
-contract. Never allocate a new intent merely because a response was lost.
-In-flight cancellation and lost-response reconciliation remain unqualified.
+The pinned connector creates its own HTTP timeout signal. Local AbortSignal or
+MCP close does **not** cancel remote HTTP, which may complete after local failure.
+Closing a UI remains observation-only. Enhancement's separate remote lifecycle
+cancel tool is not exposed by this composition and is not invoked by local Stop.
 
-## Runnable offline preparation and its limits
+`reconcile` can verify a saved enhancement receipt through the supported owned
+v1 lookup, with current authorization before and after readback. It never accepts
+a model-provided report ID and never writes another submission. A completely lost
+response has no authoritative report ID: MCP has no supported lookup by original
+`event_id`/`idempotency_key`. Such recovery fails closed with
+`feedback_reconciliation_required`, identifying the missing authoritative
+intent-to-report lookup. Do not infer identity from list/search or resubmit to
+recover an ID. The bug submit receipt is verified, but its separate lookup
+projection has not been qualified by this SDK assignment; authoritative bug
+readback fails closed with `feedback_bug_readback_contract_required`. These are
+concrete remaining contract dependencies, not permission questions.
 
-Run from this repository using Node >=20 and the matching lock:
+## Verification route and limits
+
+Use the ordinary writable JS repository, preserving tracked
+`templates/standard-react-node/.env.example`; do not alter packaging checks or
+platform file filters. The matching installed lock is required. Run sequentially:
 
 ```sh
-npm ci --include=dev --cache "$TMPDIR/npm-cache" --no-audit --no-fund
+npm run build
+node -e "import('./dist/server/application.js').then(m => { if (!m.createFeedbackTools) throw Error('missing export') })"
 npm run typecheck
 npm run check:package-contract
 npm run check:examples
-npm run build
-node --test test/feedback-contract-qualification.test.mjs
+node --test --test-concurrency=1 test/feedback-contract-qualification.test.mjs test/feedback-gateway.integration.test.mjs
 npm test -- --maxWorkers=1 --minWorkers=1 test/mcp-connector.test.ts test/mcp-schema.test.ts test/tool-executor.test.ts test/tool-plugin.test.ts test/tool-incidents.test.ts test/server-assistant.test.ts test/tool-admission.test.ts test/tool-admission.integration.test.ts test/server-tool-admission.integration.test.ts test/postgres-tool-incidents.integration.test.ts test/server-assistant-recovery-authorization.test.ts test/assistant-tool-runtime.test.ts test/response-feedback.test.ts
 ```
 
-`npm ci` is a reproduction instruction, not a claim it was executed in this run.
-The retained command receipts describe actual installs/checks. This worker used
-its writable repository and cache; no private network namespace was required.
-Previous Vite EROFS and localhost EAI_AGAIN receipts remain historical failures.
+The gateway test imports the exact runnable factory, uses the actual provider
+adapter with a deterministic request function, the actual installed MCP with an
+HTTP boundary fixture, and existing migrated disposable PGlite persistence. It
+checks request-to-tool-to-approval-to-receipt composition without a model call or
+intake. PGlite proves the exercised Postgres SQL/CAS/admission behavior; it is not
+an external PostgreSQL server or a platform route test. Retained candidate-bound
+command receipts identify passes, failures, later drift and unrun checks.
 
-[The offline example](../examples/feedback-contract-qualification.mjs) composes
-actual `createAiApplication`, `ToolPlugin`, execution admission, and a
-request-scoped MCP session using the installed connector and an injected HTTP
-fixture. It exercises both submit tools with explicitly labeled DEV QA fixture
-content, independent enablement, current host authorization, user isolation,
-exact replay/conflicting retries, invalid receipts, remote errors, pre-dispatch
-cancellation, cleanup, and minimal output/diagnostic redaction. The fixture is
-only an HTTP boundary, not a database or canonical idempotency implementation.
-It never reads runtime credentials or calls a live endpoint.
+## Later native dev acceptance — still pending
 
-The example is not a real-model assistant or production persistence adapter.
-Its one-message identities and in-memory execution ledger are test-only. Local
-replay proves the SDK execution boundary, not duplicate-free canonical intake.
-No provider input, client route, persistence, approval-resume, transport loss,
-post-dispatch cancellation, or live receipt readback is accepted by these fixtures.
-Existing diagnostic incident reporting (`createMcpToolIncidentReporter` and its
-dispatcher) stays separate: explicit user feedback is not a diagnostic incident,
-and incident submission never independently authorizes repair or deployment.
+No services, deploy targets or runbooks are declared. Do not invent endpoints,
+credentials, runtime names or a live command. The existing parent must provide:
 
-## Cached lifecycle and supported surface
+1. Exact declared authorized dev host/service environment, native operation and
+   fresh preview, protected route, candidate hash, runtime/dependency identities,
+   exact provider/model and tool-capable wrapper, approved budgets, server-only
+   credential resolution and graceful shutdown ownership.
+2. Current verified Known User sessions, host durable intent mapping and scoped
+   persistence, conversation/approval authorization, revocation and isolation
+   policies. Keep raw sessions out of all evidence.
+3. Exact bug tuple (`HANDRAIL_BUG_REPORT_` ENABLED, API_URL, PROJECT, ENV, TOKEN,
+   SERVICE_ENV_ID, TRANSPORT) and enhancement tuple (`HANDRAIL_ENHANCEMENT_REPORTER_`
+   ENABLED, API_URL, VERSION, PROJECT_ID, CAPABILITY_ID, SERVICE_ENV_ID, TOKEN),
+   strict enable parsing, canonical discovery and supported receipt readback.
+4. Verify the separately owned actual enhancement route/repair/release gates;
+   qualify the bug readback projection if using a bug for live proof. Supply a
+   supported authoritative intent-to-report recovery capability before attempting
+   uncertain-write recovery; otherwise retain the precise fail-closed dependency.
+5. Review actual Bug/Enhancement Automation and shipping policy before intake.
+   A DEV QA label alone is not an automation hold. Preserve ordinary approval
+   gates and authorize the consequences of canonical intake through the parent.
+6. Run one truthful explicitly labeled DEV QA bug **or** enhancement through the
+   real model and authenticated gateway, retaining exact candidate/runtime/model/
+   tool/intent identity and authoritative receipt/readback. Both contracts retain
+   regression coverage. Inspect provider, client events, persistence and diagnostics
+   for credentials; fixtures cannot replace native acceptance evidence.
 
-`createHandrailAssistant` caches tool support, assembled applications, and provider
-transports using tenant/scope plus a digest of the authorization context. Its
-background-worker shutdown is not a generic plugin/session disposer. A raw-session
-MCP connector created by cached plugin installation could outlive the request.
-This inspection does not justify changing generic cache/disposal semantics.
-The offline composition is deliberately request-scoped and closes in `finally`.
-
-The later integration target is authenticated **server text/application gateway**
-with the existing provider transport and persistence/approval boundaries.
-Browser, React Native, and Flutter remain gateway clients. Voice/realtime,
-direct provider remote-MCP, UI redesign, legacy persistence changes, and new
-consumer adoption are excluded until separately qualified. No feedback tools or
-partial feedback instructions should appear on those excluded surfaces.
-
-## Native dev continuation prerequisites and execution recipe
-
-The previous inventory reported no declared runtime or runbook and no configured
-dev Known Users mapping. This assignment did not provision one or establish
-runtime readiness. The native runtime owner must supply exact existing host and
-runbook identities and obtain any missing scope through the normal parent task.
-
-1. Resolve the connector/API readback incompatibility, cancellation behavior,
-   and published adapter-composition drift. Publish compatible source through
-   the separately owned normal path; then pin the reviewed full SHA/lock here
-   and rerun the failing qualification. Do not release the connector from this
-   SDK repository or bypass readback with direct Work Request creation.
-2. Select the existing authorized dev host, service environment, native task
-   command, and protected text/gateway route. None is assigned by this document.
-   Supply a provider binding and exact model ID/version with tool-call support,
-   provider wrapper, approved limits, and server-only credential resolution.
-   **No live model has been selected or called here.** Record provider/model IDs
-   and candidate hash in later sanitized runtime receipts.
-3. Supply current verified Known User sessions for two independent users; host
-   authentication, tenant/conversation ownership, origin/CSRF/rate limits, current
-   tool admission, approval policy, and credential revocation checks. Preserve
-   required confirmation through existing approval infrastructure.
-4. Verify exact dev bug tuple (`HANDRAIL_BUG_REPORT_ENABLED`, `API_URL`, `PROJECT`,
-   `ENV`, `TOKEN`, `SERVICE_ENV_ID`, `TRANSPORT`, all under `HANDRAIL_BUG_REPORT_`)
-   and enhancement tuple (`ENABLED`, `API_URL`, `VERSION`, `PROJECT_ID`,
-   `CAPABILITY_ID`, `SERVICE_ENV_ID`, `TOKEN`, under
-   `HANDRAIL_ENHANCEMENT_REPORTER_`). Keep all values on the trusted server.
-   Record safe runtime binding identities separately; never retain tokens.
-5. Inspect native Bug Automation, Enhancement Automation and shipping policy
-   before intake. An explicit DEV QA label is not an automation hold. The later
-   test must be authorized for any consequences of canonical intake; reporting
-   itself grants no repair, commit, or deployment authority.
-6. Complete the request-scoped real-provider composition with durable, scoped
-   frozen intent/payload and receipt storage using the existing host persistence
-   pattern. Attach supported MCP tools through existing plugins/admission, not
-   a replacement assistant, queue, or intake implementation. On timeout or
-   cancellation retain uncertain state for reconciliation.
-7. Execute explicit authorized dev bug and enhancement requests through that
-   real model and authenticated route. Save model/tool/intent/candidate identity,
-   validated canonical receipt and principal-scoped readback. Exercise exact
-   retries, changed-payload conflicts, revocation, cross-user access, disabled
-   reporters, errors, cancellation and cleanup. Independently inspect provider
-   requests, client events, persistence, and diagnostics for credential leakage.
-
-There is no truthful live command line yet: model, native runbook, host, route,
-sessions, policy and readback compatibility are unresolved prerequisites. The
-commands above are exact offline commands only. A later native run must retain
-its exact command and fresh identities rather than substitute invented endpoints
-or claim fixture output as real acceptance.
+No live model/intake, service provisioning, linked-app/platform edit, configuration
+change, commit/push/PR, publication, deployment or consumer adoption is performed
+or authorized by this preparation. Legacy UI/data remain intact. Worker completion
+and retained artifacts do not grant parent-stage or release acceptance.

@@ -7,6 +7,8 @@ import { useConversationHistory } from "../src/react/conversation-history.js";
 import { InMemoryConversationActivityStore } from "../src/conversation/activity.js";
 import { HandrailAssistantWorkspace, HandrailChatWorkspace } from "../src/react-styled/index.js";
 import { createAttachmentUploader } from "../src/attachments/uploader.js";
+import { AttachmentDraftWorkspace } from "../src/attachments/draft-workspace.js";
+import { InMemoryAttachmentDraftStore } from "../src/attachments/draft-store.js";
 
 const disposables: Array<() => Promise<void>> = [];
 afterEach(async () => { cleanup(); for (const dispose of disposables.splice(0)) await dispose(); vi.useRealTimers(); });
@@ -65,7 +67,11 @@ it("loads one catalog page at a time, limits opt-in previews, and requests archi
 
 it("shows the complete assistant's saved threads by default and keeps compact history opt-in", async () => {
   const f = await fixture(1);
-  const client = { workspace: f.workspace, catalog: f.catalog, activity: f.activity,
+  const attachmentDrafts = new AttachmentDraftWorkspace<Blob>(new InMemoryAttachmentDraftStore(), {
+    upload: async () => { throw new Error("This history fixture does not upload files"); },
+  });
+  disposables.push(() => attachmentDrafts.dispose());
+  const client = { workspace: f.workspace, catalog: f.catalog, activity: f.activity, attachmentDrafts,
     capabilities: { attachments: false }, resources: {}, presenceControllerFor: () => null,
     markActivityRead: async () => undefined };
   const props = { client: client as never, authorizationContext: f.authorizationContext,

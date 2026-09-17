@@ -1,0 +1,18 @@
+{
+  "browser": "153.0.8010.12",
+  "source": "built public SDK, real Chromium IndexedDB",
+  "checks": {
+    "version2UpgradePreservesRows": true,
+    "attachmentBytesAndUploadIdentitySurviveReload": true,
+    "failedFenceRollsBackErasure": true,
+    "oldTabLateWritesRejected": 5,
+    "deletionSurvivesReload": true,
+    "otherConversationPreserved": true,
+    "otherAccountPreserved": true,
+    "explicitAccountErasurePreservesOtherScope": true,
+    "pageErrors": 0
+  },
+  "limitations": [
+    "Synthetic local browser storage only; no app preview, deployment or production data."
+  ]
+}

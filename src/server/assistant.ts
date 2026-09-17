@@ -66,7 +66,7 @@ import { createDurableApplicationTransport, DurableRecoveryWorkerPool, type Dura
 import { ConversationCatalogError, type ConversationCatalog } from "../conversation/catalog.js";
 import { createInMemoryLiveConversationActivityDelivery,
   createConversationActivityReporter,
-  type LiveConversationActivityDelivery, type LiveConversationActivityPubSub } from "../conversation/activity.js";
+  type ManagedLiveConversationActivityDelivery, type LiveConversationActivityPubSub } from "../conversation/activity.js";
 import { ApprovalProposalStoreError, type ApprovalProposalStore } from "../conversation/approval-proposal-store.js";
 import type { PostgresAssistantPersistence, PostgresAssistantPersistenceBundle } from "../postgres/index.js";
 import { createAiApplication, type AiApplication, type ApplicationApprovalPolicy } from "./application.js";
@@ -301,7 +301,17 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   });
   const liveProjectionClosers = new Set<() => Promise<void>>();
   let liveProjectionStopped = false;
-  const activityDeliveries = new Map<string, LiveConversationActivityDelivery>();
+  const activityDeliveries = new Map<string, ManagedLiveConversationActivityDelivery>();
+  const retiringActivity = new Set<Promise<void>>();
+  const activityContexts = new IdleContextRegistry({
+    canRetire: key => (activityDeliveries.get(key)?.subscriberCount ?? 0) === 0,
+    retire: key => {
+      const delivery = activityDeliveries.get(key); activityDeliveries.delete(key);
+      if (!delivery) return;
+      const closing = delivery.dispose().finally(() => retiringActivity.delete(closing));
+      retiringActivity.add(closing);
+    },
+  });
   const presenceDelivery = options.presence === undefined
     ? createInMemoryLivePresenceDelivery()
     : "publish" in options.presence ? options.presence
@@ -335,6 +345,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   };
   const activityDeliveryFor = (context: TContext) => {
     const key = scopeKeyFor(context);
+    activityContexts.touch(key);
     let delivery = activityDeliveries.get(key);
     if (!delivery) {
       delivery = createInMemoryLiveConversationActivityDelivery({
@@ -343,6 +354,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       });
       activityDeliveries.set(key, delivery);
     }
+    activityContexts.sweep();
     return delivery;
   };
   const catalogFor = (context: TContext) => options.conversationCatalogFor?.({
@@ -570,7 +582,8 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         const bundle = bundleFor(context);
         const activityReporter = createConversationActivityReporter({
           store: bundle.activity,
-          delivery: activityDeliveryFor(context),
+          delivery: { publish: record => activityDeliveryFor(context).publish(record),
+            subscribe: signal => activityDeliveryFor(context).subscribe(signal) },
         });
         const reportActivity = async (
           conversationId: string,
@@ -729,7 +742,15 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             : event.type === "response.text.delta" ? "responding" : null,
           ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }) });
       });
-      transport = transport.finally(() => { constructingTransports.delete(key); });
+      transport = transport.catch(cause => {
+        // A transient provider/plugin startup failure must be retryable by the
+        // next authorized request, not cached until an idle expiry happens.
+        if (transports.get(key) === transport && (durableTransports.get(key)?.activeWorkerCount ?? 0) === 0) {
+          void durableTransports.get(key)?.stopWorkers();
+          durableTransports.delete(key); transports.delete(key); applications.delete(key); toolSupports.delete(key);
+        }
+        throw cause;
+      }).finally(() => { constructingTransports.delete(key); });
       transports.set(key, transport);
     }
     return transport;
@@ -834,7 +855,8 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   });
   const activity = (request: Request, context: TContext) =>
     createConversationActivityHttpHandler(bundleFor(context).activity,
-      { delivery: activityDeliveryFor(context) })(request);
+      { delivery: { publish: record => activityDeliveryFor(context).publish(record),
+        subscribe: signal => activityDeliveryFor(context).subscribe(signal) } })(request);
   const ownsConversation = async (context: TContext, conversationId: string) => {
     await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
     return true;
@@ -1003,113 +1025,117 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       let context: TContext;
       let releaseContext: (() => void) | undefined;
       try {
-      // Retain only list requests, before the gateway consumes their bodies.
-      // The bounded queue releases these credentials on completion/shutdown.
-      const maintenanceRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/list")
-        ? request.clone() : null;
-      const historyRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/history")
-        ? request.clone() : null;
-      return await createApplicationGateway({
-        authorize: async (request, action) => {
-          context = await options.authorize(request, action);
-          releaseContext?.(); releaseContext = executionContexts.retain(executionKeyFor(context));
-          if (options.recoverPendingOnContext !== false) {
-            // Reauthenticate identity using the read-only capability policy,
-            // then authorize each saved conversation. Repeating start/cancel
-            // admission would require discarded bodies and spend rate limits.
-            const credentials = new Request(request.url, { method: "GET", headers: request.headers });
-            let bytes = new TextEncoder().encode(request.url).length;
-            request.headers.forEach((value, name) => { bytes += new TextEncoder().encode(name + value).length; });
-            if (bytes <= 32_768) enqueueRecovery(maintenanceIdentity(context), async () => {
-              try { return await options.authorize(credentials.clone(), "capabilities"); }
-              catch { return null; } // Expired/revoked credentials require another authenticated request.
-            });
-          }
-          return context;
-        },
-        transportFor,
-        checkpointForEvent,
-        displayControl: true,
-        displayMessageText: true,
-        displayPendingApprovals: true,
-        displayHistoryFor(current): ConversationDisplayHistory {
-          const identity = maintenanceIdentity(current);
-          const authorize = async (conversationId: string) => {
-            const fresh = historyRequest ? await options.authorize(historyRequest.clone(), "conversations") : current;
-            if (maintenanceIdentity(fresh) !== identity) throw new Response(null, { status: 403 });
-            await ownsConversation(fresh, conversationId);
-          };
-          const history = new PostgresConversationDisplayHistory(options.persistence.persistence.client,
-            current.tenantId, current.scopeId, authorize);
-          const prepare = <T extends Pick<ConversationDisplayPage, "status" | "conversationId">>(page: T): T => {
-              if (page.status === "preparing" && historyRequest) {
-                const key = JSON.stringify(["history-backfill", identity, page.conversationId]);
-                const step = async () => {
-                  const progress = await history.backfill(page.conversationId);
-                  const controls = !progress.hasMore ? await history.backfillControls(page.conversationId) : null;
-                  // Durable watermark survives process restarts; each small step
-                  // reauthenticates and goes to the back of the shared work queue.
-                  if (progress.hasMore || controls?.hasMore) maintenance.enqueue(key, step);
-                };
-                maintenance.enqueue(key, step);
+        // Retain only list requests, before the gateway consumes their bodies.
+        // The bounded queue releases these credentials on completion/shutdown.
+        const maintenanceRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/list")
+          ? request.clone() : null;
+        const historyRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/history")
+          ? request.clone() : null;
+        return await createApplicationGateway({
+          authorize: async (request, action) => {
+            context = await options.authorize(request, action);
+            releaseContext?.(); releaseContext = executionContexts.retain(executionKeyFor(context));
+            if (options.recoverPendingOnContext !== false) {
+              // Reauthenticate identity using the read-only capability policy,
+              // then authorize each saved conversation. Repeating start/cancel
+              // admission would require discarded bodies and spend rate limits.
+              const credentials = new Request(request.url, { method: "GET", headers: request.headers });
+              let bytes = new TextEncoder().encode(request.url).length;
+              request.headers.forEach((value, name) => { bytes += new TextEncoder().encode(name + value).length; });
+              if (bytes <= 32_768) enqueueRecovery(maintenanceIdentity(context), async () => {
+                try { return await options.authorize(credentials.clone(), "capabilities"); }
+                catch { return null; } // Expired/revoked credentials require another authenticated request.
+              });
+            }
+            return context;
+          },
+          transportFor,
+          checkpointForEvent,
+          displayControl: true,
+          displayMessageText: true,
+          displayRecordText: true,
+          displayApprovalReview: true,
+          displayPendingApprovals: true,
+          displayHistoryFor(current): ConversationDisplayHistory {
+            const identity = maintenanceIdentity(current);
+            const authorize = async (conversationId: string) => {
+              const fresh = historyRequest ? await options.authorize(historyRequest.clone(), "conversations") : current;
+              if (maintenanceIdentity(fresh) !== identity) throw new Response(null, { status: 403 });
+              await ownsConversation(fresh, conversationId);
+            };
+            const history = new PostgresConversationDisplayHistory(options.persistence.persistence.client,
+              current.tenantId, current.scopeId, authorize);
+            const prepare = <T extends Pick<ConversationDisplayPage, "status" | "conversationId">>(page: T): T => {
+                if (page.status === "preparing" && historyRequest) {
+                  const key = JSON.stringify(["history-backfill", identity, page.conversationId]);
+                  const step = async () => {
+                    const progress = await history.backfill(page.conversationId);
+                    const controls = !progress.hasMore ? await history.backfillControls(page.conversationId) : null;
+                    const reviews = !progress.hasMore && !controls?.hasMore ? await history.backfillReviewControls(page.conversationId) : null;
+                    // Durable watermark survives process restarts; each small step
+                    // reauthenticates and goes to the back of the shared work queue.
+                    if (progress.hasMore || controls?.hasMore || reviews?.hasMore) maintenance.enqueue(key, step);
+                  };
+                  maintenance.enqueue(key, step);
+                }
+                return page;
+            };
+            return {
+              control: async input => prepare(await history.control(input)),
+              page: async input => prepare(await history.page(input)),
+              changes: async input => prepare(await history.changes(input)),
+              content: input => history.content(input),
+              approvalReview: async input => prepare(await history.approvalReview(input)),
+            };
+          },
+          conversations: { ...catalog, get capabilities() { return catalogFor(context).capabilities; },
+            async list(input) {
+              const page = await catalog.list(input);
+              if (maintenanceRequest) {
+                const identity = maintenanceIdentity(context);
+                for (const descriptor of page.items) {
+                  maintenance.enqueue(JSON.stringify([identity, descriptor.conversationId]), async () => {
+                    // A session may have expired or changed permissions since listing.
+                    // Authenticate again before accessing history or resuming approvals.
+                    const current = await options.authorize(maintenanceRequest.clone(), "conversations");
+                    if (maintenanceIdentity(current) !== identity) return;
+                    await ownsConversation(current, descriptor.conversationId);
+                    await reconcileSafely(current, descriptor.conversationId);
+                    await continueApprovalsSafely(current, descriptor.conversationId);
+                    // Imported conversations may have no durable turn document.
+                    // Keep title work within this background concurrency slot.
+                    await titles.afterActivity(descriptor.conversationId, current);
+                  });
+                }
               }
               return page;
-          };
-          return {
-            control: async input => prepare(await history.control(input)),
-            page: async input => prepare(await history.page(input)),
-            changes: async input => prepare(await history.changes(input)),
-            content: input => history.content(input),
-          };
-        },
-        conversations: { ...catalog, get capabilities() { return catalogFor(context).capabilities; },
-          async list(input) {
-            const page = await catalog.list(input);
-            if (maintenanceRequest) {
-              const identity = maintenanceIdentity(context);
-              for (const descriptor of page.items) {
-                maintenance.enqueue(JSON.stringify([identity, descriptor.conversationId]), async () => {
-                  // A session may have expired or changed permissions since listing.
-                  // Authenticate again before accessing history or resuming approvals.
-                  const current = await options.authorize(maintenanceRequest.clone(), "conversations");
-                  if (maintenanceIdentity(current) !== identity) return;
-                  await ownsConversation(current, descriptor.conversationId);
-                  await reconcileSafely(current, descriptor.conversationId);
-                  await continueApprovalsSafely(current, descriptor.conversationId);
-                  // Imported conversations may have no durable turn document.
-                  // Keep title work within this background concurrency slot.
-                  await titles.afterActivity(descriptor.conversationId, current);
-                });
-              }
-            }
-            return page;
+            },
           },
-        },
-        approvals,
-        titleGeneration: { generate: generateTitle },
-        handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence,
-          ...(options.attachmentDownloads === false ? {} : { attachment_download: attachmentDownload }),
-          ...(transcriptionProvider ? { transcription: createAssistantTranscription({
-            assistantId, provider: transcriptionProvider,
-            ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
-            catalogFor, bundleFor }) } : {}) },
-        capabilities: { activity: true, presence: true, synchronization: true,
-          attachmentDownloads: options.attachmentDownloads === false ? false : {
-            maximumBytes: options.persistence.attachmentLimits.maximumBytes, url: "attachments/content" },
-          transcription: transcriptionProvider
-            ? { ...(transcriptionProvider.capability ?? DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY), url: "transcriptions" } : false,
-          attachments: options.attachmentUpload === false ? false : {
-            maximumFiles: 16, maximumBytesPerFile: options.persistence.attachmentLimits.maximumBytes,
-            acceptedMediaTypes: options.attachmentRetention === "conversation" ? STANDARD_ATTACHMENT_MEDIA_TYPES.filter(type =>
-              options.persistence.attachmentLimits.acceptedMediaTypes.some(accepted => accepted === type ||
-                accepted.endsWith("/*") && type.startsWith(accepted.slice(0, -1)))) : options.persistence.attachmentLimits.acceptedMediaTypes,
-            uploadUrl: "attachments" },
-          documentInput: options.provider.metadata.capabilities.document_input.supported
-          ? options.provider.metadata.capabilities.document_input.capability : false,
-          assistant: { id: assistantId, version: HANDRAIL_ASSISTANT_VERSION,
-            provider: options.provider.metadata, toolLoopLimits: limits } },
-        ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
-      }).handle(request);
+          approvals,
+          titleGeneration: { generate: generateTitle },
+          handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence,
+            ...(options.attachmentDownloads === false ? {} : { attachment_download: attachmentDownload }),
+            ...(transcriptionProvider ? { transcription: createAssistantTranscription({
+              assistantId, provider: transcriptionProvider,
+              ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
+              catalogFor, bundleFor }) } : {}) },
+          capabilities: { activity: true, presence: true, synchronization: true,
+            attachmentDownloads: options.attachmentDownloads === false ? false : {
+              maximumBytes: options.persistence.attachmentLimits.maximumBytes, url: "attachments/content" },
+            transcription: transcriptionProvider
+              ? { ...(transcriptionProvider.capability ?? DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY), url: "transcriptions" } : false,
+            attachments: options.attachmentUpload === false ? false : {
+              maximumFiles: 16, maximumBytesPerFile: options.persistence.attachmentLimits.maximumBytes,
+              acceptedMediaTypes: options.attachmentRetention === "conversation" ? STANDARD_ATTACHMENT_MEDIA_TYPES.filter(type =>
+                options.persistence.attachmentLimits.acceptedMediaTypes.some(accepted => accepted === type ||
+                  accepted.endsWith("/*") && type.startsWith(accepted.slice(0, -1)))) : options.persistence.attachmentLimits.acceptedMediaTypes,
+              uploadUrl: "attachments" },
+            documentInput: options.provider.metadata.capabilities.document_input.supported
+            ? options.provider.metadata.capabilities.document_input.capability : false,
+            assistant: { id: assistantId, version: HANDRAIL_ASSISTANT_VERSION,
+              provider: options.provider.metadata, toolLoopLimits: limits } },
+          ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
+        }).handle(request);
       } finally { releaseContext?.(); }
     },
   };
@@ -1181,7 +1207,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     recoveryTimer.unref?.();
   };
   scheduleRecoveryContexts(0);
-  const contextRetirementTimer = setInterval(() => executionContexts.sweep(), 60_000);
+  const contextRetirementTimer = setInterval(() => { executionContexts.sweep(); activityContexts.sweep(); }, 60_000);
   contextRetirementTimer.unref?.();
   let attachmentCleanup: ReturnType<NonNullable<PostgresAssistantPersistence["startAttachmentCleanupWorker"]>> | undefined;
   let retainedDraftCleanup: ReturnType<typeof startPostgresConversationFileStagingCleanupWorker> | undefined;
@@ -1218,6 +1244,9 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     await Promise.all([...durableTransports.values()].map(transport => transport.stopWorkers()));
     liveProjectionStopped = true;
     await Promise.all([...liveProjectionClosers].map(close => close()));
+    await Promise.all([...activityDeliveries.values()].map(delivery => delivery.dispose()));
+    await Promise.all(retiringActivity);
+    activityDeliveries.clear(); bundles.clear();
     await Promise.all([attachmentCleanup?.stop(), retainedDraftCleanup?.stop()]);
   })();
   return Object.freeze({

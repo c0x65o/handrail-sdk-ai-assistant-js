@@ -28,11 +28,13 @@ async function fixture(options: Partial<SavedConversationPreparerOptions> = {}) 
   const prepare = createSavedConversationRequestPreparer({ eventStore, authorize, resolveAttachment, ...options });
   const controller = new AbortController();
   const run = () => prepare({ request, conversationId, turnId: "saved-turn", mutationId: "mutation", signal: controller.signal });
-  return { run, append, authorize, resolveAttachment, controller };
+  return { run, append, authorize, resolveAttachment, controller, eventStore };
 }
 
 it("replays admitted user events and resolves a legacy image using the saved message location", async () => {
   const h = await fixture();
+  const read = vi.spyOn(h.eventStore, "read");
+  const checkpoint = vi.spyOn(h.eventStore.checkpoints, "read");
   const result = await h.run();
   expect(result.request.messages).toEqual([{ role: "user", content: [
     { type: "text", text: "Read this image" },
@@ -41,6 +43,9 @@ it("replays admitted user events and resolves a legacy image using the saved mes
   expect(h.resolveAttachment).toHaveBeenCalledWith(expect.objectContaining({ conversationId,
     messageId: "saved-input", turnId: "saved-turn", attachment: expect.objectContaining({ attachment_id: "att_image" }) }));
   expect(h.authorize).toHaveBeenCalledTimes(3);
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(read).toHaveBeenCalledWith(expect.objectContaining({ limit: 128 }));
+  expect(checkpoint).toHaveBeenCalledTimes(1);
 });
 
 it("does not read canonical history or source bytes after authorization is denied", async () => {
@@ -69,11 +74,38 @@ it("refuses changed message input while source metadata is loading", async () =>
 
 it("tolerates unrelated metadata changes during preparation", async () => {
   const h = await fixture();
+  const read = vi.spyOn(h.eventStore, "read");
   h.resolveAttachment.mockImplementation(async () => {
     await h.append({ type: "conversation.metadata_updated", metadata: { title: "Renamed" } });
     return { attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4 };
   });
   expect((await h.run()).files[0]?.included).toBe(true);
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("refuses a clear saved while metadata was resolving", async () => {
+  const h = await fixture();
+  h.resolveAttachment.mockImplementation(async () => {
+    await h.append({ type: "conversation.cleared" });
+    return { attachment_id: "att_image", content_ref: "ref_image", media_type: "image/png", byte_size: 4 };
+  });
+  await expect(h.run()).rejects.toMatchObject({ code: "saved_input_unavailable" });
+});
+
+it("does not continue canonical replay after cancellation of an outstanding page", async () => {
+  const h = await fixture();
+  const original = h.eventStore.read.bind(h.eventStore);
+  let release!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const read = vi.spyOn(h.eventStore, "read").mockImplementation(async input => {
+    entered(); await held; return original({ ...input, limit: 1 });
+  });
+  const result = expect(h.run()).rejects.toThrow("stop replay");
+  await started; h.controller.abort(new Error("stop replay")); await result;
+  release(); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(h.resolveAttachment).not.toHaveBeenCalled();
 });
 
 it("refuses a canonical cancellation saved while a file read was running", async () => {

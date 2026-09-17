@@ -1,4 +1,5 @@
 import { jsonValuesEqual } from "./json-equality.js";
+import type { ConversationDraftOrigin } from "./client/draft-origin.js";
 import {
   CONVERSATION_CITATION_RECORDS_VERSION,
   CONVERSATION_EVENT_VERSION,
@@ -178,6 +179,8 @@ export interface ConversationRuntimeOptions<TRequest> {
 }
 
 export interface ConversationRuntimeSendMessageInput<TRequest> {
+  /** Local journal metadata for exact draft cleanup after recovered admission. */
+  readonly localDraft?: ConversationDraftOrigin;
   readonly content: string | readonly ConversationMessageContentPart[];
   readonly attachments?: readonly ConversationAttachmentReference[];
   readonly request: TRequest;

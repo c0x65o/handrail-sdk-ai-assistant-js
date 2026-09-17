@@ -173,7 +173,7 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
     if (node) { node.style.height = "auto"; node.style.height = `${Math.min(Math.max(26, node.scrollHeight), 120)}px`; }
   }, [props.composer?.draft]);
   const [dragging, setDragging] = useState(false);
-  const intakeDisabled = Boolean(props.attachmentsEnabled === false || props.canStop || props.composer?.isSending);
+  const intakeDisabled = Boolean(props.attachmentsEnabled === false || props.canStop || props.composer?.isSending || props.composer?.attachmentPersistence?.status === "loading");
   const isFileDrag = (event: DragEvent<HTMLDivElement>) => Array.from(event.dataTransfer.types).includes("Files") || event.dataTransfer.files.length > 0;
   return <Composer {...(props.composer ? { composer: props.composer } : {})} className="hr-composer"
     data-dragging={dragging && !intakeDisabled || undefined}
@@ -191,13 +191,13 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
             && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) event.preventDefault();
         }}
         onPaste={(event) => {
-          if ((props.composer?.isSending || props.canStop || props.attachmentsEnabled === false)
+          if (intakeDisabled
             && Array.from(event.clipboardData.items).some((item) => item.kind === "file")) event.preventDefault();
         }}/>
       <div className="hr-composer__toolbar">
-        {props.attachmentsEnabled !== false && <><FileInput ref={input} hidden/>
+        {props.attachmentsEnabled !== false && <><FileInput ref={input} hidden disabled={intakeDisabled}/>
           <button className="hr-composer__icon" type="button" aria-label={props.labels?.attach ?? "Add files and images"}
-            title={props.labels?.attach ?? "Add files and images"} disabled={Boolean(props.composer?.isSending || props.canStop)} onClick={() => input.current?.click()}><ComposerIcon name="plus"/></button></>}
+            title={props.labels?.attach ?? "Add files and images"} disabled={intakeDisabled} onClick={() => input.current?.click()}><ComposerIcon name="plus"/></button></>}
         {props.showApprovalControl !== false && <ComposerApprovalControl {...props} disabled={Boolean(props.composer?.isSending || props.canStop)}/>}
         <div className="hr-composer__spacer"/>
         <div className="hr-composer__voice">{props.voiceControls !== undefined ? props.voiceControls
@@ -212,7 +212,14 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
       </div>
       {props.actions}
       <ErrorList className="hr-composer__errors"/>
+      {props.composer?.draftInputError && <p className="hr-composer__errors" role="alert">{props.composer.draftInputError}</p>}
       {props.composer?.draftPersistence?.status === "loading" && <p role="status">Restoring draft…</p>}
+      {props.composer?.attachmentPersistence?.status === "loading" && <p role="status">Restoring files…</p>}
+      {props.composer?.attachmentPersistence?.error && <div className="hr-composer__errors" role="alert">
+        <p>{props.composer.attachmentPersistence.error}</p>
+        <button type="button" onClick={() => { void props.composer?.attachmentPersistence?.retry().catch(() => undefined); }}>Retry saving files</button>
+        <button type="button" onClick={() => { void props.composer?.attachmentPersistence?.reload().catch(() => undefined); }}>Replace selections with saved files</button>
+      </div>}
       {props.composer?.draftPersistence?.error && <div className="hr-composer__errors" role="alert">
         <p>{props.composer.draftPersistence.error}</p>
         <button type="button" onClick={() => { void props.composer?.draftPersistence?.retry().catch(() => undefined); }}>Retry saving draft</button>

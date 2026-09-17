@@ -632,3 +632,490 @@ results are in `consumer-contract-qualification.json`. No dependency pin, lockfi
 release or production database change was made for this continuation. Approval
 wake-ups after a crash, old context-cache retirement, provider memory, and the
 remaining adoption matrix still need work; this does not complete the goal.
+
+
+### Approval crash recovery, trusted identity pages and idle resource retirement
+
+The shared PostgreSQL adapter now atomically wakes decided approvals, repairs a
+missing canonical decision event from the exact committed receipt, and retains
+a cursor across 25-proposal repair pages. Current authorization precedes claim
+and transcript access. Renewable leases, wake generations and the native effect
+ledger preserve one effect across competing instances and later human retries.
+Clear/delete cannot revive an old external/voice action. See
+`recovery-discovery.md` for migration and custom-authority responsibilities.
+
+The latest native PostgreSQL fixture records 90-byte recovery metadata at both
+20k and 100k frames, with p95 3.09/1.93 ms. Its legacy single reads serialized
+3.30/16.74 MB and took 99.57/450.61 ms. The artifact also verifies one winning
+approval claim and that a newer committed decision survives an old ack. These
+are local adapter measurements, separate from browser wire/render budgets.
+
+A paged trusted identity source now visits up to 32 keys per tick, resolving
+current identity again before each work page. It retries queue saturation and
+supports identities beyond the legacy 128-context prefix. Background request
+reauthentication uses a body-free GET capability check; it never replays send or
+cancel admission/rate limits.
+
+Server retention now keeps 32 idle execution contexts, with active requests,
+construction and workers protected; 128 scope adapters; and 32 idle activity
+channels with active subscribers protected. Idle contexts expire after a minute
+at the next sweep. Recreated transports have distinct lease-owner generations.
+The last activity observer releases its pub-sub listener, including connection
+races. Activity HTTP streaming honors backpressure and caps each notification
+queue at 256 envelopes, recovering through durable snapshots after overflow.
+
+Validation after the lifecycle changes: 32 cases passed across approval restart,
+worker ownership, activity/pub-sub teardown, paged trusted sources and idle
+retirement; a separate 80-case run passed shared tool/approval execution, saved
+input concurrency, application-session reconnect, realtime workspaces and voice
+tool bridges. The final same-clock cache/worker/activity run passed 20 cases. All nine
+high-level assistant cases pass, including retry after provider construction fails.
+TypeScript, the package build, scoped ESLint and all three consumers' web/server
+source contracts pass. Checks run sequentially with one test worker. The updated
+consumer artifact records actual build version and compiler memory/timing.
+
+The shared checkout advanced from `28ff2ad` to `81564f9` through another workspace
+process during these checks, including some in-progress foundation files.
+This goal run issued no commit, push, PR, deployment or production database
+write. Its remaining working-tree changes require later authorized release;
+no production behavior or live adoption is claimed here.
+
+The overall foundation goal remains active. Next work is the concrete UI/consumer
+qualification still listed in `chatbot-foundation-adoption.md`, including hidden
+Spartan completion notifications and attachment-draft lifecycle review. Native
+device and published-pin deployment checks belong to the later adoption plan;
+they do not authorize a release from this goal.
+
+
+### Hidden conversation completion and consumer data refresh
+
+The SDK workspace now exposes `subscribeSettlements`. It derives notifications
+from bounded execution controls for paged sessions and the existing canonical
+state for older runtimes. Initial history, duplicate reads, generation resets and
+older-page loads do not announce new completions. Fast terminal turns, approval
+pause/resume, hidden chats and callback cleanup are covered. Delivery occurs
+before idle runtime eviction and does not fetch messages or tool-result bodies.
+
+Spartan's local integration uses these notifications to revalidate mounted ERP
+data. The contract register accepts a general revalidation hint; it does not
+claim a specific mutation succeeded. The older SDK fallback still observes
+completed tool results and now keys its bookkeeping by runtime identity through
+a WeakMap. SDK upgrade and app adoption remain later authorized steps.
+
+Local qualification: 37 SDK session/workspace/bootstrap cases passed, with the
+18 workspace/bootstrap cases rerun after final changes. Thirteen Spartan action
+and resource-refresh tests passed, including an actual mounted contract page
+that fetches its authorized data again after a background completion. The SDK
+build/typecheck and scoped lint pass. All three consumer web/server source
+contracts pass; Spartan's compile also includes the changed contract page and
+resource-refresh tests. Dependency declarations and locks were not changed.
+
+The production public React build was exercised through a local synthetic HTTP
+server. A hidden chat emitted exactly one settlement notification after three
+control reads and made zero transcript requests, retaining zero messages. The
+existing 20k/100k-equivalent render scenarios also passed: p95 selection-to-paint
+56.4/47.1 ms, collected browser heap 5,884,124/5,659,880 bytes, maximum HTTP body
+14,207/14,244 bytes, four idle sessions, ninety mounted-message cap and 0.15625 px
+prepend-anchor drift. Single-chat and pending-inbox layouts passed at 320/390 px.
+The updated artifact is `paged-workspace-browser-benchmark.json`. This measures
+synthetic browser HTTP/render costs, not production app or database latency.
+
+The browser run first failed because the runner's long temporary directory
+exceeded Chromium's Unix socket path limit; a process-local `TMPDIR=/tmp` resolved
+launch. It then exposed a benchmark click race: a newly prepended row appears
+before the loading-finally update enables the next button. The script now waits
+for the actual enabled button before clicking again, preserving the measured
+viewport. The successful run closes its browser and local server.
+
+The overall goal is still active. The next remaining local audit is attachment
+and draft lifecycle, including aggregate retention under many unfinished drafts,
+and the final complete consumer/feature matrix. No goal release action or
+production database write was performed in this continuation.
+
+### Flutter aggregate draft and transfer retention
+
+The interrupted continuation was resumed from the existing workspace. The audit
+found that empty controllers without durable storage were never eligible for
+eviction, unfinished drafts had no shared file/text budget, and a host file
+converter could copy attachment bytes again on each render and retry. Local
+Flutter changes now evict empty idle editors, snapshot each selected file once,
+and reject capacity-exceeding additions/replacements before changing the old
+selection. Per-message negotiated validation remains in place.
+
+Default account content budgets are 32 text drafts/snapshots, 64 KiB per draft
+and 512 KiB total UTF-8 text; 64 files / 64 MiB; and two host upload futures.
+Active send/save snapshots and cancelled-but-unsettled transfers remain counted
+until the actual callback settles. Removing a file or acknowledging a send
+cannot be used to evade the budget while its bytes are still held. Custom opaque
+attachment models require `fileForAttachment` for byte accounting; their count
+and concurrency are still bounded. These limits describe content, not total
+process heap or buffers allocated by a host callback.
+
+Text validation runs before edit revision changes, including direct controller
+updates, restored text and explicit reload. A failed paste preserves the editor
+and its admission identity. Capacity-blocked saved drafts remain stored and can
+be reloaded after freeing space. The standard workspace announces the error in
+a live region. Slow storage writes remain charged after editor disposal.
+
+The final focused run passed 73 tests across draft lifecycle, attachment intake,
+standard workspace and composer behavior, using one Flutter test worker. Scoped
+analysis passed with fatal infos enabled. All three real mobile consumer source
+entrypoints compile against the local SDK; the final qualification artifact is
+`flutter-draft-retention-qualification.json`. One earlier command named a
+nonexistent extra test file; its 28 existing tests passed, then the corrected
+command and final combined run completed successfully. No failed app behavior
+was inferred from that command error.
+
+The goal remains active. Outstanding local work is the explicit browser/file
+draft recovery audit and the final feature/consumer qualification matrix, plus
+the canonical preparation and deferred related-content items already tracked
+in the adoption document. Unsent native files still live only in account memory;
+this change does not claim file reload persistence. Nothing was committed,
+pushed, deployed or written to a production database by this continuation.
+
+### Browser deletion cleanup and cross-tab fencing
+
+The browser audit found no per-conversation erase path for IndexedDB drafts,
+scroll anchors or pending sends after a successful server deletion. The local
+SDK now validates the returned deletion identity/version before touching device
+state, then erases all three rows in one transaction with a content-free deleted
+identity marker. Writes from an older tab, late teardown saves and reopened
+adapters cannot recreate those rows. Clear and archive retain their prior draft
+semantics. Account erasure walks keys incrementally, including marker metadata.
+
+The high-level catalog integrates cleanup and calls a combined store once.
+Separate custom stores can implement the optional `eraseConversation` contract;
+missing support is reported explicitly at runtime. A local failure after remote
+success raises `ConversationLocalErasureError` with the confirmed result and a
+device-only retry. The registry keeps the identity deleted, the workspace drops
+its runtime, and the standard picker removes the row while presenting **Retry
+device cleanup**. The retry does not issue another server mutation.
+
+Local storage, bootstrap, registry, workspace and React picker checks passed 64
+tests with one worker. TypeScript, package build and scoped lint pass. All three
+web/server consumer source contracts compile against the built declarations.
+An actual Chromium run using public built exports verified upgrade from schema
+version 2, atomic rollback on a failed marker write, four rejected old-tab writes,
+reload durability, scope isolation and explicit account erasure. The browser and
+temporary local HTTP server close after the run. Its result is
+`local-erasure-browser-qualification.json`; this is synthetic browser storage,
+not an app/production reproduction or a database timing measurement.
+
+The first integration run exposed two test-fixture errors (spying on a frozen
+runtime and omitting a required picker idempotency key). Both were corrected;
+the final 64-case run passed. IndexedDB version 3 is additive, but old SDK code
+that explicitly requests version 2 cannot reopen an upgraded database. The API
+and adoption docs therefore require a compatible SDK for application rollback,
+preserving stored pending intent. No dependency installation or release occurred.
+
+The goal remains active. The browser composer audit also confirmed that its
+current per-mount file ownership releases unsent selections on conversation
+switch/unmount. Retaining and recovering those selections is the next unfinished
+part of the durable-draft work; this deletion fix does not claim to solve it.
+
+### Browser attachment ownership and reload qualification
+
+The next local change resolves that composer ownership gap for the standard
+SDK upload path. File selections now belong to `client.attachmentDrafts`, outside
+the React mount and transcript runtime cache. IndexedDB v4 separates immutable
+binary sources from bounded metadata, saves the source and exact upload key
+before upload, and restores completed references without uploading again.
+Ready-reference updates and account quota scans do not read/rewrite source blobs.
+
+Account limits are 32 nonempty file drafts, 64 selected files and 64 MiB of unique
+retained source content, plus two actual host upload futures. Removed/cancelled
+sources remain charged while captured storage writes or upload callbacks still
+retain them; aborting a callback does not prematurely admit more work. Storage
+transactions enforce the same persisted file/count/byte limits across tabs.
+Failed writes/conflicts retain selections and expose retry or explicit saved
+replacement. Confirmed deletion now atomically erases file metadata and blobs
+with the existing pending/text/position state and durable deletion marker.
+
+Validation used one Vitest worker: the final eight-file run passed 136 tests,
+including full-queue cross-tab replacement, immutable memory source identity,
+and blocking file intake while restoring saved selections. SDK typecheck, build
+and scoped lint passed. All three
+consumer web/server source contracts compiled against the local public SDK
+declarations, with zero errors. The largest graph was Spartan (1,912 source
+files, approximately 1.33 GB RSS), checked sequentially; this is compiler memory,
+not chatbot client memory. No package declarations, lockfiles or releases changed.
+
+`attachment-draft-browser-qualification.json` records real Chromium using the
+built client, standard React workspace, IndexedDB and local HTTP upload. A PNG's
+original bytes and upload key survive seven chat switches, runtime cache eviction,
+reload, and an intervening account scope. Exactly one HTTP upload occurs; another
+account sees no files. Explicit removal survives a further reload. Browser/server
+errors: zero. The separate erasure browser fixture now verifies five rejected
+old-tab writes, including files, plus byte/key reload, v2 upgrade, atomic rollback
+and account erasure. These fixtures close their browsers and local servers.
+
+The adapter seam for custom authorized uploads is additive. Mills' existing
+queue override and fresh upload-stage keys still need the documented source
+adoption; omitted durable stores in the three apps remain memory-only. Native
+Flutter file reload and process-loss reconciliation of exact admitted local
+draft identities remain open. This milestone does not complete the overall goal
+or establish deployed behavior.
+
+
+### Browser exact draft receipts across process loss
+
+The durable admission journal previously recorded server mutation/start
+identities but relied on a mounted composer's callback for local cleanup. A
+process exit after confirmed admission could therefore leave accepted text/files
+in the next process's draft. The standard composer now captures an exact stored
+text version and stable file IDs before admission and persists a device-only
+origin receipt with the pending submission. It is excluded from all server
+request bodies. Confirmed replay cleans those exact identities before journal
+acknowledgement, preserves newer local/cross-tab work, and retains the journal
+when device cleanup fails. Text and file cleanup are independently idempotent.
+File cleanup uses metadata and exact Blob-key deletion, not source hydration.
+
+The focused nine-file regression run passed 129 tests with one worker. Coverage
+includes process reconstruction, partial cleanup failure, same-text newer drafts,
+typing and file selection during blocked cleanup, cross-tab conflicts, uncertain
+server admission, malformed receipts, metadata-only IndexedDB cleanup and atomic
+rollback. Receipt-bearing journals use version 2; version 1 remains readable and
+cannot claim a receipt. Old clients reject version 2 rather than dropping it.
+
+The expanded `attachment-draft-browser-qualification.json` adds a real Chromium
+reload after admitted-file cleanup is interrupted, then edits new text and adds
+a new file before retry. Only the accepted file is removed; new work survives a
+further reload without extra upload. Both server admissions are identical and
+contain no device receipt. The browser script explicitly awaits IndexedDB
+predicates: Playwright's function polling treated async Promises as truthy and
+initially caused a premature failing assertion. That test synchronization issue
+was corrected; it was not evidence of an SDK attachment-cleanup failure.
+
+SDK typecheck, build, scoped lint and all three consumer web/server source
+contracts also pass. Consumer compilation is sequential; the largest graph remains Spartan
+(1,913 source files, about 1.35 GB RSS), not runtime chat memory. No dependency
+declarations or locks changed.
+
+These are local synthetic results, not application adoption or deployed behavior.
+Native Flutter file persistence/receipt parity and the remaining feature matrix
+are still open; the overall goal remains active.
+
+
+### Flutter exact draft origin recovery
+
+Flutter's pending journal had the same gap between server admission and local
+composer cleanup. The client/session now accepts an immutable device origin,
+persists receipt-bearing submissions as version 2, and awaits exact cleanup after
+confirmed admission before journal acknowledgement. It preserves version-1
+recovery and excludes origin metadata from gateway/provider bodies. The standard
+workspace uses an additive service without changing existing structural send
+signatures; its account-owned composer registers cleanup outside the view.
+
+Text cleanup serializes with storage writes, preserves newer edits (including
+identical text), refuses to overwrite another writer, and flushes edits captured
+during cleanup before disposal completes. File cleanup matches stable upload
+selection identities, preserving a removed-and-readded identical file. Pending
+selection references are released after confirmed cleanup; in-flight callback
+reservations remain charged until settlement. This is not native file-byte
+persistence: unsent native files still need the remaining durable adapter work.
+
+Focused client/storage/session tests pass against the locked public JS gateway;
+the explicit local JS source qualification also exercises bounded display and
+large-text routes. The real gateway restart test injects a device failure after
+partial cleanup, recreates the account controller, preserves a newer same-text
+draft and starts the original turn once. Captured HTTP admissions are identical
+and contain no receipt. Lost admission responses do not invoke cleanup; lost
+start replies replay it idempotently. Widget tests cover exact capture, view
+closure, account teardown, cross-tab conflicts, typing during cleanup, and newer
+same-file selections. The test's initial stall came from crossing Flutter's fake
+and real async zones; explicit scheduler pumping resolved the qualification wait.
+
+Both Dart packages pass analysis, and all three real mobile integration source
+contracts compile sequentially. Evidence is recorded in the Flutter repository's
+`docs/draft-origin-qualification.json`. No dependency declarations/locks, app
+configuration, commits or deployments changed. Native byte persistence, provider
+preparation memory work and the broader final feature audit remain unfinished.
+
+
+### Native Flutter file drafts and metadata-only recovery
+
+The remaining native file gap was in the account composer: it retained selections
+only in memory even though accepted submissions already had exact local receipts.
+The Flutter client now includes an optional scoped encrypted-storage adapter with
+separate immutable sources, versioned metadata and a durable cleanup journal.
+Its standard composer restores only the selected chat, persists identity/source
+before upload, and saves ready references without rereading or rewriting bytes.
+Admission recovery removes only exact accepted IDs without loading file content.
+Confirmed permanent deletion records a tombstone before source cleanup; late
+writers cannot resurrect the deleted chat. Interrupted writes, uncertain commits,
+cleanup failures and other writers preserve the authoritative saved revision.
+
+Limits are 64 files / 64 MiB / 32 nonempty chats and a 256 KiB metadata manifest.
+New/staged sources and outstanding cleanup count against storage quotas. Removed
+selections remain in composer memory budgets while a storage callback holds them.
+Stop during a pending source save prevents later network upload and preserves the
+same selection key for retry. The standard workspace announces restore/save
+failures, offers safe retry or explicit saved-file replacement, and blocks sending
+until recovery is resolved. The host supplies encryption and atomic metadata
+replacement; cross-isolate/process hosts need a transactional store implementation.
+
+The focused source qualification passes 71 composer/draft/workspace tests and 31
+client store/local-JS-gateway tests. These include account isolation, store
+recreation, one binary write per source, metadata-only ready updates/recovery,
+concurrent editor conflicts, slow storage budget accounting, disposal joins,
+selected-chat hydration, and exact admission replay after interrupted cleanup.
+An additional 47 controller/deletion/draft/journal tests cover deletion replay
+after native cleanup failure. The wire fixture uses a supported CSV document; a
+plaintext document fixture was correctly rejected by the protocol before it could
+exercise cleanup and was corrected. Both Dart packages pass analysis. A 320-pixel,
+2x-text storage-error test exposed composer overflow; bounding the composer with
+a scroll view keeps recovery controls reachable while retaining transcript space.
+Background cleanup and lifecycle flushing now leave unopened file drafts unhydrated. Mobile consumer compilation receipts
+and test boundaries are recorded in Flutter's
+`docs/native-attachment-draft-qualification.json`.
+
+This is local source work. Consumer pins, locks and configuration are unchanged;
+apps must configure their encrypted adapter and qualify it on physical devices
+when adopting a later published full SHA. The overall goal remains active:
+browser text retention, provider-input memory work and the final feature audit
+are still outstanding.
+
+
+### Browser editor retention and account-owned draft recovery
+
+The saved-draft store already bounded persisted content, but browser editors
+could retain an oversized paste until a later write rejected it. Pending save
+and send callbacks also held older text outside that budget. Controllers and the
+standard hook now validate before retention, preserve the previous text/edit
+identity on rejection, and expose a separate accessible input error. One owner’s
+identical text shares a reservation; older captured values remain charged until
+their actual callback settles, even after acceptance, unmount or disposal.
+
+Limits are 64 KiB UTF-8 per value, 512 KiB / 32 distinct values per scoped store,
+and 128 reservation references. A character-count precheck refuses very large
+pastes without allocating another encoded copy. Initial text, async restore and
+explicit reload use the same checks. New typing captured during accepted-message
+cleanup now finishes saving before disposal releases its editor.
+
+A related lifetime bug tied text ownership to transcript runtime eviction. A
+failed save could be lost while navigating enough chats. The standard bootstrap
+now shares an account-owned `ConversationDraftWorkspace`: failed/uncertain edits
+remain outside the transcript cache, reopening reuses their revision owner, and
+clean unused editors use an eight-entry cache. All live/closing owners have a
+separate 64-entry metadata cap. Confirmed permanent deletion forgets the owner
+while scoped storage fences late writers. Transcript caching remains at four
+idle sessions; draft recovery does not pin old message windows.
+
+Qualification passes 120 tests across seven scoped suites, normal build, full
+TypeScript, scoped lint and all three consumer web/server source contracts.
+Chromium exercises the built public client/React workspace and real IndexedDB.
+Ten rejected 1 MiB pastes retain the prior text and saved revision; collected heap
+changes from 4,256,340 to 4,638,056 bytes (about 0.36 MiB growth, below the 8 MiB
+warmup budget). Measured fill/rejection durations are 223–386 ms including browser
+automation input. It also proves an accepted send stays budgeted until release,
+failed text saves survive transcript eviction, recovery preserves newer text/files,
+and account isolation and ready-upload reuse remain intact. The qualification
+server now declares UTF-8 explicitly so accessible messages are decoded correctly.
+
+The separate paged-workspace rerun keeps selection-to-paint p95 at 54.7/55.7 ms for
+20k/100k-equivalent histories, with 5.86/5.98 MB collected heap, at most 90 rendered
+messages, four idle sessions, and at most 14,244 HTTP body bytes. Only one catalog
+page loads initially. These are synthetic browser measurements, not a production
+latency estimate; database and provider costs remain separate.
+`browser-text-retention-qualification.json` contains the evidence, limits and
+latest consumer compilation receipts. No dependency pins, locks, commits or
+deployments changed. Provider-input preparation memory and the final feature audit
+remain open; the full goal is still active.
+
+### Provider preparation: duplicate replay and retained checkpoint text
+
+The saved-turn preparer previously loaded canonical state twice, serialized all
+messages for equality, cloned every message record, and scanned all file records
+for each message. It now checks the append-only canonical head after fresh
+authorization. An unchanged head avoids the second replay; a changed head keeps
+full replay/admission validation and compares a streamed SHA-256 equality token.
+The token length/type frames canonical fields and preserves UTF-16 identity,
+including lone surrogates, without allocating a full transcript JSON string.
+
+Selection now uses linear input/file indexes, avoids argument spreading over
+large histories, clones only provider-relevant values, and hands only selected
+text plus the prior-file catalog to asynchronous resolution. Pure historical
+redaction callbacks stop after filling the message quota. Required current input
+and selected old files retain their existing rules. Replay reads use 128-event
+pages and observe cancellation, including late completion of a held read.
+
+Fresh-process memory qualification found another retention source: strings
+parsed from checkpoint JSON could retain that entire serialized backing string.
+Selected provider text now receives independent UTF-16 storage. Identical output
+hashes prove the benchmark's provider messages/catalog did not change. On local
+20k/100k represented-event checkpoints, preparation p95 changed from 45.97/290.92
+ms to 35.92/225.25 ms, with one checkpoint/tail read instead of two. Provider bodies
+are 16,389 bytes in both cases. Collected heap retained during a delayed business
+context callback changed from 3.38/16.85 MB to about 24 KB. Thirty isolated scopes
+using identical conversation IDs retained about 1.60 MB while callbacks waited.
+These are synthetic local preparation measurements, not database/provider/network
+or production capacity results; cold canonical decode remains history-dependent.
+
+Run `npm run build`, then `HANDRAIL_PREPARATION_REPORT=docs/provider-preparation-qualification.json
+node --expose-gc scripts/benchmark-saved-conversation-request.mjs`. Each case uses a
+fresh process and the recorded real Git baseline with current shared dependencies.
+The benchmark gates unchanged provider output, checkpoint/read count, body bytes
+and paused-callback retained memory. The complete prior-file catalog still grows
+with saved attachments. Indexed canonical context/catalog work and the broader
+feature audit remain open; this is not a full-goal completion claim.
+
+Validation for this preparation change: 153 tests across nine suites pass with
+one worker, including canonical admission, durable provider replay and tool-loop
+integration. Normal build, full TypeScript, scoped lint and diff whitespace checks
+pass. No consumer dependency declarations, locks, releases or production state
+were changed.
+
+### Deferred structured-record inspection
+
+The canonical/display split already deferred oversized tool/source/approval
+records, but the standard surfaces left most of those placeholders without a
+reader. A separately negotiated `recordText` capability now exposes formatted
+record sections through the existing authorized content endpoint. SQL returns at
+most 8,193 code points (including the lookahead); the API/UI retain 8,192. The
+client never reassembles all sections or inserts them into transcript/model state.
+Both React and Flutter expose an explicit reader for deferred related records;
+the React pending inbox also exposes inspection of its selected review pair.
+Selection/revision changes hide cached details and cancel pending reads.
+
+Inspection deliberately does not confer approval. Verified bounded structured
+approval review/decision remains open, as do custom-host adoption and the broader
+restart/consumer behavior audit. The format is additive, capability-negotiated,
+and local until a later authorized SDK SHA and consumer adoption.
+
+The reader qualification passes 73 JS tests (seven suites), 17 Dart client tests,
+27 Flutter widget tests, and 20 Flutter-to-local-JS gateway integration tests.
+TypeScript build/typecheck, scoped lint, Dart analysis and Flutter analysis pass.
+Chromium exercises the built public React workspace at 320px and 390px: zero
+eager detail requests, explicit 8,192-code-point sections, literal HTML-like text,
+no horizontal overflow, and no extra transcript page for approval inspection.
+`deferred-record-browser-qualification.json` records the browser evidence; scoped
+consumer compile receipts are recorded separately with the qualification.
+
+
+### Final local foundation acceptance
+
+The final audit passes 2,465 JavaScript tests in 225 files, 226 Dart client tests,
+220 Flutter widget tests and 31 package-contract tests. TypeScript typecheck/build,
+scoped ESLint and full Dart/Flutter analysis pass. Tests run sequentially with one
+worker. All three consumer source contracts pass; mobile entrypoints were compiled
+again after the final session/controller fix.
+
+The audit found a real paged-send error: a definitive rejected admission was being
+presented as uncertain/retryable. JS and Flutter now release only its exact send
+journal, preserve drafts/files and allow correction without provider dispatch.
+Network ambiguity still keeps the original identity. Recovery after restart and
+failed local journal cleanup are exercised. Old test fixtures were updated for
+graceful shutdown, explicit legacy capability negotiation and account-owned file
+drafts. The browser/server composer fixture now uses real Node primitives.
+
+Memory sampling traced the full JS test peak to seven embedded PostgreSQL WASM
+instances in the approval restart matrix. Reusing one database with separate
+tenants preserves its seven cases and reduces that fixture's peak process RSS to
+829,384 KiB. This test-runner metric is separate from production
+Node/PostgreSQL and browser/Flutter memory measurements.
+
+See `chatbot-foundation-qualification.md` for the current acceptance map and
+`chatbot-foundation-final-qualification.json` for final commands/results. Earlier
+progress notes that call the audit open are superseded. Release, public-SHA
+dependency adoption, production migrations and device/deployed qualification remain
+later authorized work. No release or production data change is part of this result.

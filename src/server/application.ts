@@ -355,3 +355,5 @@ export async function createAiApplication<
     },
   });
 }
+export { createFeedbackTools, parseFeedbackReceipt, FEEDBACK_SUBMIT_TOOLS,
+  type FeedbackKind, type FeedbackContext, type FeedbackReceipt, type FeedbackToolsOptions } from "./feedback.js";

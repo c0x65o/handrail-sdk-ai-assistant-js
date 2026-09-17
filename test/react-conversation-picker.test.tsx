@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ConversationCatalogError,
+  ConversationLocalErasureError,
   DEFAULT_CONVERSATION_CATALOG_ORDER,
   type ConversationCatalog,
   type ConversationCatalogCursor,
@@ -48,6 +49,26 @@ import {
 } from "../src/react/index.js";
 
 afterEach(() => cleanup());
+
+it("removes a confirmed deletion and offers a device-only retry when cleanup fails", async () => {
+  const cleanupLocal = vi.fn(async () => {});
+  cleanupLocal.mockRejectedValueOnce(new Error("still unavailable"));
+  const catalog = createCatalog({ permanentlyDelete: vi.fn(async input => {
+    throw new ConversationLocalErasureError({ operation: "permanent_delete", status: "deleted",
+      conversationId: input.conversationId, deletedVersion: input.expectedVersion }, cleanupLocal);
+  }) });
+  render(<Harness catalog={catalog} authorizationContext={{ subject: "owner" }} confirm={async () => true} />);
+  await waitFor(() => expect(latestController.items).toHaveLength(1));
+  await act(() => latestController.permanentlyDeleteConversation({ descriptor: latestController.items[0]!, idempotencyKey: "delete-device" as never }));
+  expect(latestController.items).toHaveLength(0);
+  expect(screen.getByRole("alert").textContent).toContain("conversation was deleted");
+  fireEvent.click(screen.getByRole("button", { name: "Retry device cleanup" }));
+  await waitFor(() => expect(cleanupLocal).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect((screen.getByRole("button", { name: "Retry device cleanup" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Retry device cleanup" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(cleanupLocal).toHaveBeenCalledTimes(2); expect(catalog.permanentlyDelete).toHaveBeenCalledOnce();
+});
 
 interface Authorization {
   readonly subject: string;

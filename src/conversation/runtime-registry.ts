@@ -1,4 +1,5 @@
 import {
+  ConversationLocalErasureError,
   parseArchiveConversationInput,
   parseClearConversationInput,
   parseConversationCatalogDescriptor,
@@ -413,7 +414,10 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
       return result;
     } catch (error) {
       if (this.#entries.get(input.conversationId) === operation) {
-        if (retainedRuntime !== undefined && !this.#disposed) {
+        if (!this.#disposed && action === "permanent_delete" && error instanceof ConversationLocalErasureError &&
+            error.result.conversationId === input.conversationId) {
+          this.#entries.set(input.conversationId, { kind: "deleted", result: error.result });
+        } else if (retainedRuntime !== undefined && !this.#disposed) {
           this.#entries.set(input.conversationId, { kind: "live", runtime: retainedRuntime });
         } else {
           this.#entries.delete(input.conversationId);

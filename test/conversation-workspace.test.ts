@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ConversationWorkspace,
+  ConversationLocalErasureError,
   ConversationRuntimeRegistry,
   InMemoryConversationCatalog,
   InMemoryConversationEventStore,
@@ -27,6 +28,78 @@ function fakeRuntime(conversationId: string) {
 }
 
 describe("ConversationWorkspace", () => {
+  it("removes a remotely deleted runtime even when local device erasure needs retry", async () => {
+    const catalog = new InMemoryConversationCatalog<undefined>({ authorize: () => "allow" });
+    const created = await catalog.create({ authorizationContext: undefined, idempotencyKey: "create" as never });
+    const conversationId = created.descriptor.conversationId;
+    const remove = catalog.permanentlyDelete.bind(catalog), cleanup = vi.fn(async () => {});
+    vi.spyOn(catalog, "permanentlyDelete").mockImplementation(async input => {
+      const result = await remove(input);
+      throw new ConversationLocalErasureError(result, cleanup);
+    });
+    const base = await createConversationRuntime({ conversationId, clientId: "web" as never,
+      eventStore: new InMemoryConversationEventStore(), transport: {} as never });
+    const destroyed = vi.fn(() => base.destroy()), runtime = { ...base, destroy: destroyed };
+    const registry = new ConversationRuntimeRegistry({ catalog, authorize: () => "allow", createRuntime: () => runtime });
+    const workspace = new ConversationWorkspace(registry, { restoreActiveTurns: false });
+    try {
+      await workspace.open({ authorizationContext: undefined, conversationId });
+      const error = await workspace.pickerRegistry().permanentlyDelete({ authorizationContext: undefined, conversationId,
+        expectedVersion: created.descriptor.version, idempotencyKey: "delete" as never }).catch(error => error) as ConversationLocalErasureError;
+      expect(error).toBeInstanceOf(ConversationLocalErasureError);
+      expect(workspace.getSnapshot()).toMatchObject({ selectedConversationId: null, threads: [] });
+      expect(registry.getSnapshot().tombstoneCount).toBe(1); expect(destroyed).toHaveBeenCalledOnce();
+      await error.retry(); expect(cleanup).toHaveBeenCalledOnce();
+    } finally { await workspace.dispose(); }
+  });
+
+  it("emits bounded settlement hints for hidden paged controls without history, duplicate or clear notifications", async () => {
+    const fake = fakeRuntime("paged");
+    const turn = (turnId: string, status: "running" | "completed" | "failed" | "waiting_for_approval") => ({ turnId, status });
+    let control: { status: "ready" | "preparing"; generation: number; activeTurnId: string | null;
+      activeTurn: ReturnType<typeof turn> | null; latestTurn: ReturnType<typeof turn> | null } | null = null;
+    Object.assign(fake.runtime, { displaySession: { getSnapshot: () => ({ control }) } });
+    const registry = { open: async () => fake.runtime, dispose: async () => {} } as unknown as ConversationRuntimeRegistry<unknown>;
+    const workspace = new ConversationWorkspace(registry);
+    const settled = vi.fn();
+    workspace.subscribeSettlements(settled);
+    workspace.subscribeSettlements(() => { throw new Error("host refresh failed"); });
+    await workspace.open({ authorizationContext: undefined, conversationId: "paged" as never });
+    workspace.setVisible(false);
+    const emit = () => fake.update({ ...createInitialConversationState("paged" as never), partial: true,
+      revision: 100, active_turn_id: control?.activeTurnId ?? null,
+      turns: control?.latestTurn ? [{ turn_id: control.latestTurn.turnId, status: control.latestTurn.status }] : [],
+    } as never);
+    control = { status: "ready", generation: 1, activeTurnId: null, activeTurn: null, latestTurn: turn("old", "completed") };
+    emit(); expect(settled).not.toHaveBeenCalled(); // Initial history is a baseline.
+    control = { ...control, activeTurnId: "new", activeTurn: turn("new", "running"), latestTurn: turn("new", "running") };
+    emit(); expect(settled).not.toHaveBeenCalled();
+    control = { ...control, activeTurnId: null, activeTurn: null, latestTurn: turn("new", "completed") };
+    emit(); emit();
+    expect(settled.mock.calls).toEqual([[{ conversationId: "paged", turnId: "new", hidden: true }]]);
+    // A complete turn can occur between polls; only its small latest control is needed.
+    control = { ...control, latestTurn: turn("fast", "failed") }; emit();
+    expect(settled).toHaveBeenCalledTimes(2);
+    // Clear/import generations and subsequent older-page presentation are baseline changes.
+    control = { ...control, generation: 2, latestTurn: turn("imported", "completed") }; emit(); emit();
+    expect(settled).toHaveBeenCalledTimes(2);
+    // Approval pause/resume can settle again under the same durable turn identity.
+    workspace.setVisible(true);
+    control = { ...control, activeTurnId: "approval", latestTurn: turn("approval", "running") }; emit();
+    control = { ...control, activeTurnId: null, latestTurn: turn("approval", "waiting_for_approval") }; emit();
+    control = { ...control, activeTurnId: "approval", latestTurn: turn("approval", "running") }; emit();
+    control = { ...control, activeTurnId: null, latestTurn: turn("approval", "completed") }; emit();
+    expect(settled).toHaveBeenCalledTimes(4);
+    expect(settled).toHaveBeenLastCalledWith({ conversationId: "paged", turnId: "approval", hidden: false });
+    // A new completed turn may be observed while another resumed turn is active.
+    control = { ...control, activeTurnId: "resumed-older", latestTurn: turn("newer", "running") }; emit();
+    control = { ...control, latestTurn: turn("newer", "completed") }; emit();
+    expect(settled).toHaveBeenLastCalledWith({ conversationId: "paged", turnId: "newer", hidden: false });
+    await workspace.dispose();
+    control = { ...control, latestTurn: turn("after-dispose", "completed") }; emit();
+    expect(settled).toHaveBeenCalledTimes(5);
+  });
+
   it("opens saved history through the real registry without forwarding workspace selection options", async () => {
     const authorizationContext = { userId: "owner" };
     const catalog = new InMemoryConversationCatalog<typeof authorizationContext>({ authorize: () => "allow" });

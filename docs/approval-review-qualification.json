@@ -1,0 +1,191 @@
+{
+  "qualification": "Local bounded verified approval review and compact receipts; no SDK installation, release, deployment or production database mutation",
+  "date": "2026-09-17T09:57:39.099098+00:00",
+  "scopedTests": {
+    "javascript": {
+      "tests": 88,
+      "files": 8,
+      "workers": 1,
+      "result": "passed",
+      "filesValidated": [
+        "approval-review-controller",
+        "react-paged-approval-review",
+        "react-pending-approvals",
+        "postgres-display-history.integration",
+        "application-display-history",
+        "application-session",
+        "client-bootstrap",
+        "server-assistant"
+      ],
+      "lastPostLintSubsetTests": 28
+    },
+    "dartClient": {
+      "tests": 24,
+      "files": 4,
+      "workers": 1,
+      "result": "passed"
+    },
+    "flutterWidgets": {
+      "tests": 8,
+      "files": 2,
+      "workers": 1,
+      "result": "passed"
+    },
+    "dartToJavaScriptGateway": {
+      "tests": 21,
+      "files": 1,
+      "workers": 1,
+      "result": "passed",
+      "database": "Local PGlite using actual PostgreSQL SDK stores",
+      "case": "24,000 emoji tool argument, hash-bound review, lost compact decision response, execution advancement, durable controller restart and exact idempotent receipt replay"
+    }
+  },
+  "checks": {
+    "javascriptBuild": "passed",
+    "javascriptTypecheck": "passed",
+    "scopedEslint": "passed",
+    "dartClientAnalysis": "passed",
+    "flutterWidgetsAnalysis": "passed",
+    "diffWhitespace": "passed"
+  },
+  "browser": {
+    "browser": "153.0.8010.12",
+    "reactBuild": "production, public dist exports",
+    "approvalReview": [
+      {
+        "width": 320,
+        "sectionReads": 3,
+        "maximumSectionBytes": 33325,
+        "receiptBytes": 222,
+        "retainedSections": 1,
+        "fullReviewPairReads": 0,
+        "extraMessagePages": 0
+      },
+      {
+        "width": 390,
+        "sectionReads": 3,
+        "maximumSectionBytes": 33325,
+        "receiptBytes": 222,
+        "retainedSections": 1,
+        "fullReviewPairReads": 0,
+        "extraMessagePages": 0
+      }
+    ]
+  },
+  "consumerCompiles": {
+    "web": [
+      {
+        "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4",
+        "config": "tsconfig.json",
+        "sdkVersion": "0.2.56",
+        "qualification": "local built declarations; installed Git dependency unchanged",
+        "roots": [
+          "src/client/assistant/MillsAssistantRuntime.tsx",
+          "src/server/assistant/handrail-ai-gateway.ts"
+        ],
+        "sourceFiles": 1344,
+        "errors": 0,
+        "milliseconds": 8207,
+        "rssBytes": 720990208
+      },
+      {
+        "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
+        "config": "tsconfig.browser.json",
+        "sdkVersion": "0.2.56",
+        "qualification": "local built declarations; installed Git dependency unchanged",
+        "roots": [
+          "src/browser/features/cents/CentsDrawer.tsx"
+        ],
+        "sourceFiles": 311,
+        "errors": 0,
+        "milliseconds": 2065,
+        "rssBytes": 287752192
+      },
+      {
+        "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
+        "config": "tsconfig.server.json",
+        "sdkVersion": "0.2.56",
+        "qualification": "local built declarations; installed Git dependency unchanged",
+        "roots": [
+          "src/server/cents/native-runtime.ts"
+        ],
+        "sourceFiles": 885,
+        "errors": 0,
+        "milliseconds": 12770,
+        "rssBytes": 773337088
+      },
+      {
+        "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/spartan-cyber-services-spartan-cyber-erp-v3",
+        "config": "tsconfig.json",
+        "sdkVersion": "0.2.56",
+        "qualification": "local built declarations; installed Git dependency unchanged",
+        "roots": [
+          "src/client/features/aegis-assistant/HandrailAiAssistant.tsx",
+          "src/server/aegis/handrail-ai-gateway.ts",
+          "src/client/features/contracts/page.tsx",
+          "tests/aegis-resource-changes.test.ts"
+        ],
+        "sourceFiles": 1918,
+        "errors": 0,
+        "milliseconds": 23107,
+        "rssBytes": 1482301440
+      }
+    ],
+    "mobile": [
+      {
+        "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp-mobile",
+        "roots": [
+          "lib/features/cents/cents_sdk.dart",
+          "lib/features/cents/cents_sheet.dart"
+        ],
+        "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+        "exitCode": 0,
+        "milliseconds": 8832
+      },
+      {
+        "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4-mobile",
+        "roots": [
+          "lib/repositories/sdk_assistant_repository.dart",
+          "lib/screens/assistant_screen.dart"
+        ],
+        "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+        "exitCode": 0,
+        "milliseconds": 13306
+      },
+      {
+        "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/scs-erp-mobile",
+        "roots": [
+          "lib/src/aegis/aegis_sdk_repository.dart",
+          "lib/src/aegis/aegis_conversation_screen.dart"
+        ],
+        "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+        "exitCode": 0,
+        "milliseconds": 15748
+      }
+    ]
+  },
+  "invariants": [
+    "List path unchanged: no canonical hydration or review recovery waits.",
+    "One current section and contiguous review watermark; no growing argument assembly.",
+    "No confirmation until every section was reached and explicit acknowledgement recorded.",
+    "Version, tenant/account, generation, proposal/tool and argument-reference checks; pinned preflight immediately before decision.",
+    "Account replacement/chat switch cancel late reads and preflight dispatch.",
+    "Read/receipt response bounds enforced separately from 8192 Unicode code point section size.",
+    "Durable native intent contains only identity and hashes, survives restart, and never saves argument sections.",
+    "Existing custom domain review loaders and permission predicates remain authoritative.",
+    "Projection summary upgrades use bounded authorized background work and append/deletion fences."
+  ],
+  "limits": {
+    "sectionCodePoints": 8192,
+    "reviewResponseBytes": 65536,
+    "decisionResponseBytes": 8192,
+    "defaultSummaryBackfillEntitiesPerStep": 1
+  },
+  "limitations": [
+    "Local fixtures and source compiles do not establish production deployment or consumer installation.",
+    "Formatting an explicitly selected oversized argument in PostgreSQL still scales with that individual argument size.",
+    "Custom non-hash opaque references need the authorized host review resolver.",
+    "Custom consumer inbox placement/domain presentation and published-pin adoption remain later work.",
+    "Broader goal audit and remaining recovery/context qualification are still open."
+  ]
+}

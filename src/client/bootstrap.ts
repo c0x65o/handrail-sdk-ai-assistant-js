@@ -15,11 +15,15 @@ import { ConversationRuntimeRegistry, type ConversationRuntimeFactory,
   type ConversationRuntimeRegistryPolicy } from "../conversation/runtime-registry.js";
 import { ConversationWorkspace } from "../conversation/workspace.js";
 import type { ConversationTransport } from "../transports/types.js";
-import type { ConversationCatalog } from "../conversation/catalog.js";
+import { ConversationCatalogError, ConversationLocalErasureError, parsePermanentlyDeleteConversationInput,
+  type ConversationCatalog } from "../conversation/catalog.js";
 import type { ConversationEventStore } from "../conversation/event-store.js";
 import type { ConversationClientId, ConversationDeviceId, ConversationId } from "../conversation/events.js";
-import { createConversationRuntime, type ConversationRuntime } from "../runtime.js";
+import { createConversationRuntime } from "../runtime.js";
 import type { AttachmentUploadAdapter } from "../attachments/types.js";
+import { ConversationDraftWorkspace } from "./draft-workspace.js";
+import { AttachmentDraftWorkspace } from "../attachments/draft-workspace.js";
+import { InMemoryAttachmentDraftStore, isAttachmentDraftStore, type AttachmentDraftStore } from "../attachments/draft-store.js";
 import { createApplicationGatewaySyncAdapter } from "./synchronization.js";
 import { createApplicationGatewayPresenceAdapter } from "./presence.js";
 import type { ConversationSyncAdapter } from "../sync/types.js";
@@ -45,6 +49,10 @@ extends ApplicationGatewayTransportOptions<TEvent, TSynchronization> {
   readonly pendingStore?: ApplicationConversationPendingStore<TRequest>;
   /** Account/API-scoped drafts and positions; inferred from a capable pendingStore. */
   readonly localStateStore?: ConversationLocalStateStore;
+  /** Account/API-scoped immutable file selections; inferred from a capable pendingStore. */
+  readonly attachmentDraftStore?: AttachmentDraftStore<ApplicationGatewayAttachmentSource>;
+  /** Existing authorized upload route; drafts, limits and queues remain SDK-owned. */
+  readonly attachmentUploadAdapter?: AttachmentUploadAdapter<ApplicationGatewayAttachmentSource>;
   readonly createRuntime?: ConversationRuntimeFactory<TRequest, TAuthorizationContext>;
   readonly authorizeRuntime?: ConversationRuntimeRegistryPolicy<TAuthorizationContext>;
   /** Standard runtime assembly; mutually exclusive with createRuntime. */
@@ -113,6 +121,8 @@ export interface HandrailAiClient<TEvent, TRequest, TAuthorizationContext> {
   readonly registry: ConversationRuntimeRegistry<TRequest, TAuthorizationContext, ConversationPresentationRuntime<TRequest>> | null;
   readonly workspace: ConversationWorkspace<TRequest, TAuthorizationContext, ConversationPresentationRuntime<TRequest>> | null;
   readonly attachmentUpload: AttachmentUploadAdapter<ApplicationGatewayAttachmentSource> | null;
+  /** Client-owned files and upload queues survive composer/runtime eviction. */
+  readonly attachmentDrafts: AttachmentDraftWorkspace<ApplicationGatewayAttachmentSource>;
   readonly transcription: ReturnType<typeof createTranscriptionHttpClient> | null;
   readonly attachmentDownload: ReturnType<typeof createAttachmentDownloadClient> | null;
   readonly presence: ApplicationGatewayPresenceClient | null;
@@ -167,11 +177,24 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
   const providedLocalState = options.localStateStore ?? (isConversationLocalStateStore(pendingStore) ? pendingStore : undefined);
   const memoryLocalState = providedLocalState ? null : new InMemoryConversationLocalStateStore();
   const localStateStore = providedLocalState ?? memoryLocalState!;
+  const draftWorkspace = new ConversationDraftWorkspace(localStateStore);
+  const providedAttachmentStore = options.attachmentDraftStore ??
+    (isAttachmentDraftStore<ApplicationGatewayAttachmentSource>(pendingStore) ? pendingStore : undefined);
+  const memoryAttachmentStore = providedAttachmentStore ? null : new InMemoryAttachmentDraftStore<ApplicationGatewayAttachmentSource>();
+  const attachmentDraftStore = providedAttachmentStore ?? memoryAttachmentStore!;
+  const attachmentUpload = options.attachmentUploadAdapter ?? (transport.capabilities.attachmentUpload.supported
+    ? transport.capabilities.attachmentUpload.capability : null);
+  const attachmentDrafts = new AttachmentDraftWorkspace(attachmentDraftStore, attachmentUpload ?? {
+    upload: async () => { throw new Error("This assistant does not accept attachments"); },
+  });
   const localFlushes = new Set<Promise<void>>();
   const serverSession = Boolean(capabilities.displayHistory && capabilities.displayHistory.control === true && displayHistory !== null);
   const applicationRuntime = (conversationId: ConversationId, clientId: ConversationClientId) => createApplicationConversationRuntime({
-    conversationId, clientId, reader: displayHistory!, resources, transport, pendingStore, localStateStore,
+    conversationId, clientId, reader: displayHistory!, resources, transport, pendingStore, localStateStore, draftWorkspace,
+    reconcileAcceptedFiles: fileIds => attachmentDrafts.forConversation(conversationId).reconcileAccepted(fileIds),
     messageText: Boolean(capabilities.displayHistory && capabilities.displayHistory.messageText === true),
+    recordText: Boolean(capabilities.displayHistory && capabilities.displayHistory.recordText === true),
+    approvalReview: Boolean(capabilities.displayHistory && capabilities.displayHistory.approvalReview === true),
     pendingApprovals: Boolean(capabilities.displayHistory && capabilities.displayHistory.pendingApprovals === true),
     onLocalStateFlush: operation => { localFlushes.add(operation); void operation.finally(() => localFlushes.delete(operation)); },
     ...(options.synchronizationPollingMilliseconds === undefined ? {} : { pollMilliseconds: options.synchronizationPollingMilliseconds }),
@@ -185,9 +208,40 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
       ...(options.activityPollingMilliseconds === undefined ? {} : { intervalMilliseconds: options.activityPollingMilliseconds }),
       ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }) }) : null;
   if (activity && options.startActivityPolling !== false) activity.start();
-  const catalog = createApplicationGatewayConversationCatalog<TAuthorizationContext>(resources, capabilities);
-  const attachmentUpload = transport.capabilities.attachmentUpload.supported
-    ? transport.capabilities.attachmentUpload.capability : null;
+  const remoteCatalog = createApplicationGatewayConversationCatalog<TAuthorizationContext>(resources, capabilities);
+  const catalog: ConversationCatalog<TAuthorizationContext> = Object.freeze({
+    ...remoteCatalog,
+    async permanentlyDelete(input: Parameters<ConversationCatalog<TAuthorizationContext>["permanentlyDelete"]>[0]) {
+      const selected = parsePermanentlyDeleteConversationInput<TAuthorizationContext>(input);
+      const response = await remoteCatalog.permanentlyDelete(selected);
+      if (!response || response.operation !== "permanent_delete" ||
+          response.status !== "deleted" && response.status !== "idempotent" ||
+          response.conversationId !== selected.conversationId || response.deletedVersion !== selected.expectedVersion) {
+        throw new ConversationCatalogError("unavailable", "permanent_delete");
+      }
+      const result = Object.freeze({ operation: response.operation, status: response.status,
+        conversationId: response.conversationId, deletedVersion: response.deletedVersion });
+      // The server has confirmed permanent deletion. Each store must fence late
+      // writes, since runtime teardown can still be flushing a captured draft.
+      attachmentDrafts.forgetConversation(result.conversationId);
+      draftWorkspace.forgetConversation(result.conversationId);
+      const stores = new Set([pendingStore, localStateStore, attachmentDraftStore]);
+      const erase = async () => {
+        await Promise.all([...stores].map(async store => {
+          if (!store.eraseConversation) throw new TypeError("The local store must support confirmed conversation erasure");
+          await store.eraseConversation(result.conversationId);
+        }));
+      };
+      try {
+        await erase();
+      } catch (cause) {
+        emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "conversation_local_erasure", phase: "failed",
+          conversationId: result.conversationId, code: "local_erasure_failed", retryable: true, cause });
+        throw new ConversationLocalErasureError(result, erase);
+      }
+      return result;
+    },
+  });
   const presence = transport.capabilities.presence.supported ? transport.capabilities.presence.capability : null;
   const synchronization = capabilities.synchronization === true
     ? createApplicationGatewaySyncAdapter({ resources, ...(presence ? { presence } : {}) }) : null;
@@ -253,7 +307,7 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
   }
   const conversationMode = singleConfiguration !== null ? "single" : multiple ? "multiple" : "none";
   return Object.freeze({ conversationMode, conversation, capabilities, transport, resources, activity, catalog, registry, workspace,
-    attachmentUpload, attachmentDownload, transcription, presence, synchronization, displayHistory, displayWindow,
+    attachmentUpload, attachmentDrafts, attachmentDownload, transcription, presence, synchronization, displayHistory, displayWindow,
     presenceControllerFor(conversationId: ConversationId) {
       if (presenceAdapter === null || options.presenceIdentity === undefined) return null;
       const existing = presenceControllers.get(conversationId);
@@ -289,8 +343,11 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
       presenceControllers.clear();
       conversation?.destroy();
       await workspace?.dispose();
+      await attachmentDrafts.dispose();
+      await draftWorkspace.dispose();
       await Promise.all([...localFlushes]);
       memoryLocalState?.dispose();
       memoryPendingStore?.dispose();
+      memoryAttachmentStore?.dispose();
     } });
 }

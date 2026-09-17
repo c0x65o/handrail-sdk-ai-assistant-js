@@ -1,59 +1,61 @@
 {
-  "qualification": "local public declarations after bounded recovery scheduling and graceful drain; no dependency installation or deployment",
+  "qualification": "local public declarations after bounded verified approval review and compact decision receipts; no installation or deployment",
   "reports": [
     {
       "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4",
       "config": "tsconfig.json",
-      "sdkVersion": "0.2.55",
+      "sdkVersion": "0.2.56",
       "qualification": "local built declarations; installed Git dependency unchanged",
       "roots": [
         "src/client/assistant/MillsAssistantRuntime.tsx",
         "src/server/assistant/handrail-ai-gateway.ts"
       ],
-      "sourceFiles": 1332,
+      "sourceFiles": 1344,
       "errors": 0,
-      "milliseconds": 8679,
-      "rssBytes": 707448832
-    },
-    {
-      "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/spartan-cyber-services-spartan-cyber-erp-v3",
-      "config": "tsconfig.json",
-      "sdkVersion": "0.2.55",
-      "qualification": "local built declarations; installed Git dependency unchanged",
-      "roots": [
-        "src/client/features/aegis-assistant/HandrailAiAssistant.tsx",
-        "src/server/aegis/handrail-ai-gateway.ts"
-      ],
-      "sourceFiles": 1857,
-      "errors": 0,
-      "milliseconds": 18511,
-      "rssBytes": 1348689920
+      "milliseconds": 8207,
+      "rssBytes": 720990208
     },
     {
       "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
       "config": "tsconfig.browser.json",
-      "sdkVersion": "0.2.55",
+      "sdkVersion": "0.2.56",
       "qualification": "local built declarations; installed Git dependency unchanged",
       "roots": [
         "src/browser/features/cents/CentsDrawer.tsx"
       ],
-      "sourceFiles": 303,
+      "sourceFiles": 311,
       "errors": 0,
-      "milliseconds": 1591,
-      "rssBytes": 284286976
+      "milliseconds": 2065,
+      "rssBytes": 287752192
     },
     {
       "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
       "config": "tsconfig.server.json",
-      "sdkVersion": "0.2.55",
+      "sdkVersion": "0.2.56",
       "qualification": "local built declarations; installed Git dependency unchanged",
       "roots": [
         "src/server/cents/native-runtime.ts"
       ],
-      "sourceFiles": 874,
+      "sourceFiles": 885,
       "errors": 0,
-      "milliseconds": 9178,
-      "rssBytes": 780779520
+      "milliseconds": 12770,
+      "rssBytes": 773337088
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/spartan-cyber-services-spartan-cyber-erp-v3",
+      "config": "tsconfig.json",
+      "sdkVersion": "0.2.56",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/client/features/aegis-assistant/HandrailAiAssistant.tsx",
+        "src/server/aegis/handrail-ai-gateway.ts",
+        "src/client/features/contracts/page.tsx",
+        "tests/aegis-resource-changes.test.ts"
+      ],
+      "sourceFiles": 1918,
+      "errors": 0,
+      "milliseconds": 23107,
+      "rssBytes": 1482301440
     }
   ]
 }

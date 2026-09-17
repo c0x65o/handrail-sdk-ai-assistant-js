@@ -111,7 +111,7 @@ describe("server stored-output reconciliation", () => {
   });
 
   it.each([[true, 0], [false, 0], [true, 120], [false, 120]] as const)(
-    "repairs gateway state without rerunning work; completes before reload: %s, history events: %s", async (completeBeforeReload, historyEvents) => {
+    "repairs legacy snapshot clients without rerunning work; completes before reload: %s, history events: %s", async (completeBeforeReload, historyEvents) => {
     const { input } = await setup("completed");
     if (historyEvents > 0) {
       await input.events.append({ conversationId: "conversation" as never, expectedRevision: 1 as never,
@@ -152,8 +152,17 @@ describe("server stored-output reconciliation", () => {
         tool_calls: true, parallel_tool_calls: false, reasoning: false, document_input: { supported: false },
         provider_context: { supported: false, reason: "provider_not_supported" }, context_window_tokens: null, max_output_tokens: null } },
         createTransport: () => createApplicationTurnTransport({ execute }) } });
+    // Exercise supported old-server snapshot/resume behavior. This in-memory
+    // fixture has no SQL display adapter; server-live-gateway covers the real
+    // PostgreSQL bounded-session negotiation independently.
+    const legacyFetch: typeof fetch = async (url, init) => {
+      const response = await assistant.handle(new Request(url, init));
+      if (!String(url).endsWith("/capabilities")) return response;
+      const body = await response.json();
+      return Response.json({ ...body, value: { ...body.value, displayHistory: false } });
+    };
     const client = await createHandrailAiClient({ baseUrl: "https://test.local", startActivityPolling: false,
-      fetch: async (url, init) => assistant.handle(new Request(url, init)),
+      fetch: legacyFetch,
       conversations: { mode: "multiple", clientId: "browser" as never, authorize: () => "allow" } });
     try {
       await client.catalog.list({ authorizationContext: context, lifecycle: "active", pageSize: 20, order: { field: "updated_at", direction: "desc" } });
@@ -212,7 +221,7 @@ describe("server stored-output reconciliation", () => {
         const resumeStatuses: number[] = [];
         const reloaded = await createHandrailAiClient({ baseUrl: "https://test.local", startActivityPolling: false,
           fetch: async (url, init) => {
-            const response = await assistant.handle(new Request(url, init));
+            const response = await legacyFetch(url, init);
             if (String(url).endsWith("/turns/resume")) resumeStatuses.push(response.status);
             return response;
           },

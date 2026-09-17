@@ -220,3 +220,41 @@ it("stops waiting for business context that ignores cancellation", async () => {
   await entered; h.controller.abort(new Error("stop context"));
   await result;
 });
+
+it("handles a history beyond the JavaScript argument limit without visiting unselected redactions", async () => {
+  const history = Array.from({ length: 150_000 }, (_, index) => message(`old${index}`));
+  const transformText = vi.fn(({ text }: { text: string }) => text.replace("Saved", "Redacted"));
+  const h = fixture(history, { maximumHistoricalMessages: 2, transformText });
+  const result = await h.run();
+  expect(result.request.messages.map(row => row.content[0])).toEqual([
+    { type: "text", text: "Redacted old149998" }, { type: "text", text: "Redacted old149999" },
+    { type: "text", text: "Redacted current" },
+  ]);
+  expect(transformText).toHaveBeenCalledTimes(3);
+  expect(history[149999]?.content[0]?.text).toBe("Saved old149999");
+});
+
+it("captures immutable selected text and catalog identities before asynchronous storage reads", async () => {
+  const source = [message("old", "image/png"), message("current")];
+  const h = fixture([], { messages: source });
+  h.resolveAttachment.mockImplementation(async file => {
+    Object.assign(source[1]!.content[0]!, { text: "Changed externally" });
+    Object.assign(source[0]!.attachments[0]!, { attachment_id: "att_changed" });
+    return { attachment_id: file.attachment_id, content_ref: "ref_old", media_type: "image/png", byte_size: 4 };
+  });
+  const result = await h.run();
+  expect(result.request.messages.at(-1)?.content).toEqual([{ type: "text", text: "Saved current" }]);
+  expect(result.files[0]?.attachment.attachment_id).toBe("att_old");
+});
+
+it("continues backwards past oversized redacted candidates without dropping older files", async () => {
+  const h = fixture([message("file", "image/png"), message("small"), message("big")], {
+    maximumHistoricalMessages: 1, maximumHistoricalTextCharacters: 12,
+    transformText: ({ messageId, text }) => messageId === "big" ? text.repeat(10) : text,
+  });
+  const result = await h.run();
+  expect(result.request.messages.map(row => row.content)).toEqual([
+    [expect.objectContaining({ type: "image" })], [{ type: "text", text: "Saved small" }],
+    [{ type: "text", text: "Saved current" }],
+  ]);
+});

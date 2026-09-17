@@ -9,6 +9,67 @@ import {
 } from "../src/index.js";
 
 describe("conversation activity", () => {
+  it("releases held pub-sub subscriptions when the last observer leaves, including close/reopen races", async () => {
+    const detached: number[] = [], callbacks: Array<(envelope: never) => void> = [];
+    let firstReady!: () => void;
+    const held = new Promise<void>(resolve => { firstReady = resolve; });
+    const delivery = createInMemoryLiveConversationActivityDelivery({ pubSub: {
+      publish: async () => {}, subscribe: async (_channel, receive) => {
+        const index = callbacks.length; callbacks.push(receive);
+        if (index === 0) await held;
+        return () => { detached.push(index); };
+      },
+    } });
+    const first = delivery.subscribe(); await Promise.resolve();
+    expect(delivery.subscriberCount).toBe(1);
+    first.close();
+    const second = delivery.subscribe(); await Promise.resolve();
+    firstReady();
+    await vi.waitFor(() => expect(detached).toEqual([0]));
+    expect(delivery.subscriberCount).toBe(1);
+    const iterator = second[Symbol.asyncIterator]();
+    const next = iterator.next();
+    await delivery.publish({ conversationId: "conversation", turnStatus: "completed", unread: true });
+    expect((await next).value?.record.turnStatus).toBe("completed");
+    await delivery.dispose();
+    expect(detached).toEqual([0, 1]); expect(delivery.subscriberCount).toBe(0);
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+  });
+
+  it("closes stalled activity observers at a bounded queue and gives recreated deliveries distinct identities", async () => {
+    const first = createInMemoryLiveConversationActivityDelivery({ now: () => 1 });
+    const second = createInMemoryLiveConversationActivityDelivery({ now: () => 1 });
+    const left = first.subscribe(), right = second.subscribe();
+    const event = { conversationId: "conversation", turnStatus: "completed" as const, unread: true };
+    await first.publish(event); await second.publish(event);
+    expect((await left[Symbol.asyncIterator]().next()).value?.deliveryId)
+      .not.toBe((await right[Symbol.asyncIterator]().next()).value?.deliveryId);
+    for (let index = 0; index < 257; index++) await first.publish(event);
+    expect(first.subscriberCount).toBe(0);
+    expect(await left[Symbol.asyncIterator]().next()).toEqual({ done: true, value: undefined });
+    await first.dispose(); await second.dispose();
+    const aborted = new AbortController(); aborted.abort();
+    expect(await second.subscribe(aborted.signal)[Symbol.asyncIterator]().next()).toEqual({ done: true, value: undefined });
+  });
+
+  it("applies HTTP backpressure to live activity and releases subscriptions after snapshot failures", async () => {
+    const delivery = createInMemoryLiveConversationActivityDelivery();
+    const handler = createConversationActivityHttpHandler({ list: async () => [],
+      upsert: async value => value, markRead: async () => null }, { delivery });
+    const response = await handler(new Request("https://assistant.test/activity"));
+    for (let index = 0; index < 400; index++) await delivery.publish({ conversationId: "conversation",
+      turnStatus: "running", unread: false });
+    expect(delivery.subscriberCount).toBe(0);
+    // At most one enqueued/pending pull frame survives, not 400 HTTP buffers.
+    const bytes = await response.arrayBuffer();
+    expect(bytes.byteLength).toBeLessThan(2048);
+    const failed = createConversationActivityHttpHandler({ list: async () => { throw new Error("storage unavailable"); },
+      upsert: async value => value, markRead: async () => null }, { delivery });
+    await expect(failed(new Request("https://assistant.test/activity"))).rejects.toThrow("storage unavailable");
+    expect(delivery.subscriberCount).toBe(0);
+    await delivery.dispose();
+  });
+
   it("does not erase live activity with a snapshot requested before that activity arrived", async () => {
     let completeLoad!: (records: ConversationActivityRecord[]) => void;
     const pending = new Promise<ConversationActivityRecord[]>((resolve) => { completeLoad = resolve; });

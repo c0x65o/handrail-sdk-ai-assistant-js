@@ -1,16 +1,21 @@
+import type { ConversationApprovalDisplayDecision, ConversationApprovalDisplayDecisionInput, ConversationApprovalDisplayReview, ConversationApprovalDisplayReviewInput } from "../conversation/approval-display-review.js";
 import type { ConversationClientId, ConversationId, ConversationTurnCancellationReason } from "../conversation/events.js";
 import type { ConversationDisplayControl, ConversationDisplayControlInput, ConversationDisplayTurnControl } from "../conversation/display-control.js";
 import type { ConversationDisplayRecord, ConversationDisplayContentInput, ConversationDisplayContentChunk } from "../conversation/display-history.js";
 import type { ConversationRuntimeSendMessageInput } from "../runtime.js";
-import type { ApplicationGatewayResourceClient } from "../transports/application-gateway.js";
+import { ApplicationGatewayResourceError, type ApplicationGatewayResourceClient } from "../transports/application-gateway.js";
+import { ConversationSyncMutationRejectedError } from "../sync/rejection.js";
 import type { ConversationTransport, TurnObservation } from "../transports/types.js";
 import { ConversationDisplayWindow, type ConversationDisplayReader, type ConversationDisplayWindowSnapshot } from "./display-window.js";
+import type { ConversationDraftWorkspace } from "./draft-workspace.js";
 import { ConversationDraftController, parseSavedPosition, type ConversationLocalStateStore, type ConversationSavedPosition } from "./local-state.js";
 import { mergeRelatedRecords, relatedViews } from "./related-records.js";
 import { captureApplicationConversationInput, parseApplicationConversationSubmission, prepareApplicationConversationSubmission,
   type ApplicationConversationPendingStore, type ApplicationConversationSubmission } from "./session-submission.js";
 
 export interface ApplicationConversationReader extends ConversationDisplayReader {
+  decideApproval?(input: ConversationApprovalDisplayDecisionInput, signal?: AbortSignal): Promise<ConversationApprovalDisplayDecision>;
+  approvalReview?(input: ConversationApprovalDisplayReviewInput, signal?: AbortSignal): Promise<ConversationApprovalDisplayReview>;
   control(input: ConversationDisplayControlInput, signal?: AbortSignal): Promise<ConversationDisplayControl>;
   content?(input: ConversationDisplayContentInput, signal?: AbortSignal): Promise<ConversationDisplayContentChunk>;
 }
@@ -36,7 +41,13 @@ export interface ApplicationConversationSessionOptions<TRequest> {
   readonly transport: ConversationTransport<unknown, TRequest>;
   readonly pendingStore: ApplicationConversationPendingStore<TRequest>;
   readonly localStateStore?: ConversationLocalStateStore;
+  /** Shared account owner; display-session disposal releases only its lease. */
+  readonly draftWorkspace?: ConversationDraftWorkspace;
+  /** Exact device-file cleanup after confirmed (including replayed) admission. */
+  readonly reconcileAcceptedFiles?: (fileIds: readonly string[]) => Promise<void>;
   readonly messageText?: boolean;
+  readonly recordText?: boolean;
+  readonly approvalReview?: boolean;
   readonly pendingApprovals?: boolean;
   /** Bootstrap waits for account-owned local flushes before completing disposal. */
   readonly onLocalStateFlush?: (operation: Promise<void>) => void;
@@ -61,7 +72,8 @@ const denied = (cause: unknown) => ["forbidden", "permission_denied", "unauthent
 function normalize(cause: unknown): ApplicationConversationSessionError {
   return cause instanceof ApplicationConversationSessionError ? cause
     : new ApplicationConversationSessionError(errorCode(cause), denied(cause)
-      ? "Conversation access is unavailable." : "Conversation could not be refreshed. Try again.", !denied(cause) &&
+      ? "Conversation access is unavailable." : cause instanceof ApplicationGatewayResourceError
+        ? cause.message : "Conversation could not be refreshed. Try again.", !denied(cause) &&
         !(cause && typeof cause === "object" && "retryable" in cause && cause.retryable === false));
 }
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -119,7 +131,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
     if (![this.pollMilliseconds, this.idlePollMilliseconds].every(value => Number.isSafeInteger(value) && value >= 100 && value <= 300000)) {
       throw new TypeError("Invalid conversation polling interval");
     }
-    this.draft = options.localStateStore ? new ConversationDraftController(options.conversationId, options.localStateStore) : null;
+    this.draft = options.draftWorkspace?.acquire(options.conversationId) ??
+      (options.localStateStore ? new ConversationDraftController(options.conversationId, options.localStateStore) : null);
     this.window = new ConversationDisplayWindow({ reader: options.reader, onChanges: page => {
       const result = mergeRelatedRecords(this.related, page.records, "changes");
       this.related = result.records; this.relatedTruncated ||= result.trimmed;
@@ -188,7 +201,37 @@ export class ApplicationConversationSession<TRequest = unknown> {
     }
     return page;
   }
+  get supportsApprovalReview(): boolean { return this.options.approvalReview === true && !!this.options.reader.approvalReview && !!this.options.reader.decideApproval; }
+  decideApproval = async (input: ConversationApprovalDisplayDecisionInput, signal: AbortSignal): Promise<ConversationApprovalDisplayDecision> => {
+    this.assertOpen();
+    if (!this.supportsApprovalReview || !this.active || input.conversationId !== this.options.conversationId) throw new TypeError("Approval decision is unavailable");
+    const combined = AbortSignal.any([signal, this.displayLifetime.signal, this.lifetime.signal]);
+    combined.throwIfAborted();
+    const receipt = await this.options.reader.decideApproval!(input, combined);
+    combined.throwIfAborted(); return receipt;
+  };
+  readApprovalReview = async (input: ConversationApprovalDisplayReviewInput, signal: AbortSignal): Promise<ConversationApprovalDisplayReview> => {
+    this.assertOpen();
+    if (!this.supportsApprovalReview || !this.active || input.conversationId !== this.options.conversationId ||
+        input.generation !== this.control?.generation) throw new TypeError("Approval review is unavailable");
+    const combined = AbortSignal.any([signal, this.displayLifetime.signal, this.lifetime.signal]);
+    const review = await this.options.reader.approvalReview!(input, combined);
+    combined.throwIfAborted();
+    if (input.generation !== this.control?.generation) throw new TypeError("Approval review changed");
+    return review;
+  };
   get supportsMessageText(): boolean { return this.options.messageText === true && !!this.options.reader.content; }
+  get supportsRecordText(): boolean { return this.options.recordText === true && !!this.options.reader.content; }
+  readRecordText = async (input: ConversationDisplayContentInput, signal: AbortSignal): Promise<ConversationDisplayContentChunk> => {
+    this.assertOpen();
+    if (!this.supportsRecordText || !this.active || input.conversationId !== this.options.conversationId ||
+        input.generation !== this.control?.generation || input.format !== "record-text") throw new TypeError("Record reader is unavailable");
+    const combined = AbortSignal.any([signal, this.displayLifetime.signal, this.lifetime.signal]);
+    const chunk = await this.options.reader.content!(input, combined);
+    combined.throwIfAborted();
+    if (input.generation !== this.control?.generation) throw new TypeError("Record reader changed");
+    return chunk;
+  };
   readMessageText = (input: ConversationDisplayContentInput, signal: AbortSignal): Promise<ConversationDisplayContentChunk> => {
     this.assertOpen();
     if (!this.supportsMessageText || input.conversationId !== this.options.conversationId ||
@@ -380,6 +423,15 @@ export class ApplicationConversationSession<TRequest = unknown> {
       await this.options.pendingStore.retain(saved); this.assertOpen();
       this.publish({ hasPendingSubmission: true });
       const result = await this.options.resources.appendMutations(saved.admission); this.assertOpen();
+      if (result.status === "rejected") {
+        // This response certifies that nothing was admitted. Release only the
+        // exact send journal; the editable text and files remain for correction.
+        const rejection = new ConversationSyncMutationRejectedError(result.code);
+        await this.options.pendingStore.acknowledge(saved); this.assertOpen();
+        this.publish({ hasPendingSubmission: false });
+        throw new ApplicationConversationSessionError(rejection.code, rejection.message);
+      }
+      if (result.status === "unauthorized") throw new ApplicationConversationSessionError("forbidden", "Conversation access is unavailable.");
       if (result.status !== "mutations" || result.acknowledgements.length !== saved.admission.mutations.length ||
         saved.admission.mutations.some(mutation => result.acknowledgements.filter(ack => ack.mutationId === mutation.mutationId && ["accepted", "duplicate"].includes(ack.status)).length !== 1)) {
         throw new ApplicationConversationSessionError("admission_unconfirmed", "The saved message could not be confirmed. Retry its original submission.", true);
@@ -387,7 +439,23 @@ export class ApplicationConversationSession<TRequest = unknown> {
       const control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId: saved.start.conversationTurnId }, this.lifetime.signal);
       this.assertOpen();
       if (control.status !== "ready" || !control.requestedTurn) throw new ApplicationConversationSessionError("admission_unconfirmed", "The saved turn is not visible yet.", true);
-      await this.refresh(); this.assertOpen(); this.admitted = saved;
+      await this.refresh(); this.assertOpen();
+      if (saved.localDraft) {
+        try {
+          if (saved.localDraft.textVersion !== undefined) {
+            if (!this.draft) throw new Error("No local draft owner");
+            await this.draft.reconcileAccepted(saved.localDraft.textVersion);
+          }
+          if (saved.localDraft.fileIds?.length) {
+            if (!this.options.reconcileAcceptedFiles) throw new Error("No local file owner");
+            await this.options.reconcileAcceptedFiles(saved.localDraft.fileIds);
+          }
+        } catch {
+          throw new ApplicationConversationSessionError("draft_cleanup_failed",
+            "Your message was saved, but its local draft could not be cleared. Retry the saved message.", true);
+        }
+      }
+      this.assertOpen(); this.admitted = saved;
       for (const callback of this.callbacks.splice(0)) this.acceptCallback(callback);
       this.assertOpen();
       if (!terminal(control.requestedTurn)) {
@@ -414,7 +482,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
   private observe(observation: TurnObservation<unknown>, turnId: string) {
     this.observation?.disconnect(); this.observation = observation; this.observationTurnId = turnId;
     void (async () => {
-      try { for await (const _event of observation.events) { if (this.lifetime.signal.aborted) break; this.scheduleRefresh(); } }
+      try { for await (const event of observation.events) { void event; if (this.lifetime.signal.aborted) break; this.scheduleRefresh(); } }
       catch { /* The durable controls remain authoritative after disconnection. */ }
       finally { if (this.observation === observation) { this.observation = null; this.observationTurnId = null; } this.scheduleRefresh(); }
     })();
@@ -470,7 +538,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   dispose(): void {
     if (this.lifetime.signal.aborted) return;
     this.lifetime.abort(); this.displayLifetime.abort(); clearTimeout(this.poll); clearTimeout(this.wake);
-    const flushed = Promise.allSettled([this.draft?.dispose(), this.flushPosition()]).then(() => { this.position = null; });
+    const flushed = Promise.allSettled([this.draft && (this.options.draftWorkspace
+      ? this.options.draftWorkspace.release(this.draft) : this.draft.dispose()), this.flushPosition()]).then(() => { this.position = null; });
     this.options.onLocalStateFlush?.(flushed);
     this.observation?.disconnect(); this.observation = null; this.observationTurnId = null; this.unsubscribeWindow(); this.window.dispose();
     this.control = null; this.clearRelated();

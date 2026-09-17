@@ -2,6 +2,7 @@ import type { ConversationMessageRecord, ConversationTurnRecord, ConversationToo
   ConversationApprovalProposalRecord, ConversationToolLoopBudgetExhaustion } from "./state.js";
 import type { Citation, CitationSource } from "../citations.js";
 import type { ConversationDisplayControl, ConversationDisplayControlInput } from "./display-control.js";
+import type { ConversationApprovalDisplayReviewInput, ConversationApprovalDisplayReview } from "./approval-display-review.js";
 
 /** Display records are not canonical checkpoints and must never seed model context. */
 export interface ConversationDisplayRecordTypes {
@@ -74,7 +75,7 @@ export interface ConversationDisplayContentInput {
   /** May be omitted on the first chunk of a referenced record. Later chunks pin it. */
   readonly revision?: number;
   /** Negotiated text reader for large messages; omits record JSON and attachments. */
-  readonly format?: "json-text" | "message-text";
+  readonly format?: "json-text" | "message-text" | "record-text";
   /** Unicode code-point offset into a serialized JSON record, not an event log. */
   readonly offset?: number;
 }
@@ -101,6 +102,8 @@ export interface ConversationDisplayChanges extends ConversationDisplayPage {
 }
 
 export interface ConversationDisplayHistory {
+  /** Negotiated bounded argument review; never hydrate canonical history here. */
+  approvalReview?(input: ConversationApprovalDisplayReviewInput): Promise<ConversationApprovalDisplayReview>;
   /** Optional for older/custom display stores; advertised separately by gateways. */
   control?(input: ConversationDisplayControlInput): Promise<ConversationDisplayControl>;
   page(input: ConversationDisplayPageInput): Promise<ConversationDisplayPage>;

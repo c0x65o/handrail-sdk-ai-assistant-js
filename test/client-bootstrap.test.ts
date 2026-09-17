@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
+import { IndexedDBApplicationConversationPendingStore } from "../src/browser/indexeddb-pending-store.js";
+import { ConversationLocalErasureError } from "../src/conversation/catalog.js";
+import { InMemoryConversationLocalStateStore } from "../src/client/local-state.js";
+import { prepareApplicationConversationSubmission } from "../src/client/session-submission.js";
 
 import {
   APPLICATION_GATEWAY_PROTOCOL_VERSION,
@@ -23,6 +28,79 @@ const capabilities: ApplicationGatewayCapabilities = Object.freeze({
 });
 
 describe("createHandrailAiClient", () => {
+  it("owns custom authorized upload adapters and inferred durable files independently of UI runtimes", async () => {
+    const storage = new IndexedDBApplicationConversationPendingStore({ indexedDB: new IDBFactory(), scope: "account:api" });
+    const attachmentUploadAdapter: AttachmentUploadAdapter<Blob> = { upload: vi.fn(async request => {
+      const saved = await storage.readAttachmentDraft(request.metadata.conversationId!);
+      expect(saved?.files[0]?.selection.idempotencyKey).toBe(request.idempotencyKey);
+      return { attachment_id: "att_custom", content_ref: "ref_custom", media_type: request.metadata.mediaType,
+        byte_size: request.metadata.byteSize, ...(request.metadata.filename ? { filename: request.metadata.filename } : {}) };
+    }) };
+    const options = { baseUrl: "https://app.test/ai", capabilities, pendingStore: storage, attachmentUploadAdapter };
+    const first = await createHandrailAiClient(options);
+    try {
+      expect(first.attachmentUpload).toBe(attachmentUploadAdapter);
+      const draft = first.attachmentDrafts.forConversation("chat"); await draft.flush();
+      draft.add([{ source: new Blob(["pdf"]), kind: "document", byteSize: 3, mediaType: "application/pdf",
+        filename: "local.pdf", fingerprint: "selected", idempotencyKey: "selection" }]);
+      await vi.waitFor(() => expect(draft.getSnapshot().files[0]?.reference).toBeDefined());
+      await first.dispose();
+      const second = await createHandrailAiClient(options);
+      try {
+        const restored = second.attachmentDrafts.forConversation("chat"); await restored.flush();
+        expect(restored.uploader.getSnapshot().items[0]?.status).toBe("ready");
+        expect(attachmentUploadAdapter.upload).toHaveBeenCalledTimes(1);
+      } finally { await second.dispose(); }
+    } finally { await first.dispose(); storage.close(); }
+  });
+
+  it("erases device state only after matching confirmed deletion and retries cleanup without another network mutation", async () => {
+    const storage = new IndexedDBApplicationConversationPendingStore({ indexedDB: new IDBFactory(), scope: "account:api" });
+    await storage.writeDraft("chat", "private draft", null);
+    await storage.writePosition("chat", { messageId: "m", generation: 0, offset: 5, following: false });
+    await storage.retain(prepareApplicationConversationSubmission({ conversationId: "chat" as never, clientId: "c" as never,
+      revision: 0, operationId: "one", now: "2026-09-17T00:00:00.000Z", input: { content: "question", request: {} } }));
+    const erase = vi.spyOn(storage, "eraseConversation");
+    let response: Response = Response.json({ ok: false, error: { code: "forbidden", message: "Forbidden", retryable: false } }, { status: 403 });
+    const fetcher = vi.fn<typeof fetch>(async () => response.clone());
+    const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", fetch: fetcher,
+      capabilities: { ...capabilities, resources: { conversations: true, approvals: false, titleGeneration: false } }, pendingStore: storage });
+    const input = { authorizationContext: undefined, conversationId: "chat" as never, expectedVersion: 1 as never, idempotencyKey: "delete-chat" as never };
+    try {
+      await expect(client.catalog.permanentlyDelete(input)).rejects.toMatchObject({ code: "forbidden" });
+      expect(erase).not.toHaveBeenCalled();
+      const deleted = { operation: "permanent_delete", status: "deleted", conversationId: "chat", deletedVersion: 1 };
+      response = Response.json({ ok: true, value: { ...deleted, conversationId: "wrong-chat" } });
+      await expect(client.catalog.permanentlyDelete(input)).rejects.toMatchObject({ code: "unavailable" });
+      expect(erase).not.toHaveBeenCalled();
+      response = Response.json({ ok: true, value: deleted });
+      erase.mockRejectedValueOnce(new Error("device unavailable"));
+      const error = await client.catalog.permanentlyDelete(input).catch(error => error) as ConversationLocalErasureError;
+      expect(error).toBeInstanceOf(ConversationLocalErasureError); expect(error.result).toEqual(deleted);
+      expect((await storage.readDraft("chat"))?.text).toBe("private draft");
+      await error.retry();
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(erase).toHaveBeenCalledTimes(2); // One combined store, once per attempt.
+      expect(await storage.readDraft("chat")).toBeNull(); expect(await storage.readPosition("chat")).toBeNull();
+      expect(await storage.load("chat")).toBeNull();
+    } finally { await client.dispose(); storage.close(); }
+  });
+
+  it("cleans default memory pending storage and a separately supplied local state store", async () => {
+    const localStateStore = new InMemoryConversationLocalStateStore();
+    await localStateStore.writeDraft("chat", "remove this", null);
+    await localStateStore.writeDraft("keep", "keep this", null);
+    const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", capabilities, localStateStore,
+      fetch: async () => Response.json({ ok: true, value: { operation: "permanent_delete", status: "deleted", conversationId: "chat", deletedVersion: 1 } }) });
+    try {
+      await client.catalog.permanentlyDelete({ authorizationContext: undefined, conversationId: "chat" as never,
+        expectedVersion: 1 as never, idempotencyKey: "delete-chat" as never });
+      expect(await localStateStore.readDraft("chat")).toBeNull();
+      expect((await localStateStore.readDraft("keep"))?.text).toBe("keep this");
+      await expect(localStateStore.writeDraft("chat", "late", null)).rejects.toThrow("permanently deleted");
+    } finally { await client.dispose(); localStateStore.dispose(); }
+  });
+
   it("owns a negotiated display window without eager history reads and clears it when the account client is disposed", async () => {
     const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
       const input = JSON.parse(String(init?.body)).input;

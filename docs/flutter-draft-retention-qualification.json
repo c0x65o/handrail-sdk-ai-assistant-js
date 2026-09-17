@@ -1,0 +1,69 @@
+{
+  "recordedAt": "2026-09-17T05:40:15.412365+00:00",
+  "scope": "Local Flutter SDK source qualification; no dependency installation, deployment or device frame measurement",
+  "sdkHead": "88d34ef37a5c8f4e24aa4db68ac56cf551593a37",
+  "sourceHashes": {
+    "lib/composer_drafts.dart": "2ea39edc6225766bd1c5a5d8a90afcfce506a52c3387e0385d09bd4f473837b1",
+    "lib/draft_controller.dart": "b5099c751719a1af6a871433d976d28612dc0a5115dfeeaf5ec84588b9c4a7b3",
+    "lib/attachments.dart": "87ca8f9a9bfcf6ed3cbca9587a74326a7be9621612e17b2bafaf78924dc80403",
+    "lib/assistant_workspace.dart": "c813f0d2ea31cbe96d1957cbcada7f48c38fe809f91ac7c162d8c81daa3b2cf4",
+    "test/composer_drafts_test.dart": "545bb60e596ba25dba0f546da9a5be2c65735ca112608acb4cfca6ab3eb9b605",
+    "test/assistant_workspace_test.dart": "f8b239bf9526825b2cdffb3e9d6868e6dfa7a975b2d5bc54832ce71b2fbc7d28"
+  },
+  "defaults": {
+    "idleEditors": 8,
+    "individualDraftUtf8Bytes": 65536,
+    "retainedDraftsAndSnapshots": 32,
+    "retainedDraftUtf8Bytes": 524288,
+    "retainedAttachments": 64,
+    "retainedAttachmentBytes": 67108864,
+    "concurrentHostUploads": 2
+  },
+  "tests": {
+    "command": "flutter test --no-pub --concurrency=1 test/composer_drafts_test.dart test/draft_controller_test.dart test/assistant_workspace_test.dart test/attachments_test.dart test/composer_test.dart",
+    "passed": 73,
+    "exitCode": 0
+  },
+  "analysis": {
+    "command": "flutter analyze --no-pub --fatal-infos lib/composer_drafts.dart lib/draft_controller.dart lib/attachments.dart lib/assistant_workspace.dart test/composer_drafts_test.dart test/assistant_workspace_test.dart",
+    "exitCode": 0
+  },
+  "consumers": [
+    {
+      "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4-mobile",
+      "roots": [
+        "lib/repositories/sdk_assistant_repository.dart",
+        "lib/screens/assistant_screen.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 14288
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp-mobile",
+      "roots": [
+        "lib/features/cents/cents_sdk.dart",
+        "lib/features/cents/cents_sheet.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 7366
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/scs-erp-mobile",
+      "roots": [
+        "lib/src/aegis/aegis_sdk_repository.dart",
+        "lib/src/aegis/aegis_conversation_screen.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 11102
+    }
+  ],
+  "limits": [
+    "Content budgets are not total process heap limits.",
+    "Generic opaque attachment byte accounting requires fileForAttachment.",
+    "Unsent native file selections are not serialized for reload; text and submitted intent use their existing scoped durable stores.",
+    "Custom editor surfaces must display draftInputError."
+  ]
+}

@@ -73,13 +73,21 @@ test("pre-dispatch cancellation sends no intake and closes the connection", asyn
   assert.equal(fixture.observations.closed, 1);
 });
 
-// Acceptance assertion intentionally stays red until the separately owned
-// connector/API agree. Do not fabricate contract_version in the fixture.
-test("canonical enhancement readback succeeds through the supported connector", async () => {
+// Contract fixture only. This does not execute or qualify the actual platform repair.
+test("source-derived v1 enhancement lookup fixture succeeds through the supported connector", async () => {
   await withQualificationAssistant(qualificationFixture(), async ({ session }) => {
     const result = await session.callTool({ name: FEEDBACK_TOOL_NAMES.enhancementLookup,
       arguments: { request_id: "fixture-enhancement" }, toolCallId: "fixture-readback" });
-    assert.notEqual(result.isError, true, "MCP rejects the canonical unwrapped lookup response: feedback_transport_contract_mismatch");
+    assert.notEqual(result.isError, true, "v1 fixture must be compatible");
     assert.equal(result.structuredContent.id, "fixture-enhancement");
+  });
+});
+
+ test("historical unversioned enhancement lookup is rejected", async () => {
+  await withQualificationAssistant(qualificationFixture({ unversionedLookup: true }), async ({ session }) => {
+    const result = await session.callTool({ name: FEEDBACK_TOOL_NAMES.enhancementLookup,
+      arguments: { request_id: "fixture-enhancement" }, toolCallId: "historical-readback" });
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result), /feedback_transport_contract_mismatch/);
   });
 });

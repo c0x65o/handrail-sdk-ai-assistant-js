@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { assistantToolArgumentReference } from "../conversation/approval-arguments.js";
+import { approvalDisplayProposalBinding, parseConversationApprovalDisplayReview, type ConversationApprovalDisplayReviewInput,
+  type ConversationApprovalDisplayReview } from "../conversation/approval-display-review.js";
+import type { JsonObject } from "../protocol.js";
 import type { PostgresSqlClient } from "./index.js";
 import { parseConversationEvent, type ConversationEvent, type ConversationRevision, type ConversationTurnId } from "../conversation/events.js";
 import { createInitialConversationState, type ConversationState } from "../conversation/state.js";
@@ -32,6 +36,8 @@ export const postgresDisplayHistorySchema = Object.freeze([
     (tenant_id,conversation_id,first_revision DESC,record_id DESC) WHERE kind='turn' AND NOT deleted`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_missing_control ON handrail_ai_display_records
     (tenant_id,conversation_id,first_revision,record_id) WHERE kind='turn' AND NOT deleted AND control_payload IS NULL`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_display_missing_review_control ON handrail_ai_display_records
+    (tenant_id,conversation_id,first_revision,kind,record_id) WHERE kind IN ('tool','approval') AND NOT deleted AND control_payload IS NULL`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_messages ON handrail_ai_display_records
     (tenant_id,conversation_id,sort_at DESC,first_revision DESC,record_id DESC) WHERE kind='message' AND visible`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_turn ON handrail_ai_display_records
@@ -52,6 +58,21 @@ type Row = Record<string, unknown> & {
   kind: ConversationDisplayRecordKind; record_id: string; first_revision: string; revision: string;
   sort_at: string; payload: string | null; payload_bytes: number; turn_id: string | null; sentinel?: boolean; record_deleted?: boolean;
 };
+
+/** Computed at canonical projection/backfill time, never by a display read. */
+function reviewControl(conversationId: string, kind: ConversationDisplayRecordKind, value: Entity): string | null {
+  if (kind === "tool") {
+    const call = value as ConversationDisplayRecordTypes["tool"];
+    return JSON.stringify({ version: 1, toolCallId: call.tool_call_id, turnId: call.turn_id, toolName: call.name,
+      argumentReference: call.arguments ? assistantToolArgumentReference(call.arguments as JsonObject) : null });
+  }
+  if (kind !== "approval") return null;
+  const p = value as ConversationDisplayRecordTypes["approval"];
+  return JSON.stringify({ version: 1, proposalBinding: approvalDisplayProposalBinding(conversationId, p), proposalId: p.proposal_id, proposalVersion: p.proposal_version,
+    groupId: p.group_id, turnId: p.turn_id, toolCallId: p.tool_call_id, toolName: p.tool_name, status: p.status,
+    reviewType: p.reviewed_arguments.type, argumentReference: p.reviewed_arguments.type === "opaque_reference"
+      ? p.reviewed_arguments.argument_ref : assistantToolArgumentReference(p.reviewed_arguments.value as JsonObject) });
+}
 
 function packPage<T extends ConversationDisplayPage>(page: T, allRows: readonly Row[], limit: number,
   maximumBytes: number, cursorFor: (row: Row) => string, reverse: boolean): T {
@@ -170,7 +191,7 @@ async function writeEntity(client: PostgresSqlClient, tenant: string, event: Con
     kind === "message" ? data.message_id : target?.message_id ?? null,
     kind === "citation" ? data.source_id : null, kind !== "message" || data.role !== null,
     payload, encoder.encode(payload).byteLength, firstRevision,
-    kind === "turn" ? JSON.stringify(displayTurnControl(value as ConversationDisplayRecordTypes["turn"], event.revision)) : null]);
+    kind === "turn" ? JSON.stringify(displayTurnControl(value as ConversationDisplayRecordTypes["turn"], event.revision)) : reviewControl(event.conversation_id, kind, value)]);
 }
 
 /** Called in the append transaction after the canonical lock has been acquired.
@@ -387,6 +408,90 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
     });
   }
 
+  /** Durable, separately scheduled upgrade of existing review summaries. One
+   * entity by default: large arguments never hydrate on a user display read. */
+  async backfillReviewControls(conversationId: string, maximumRecords = 1) {
+    identity(conversationId); integer(maximumRecords, 1, 10);
+    await this.authorize(conversationId);
+    return this.client.transaction(async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [lockKey(this.tenantId, conversationId)]);
+      await this.authorize(conversationId);
+      const deleted = await client.query(`SELECT 1 FROM handrail_ai_documents
+        WHERE tenant_id=$1 AND kind='conversation_deleted' AND scope_id=$2 AND record_id='deleted'`, [this.tenantId, conversationId]);
+      if (deleted.rows.length) throw new ConversationDisplayHistoryError("not_found", "Conversation not found");
+      const batch = await client.query<Row>(`SELECT kind,record_id,payload FROM handrail_ai_display_records
+        WHERE tenant_id=$1 AND conversation_id=$2 AND kind IN ('tool','approval') AND NOT deleted AND control_payload IS NULL
+        ORDER BY first_revision,kind,record_id LIMIT $3 FOR UPDATE`, [this.tenantId, conversationId, maximumRecords]);
+      for (const row of batch.rows) await client.query(`UPDATE handrail_ai_display_records SET control_payload=$5
+        WHERE tenant_id=$1 AND conversation_id=$2 AND kind=$3 AND record_id=$4`,
+      [this.tenantId, conversationId, row.kind, row.record_id, reviewControl(conversationId, row.kind, JSON.parse(row.payload!))]);
+      const remaining = await client.query(`SELECT 1 FROM handrail_ai_display_records
+        WHERE tenant_id=$1 AND conversation_id=$2 AND kind IN ('tool','approval') AND NOT deleted AND control_payload IS NULL LIMIT 1`,
+      [this.tenantId, conversationId]);
+      await this.authorize(conversationId);
+      return { processed: batch.rows.length, hasMore: remaining.rows.length > 0 };
+    });
+  }
+
+  async approvalReview(input: ConversationApprovalDisplayReviewInput): Promise<ConversationApprovalDisplayReview> {
+    identity(input.conversationId); identity(input.proposalId); integer(input.generation, 0);
+    const offset = input.offset ?? 0; integer(offset, 0, 2_147_483_646);
+    if (input.binding !== undefined && !/^[a-f0-9]{64}$/u.test(input.binding) || offset > 0 && input.binding === undefined) invalid();
+    await this.authorize(input.conversationId);
+    const result = await this.client.query<{ generation: string; revision: string; canonical_revision: string;
+      proposal_revision: string | null; proposal_control: string | null; tool_revision: string | null;
+      tool_control: string | null; proposal_control_missing: boolean; tool_control_missing: boolean; content: string | null }>(`
+      WITH head AS (
+        SELECT h.*,COALESCE((SELECT e.revision FROM handrail_ai_events e WHERE e.tenant_id=$1 AND e.conversation_id=$2
+          ORDER BY e.revision DESC LIMIT 1),0) AS canonical_revision FROM handrail_ai_display_heads h
+        WHERE h.tenant_id=$1 AND h.conversation_id=$2 AND NOT EXISTS(SELECT 1 FROM handrail_ai_documents
+          WHERE tenant_id=$1 AND kind='conversation_deleted' AND scope_id=$2 AND record_id='deleted')
+      ), selected AS (
+        SELECT h.generation,h.revision,h.canonical_revision,p.revision AS proposal_revision,p.payload AS proposal_payload,
+          p.control_payload IS NULL AS proposal_control_missing,t.control_payload IS NULL AS tool_control_missing,
+          CASE WHEN octet_length(p.control_payload)<=8192 THEN p.control_payload::jsonb END AS pc,
+          t.revision AS tool_revision,t.payload AS tool_payload,
+          CASE WHEN octet_length(t.control_payload)<=8192 THEN t.control_payload::jsonb END AS tc
+        FROM head h LEFT JOIN handrail_ai_display_records p ON p.tenant_id=h.tenant_id AND p.conversation_id=h.conversation_id
+          AND p.kind='approval' AND p.record_id=$3 AND NOT p.deleted
+        LEFT JOIN handrail_ai_display_records t ON t.tenant_id=h.tenant_id AND t.conversation_id=h.conversation_id
+          AND t.kind='tool' AND t.record_id=p.control_payload::jsonb->>'toolCallId' AND NOT t.deleted
+      ) SELECT generation::text,revision::text,canonical_revision::text,proposal_revision::text,pc::text AS proposal_control,
+        tool_revision::text,tc::text AS tool_control,proposal_control_missing,tool_control_missing,
+        CASE WHEN generation=$4 AND revision=canonical_revision AND pc->>'version'='1' AND pc->>'status'='pending' AND
+          (pc->>'reviewType'='redacted_json' OR pc->>'reviewType'='opaque_reference' AND tc->>'version'='1' AND
+            pc->>'argumentReference'=tc->>'argumentReference' AND pc->>'turnId'=tc->>'turnId' AND
+            pc->>'toolName'=tc->>'toolName' AND pc->>'toolCallId'=tc->>'toolCallId')
+        THEN substring(jsonb_pretty(CASE WHEN pc->>'reviewType'='redacted_json'
+          THEN proposal_payload::jsonb#>'{reviewed_arguments,value}' ELSE tool_payload::jsonb->'arguments' END)
+          FROM $5::integer FOR $6::integer) END AS content FROM selected`,
+    [this.tenantId, input.conversationId, input.proposalId, input.generation, offset + 1, limits.contentChunkCharacters + 1]);
+    await this.authorize(input.conversationId);
+    const row = result.rows[0];
+    if (!row) throw new ConversationDisplayHistoryError("not_found", "Approval review not found");
+    if (Number(row.generation) !== input.generation) throw new ConversationDisplayHistoryError("stale_cursor", "History was cleared");
+    const header = { schemaVersion: 1 as const, conversationId: input.conversationId, generation: input.generation, proposalId: input.proposalId };
+    if (row.revision !== row.canonical_revision) return { ...header, status: "preparing", review: null };
+    if (row.proposal_revision === null) throw new ConversationDisplayHistoryError("not_found", "Approval review not found");
+    const proposal = row.proposal_control ? JSON.parse(row.proposal_control) as Record<string, unknown> : null;
+    if (row.proposal_control_missing || proposal?.reviewType === "opaque_reference" && row.tool_control_missing && row.tool_revision !== null) {
+      return { ...header, status: "preparing", review: null };
+    }
+    if (!proposal || proposal.version !== 1 || proposal.proposalId !== input.proposalId || proposal.status !== "pending" || row.content === null) {
+      throw new ConversationDisplayHistoryError("content_changed", "Verified approval details are unavailable. Reload the review.");
+    }
+    const binding = createHash("sha256").update(JSON.stringify([this.scope(input.conversationId), input.generation,
+      input.proposalId, row.proposal_revision, proposal, proposal.reviewType === "opaque_reference" ? row.tool_revision : null])).digest("hex");
+    if (input.binding !== undefined && input.binding !== binding) throw new ConversationDisplayHistoryError("content_changed", "Approval changed. Reload before deciding.");
+    const characters = Array.from(row.content);
+    return parseConversationApprovalDisplayReview({ ...header, status: "ready", review: {
+      binding, proposalBinding: proposal.proposalBinding, proposalVersion: proposal.proposalVersion, groupId: proposal.groupId, turnId: proposal.turnId,
+      toolCallId: proposal.toolCallId, toolName: proposal.toolName, argumentReference: proposal.argumentReference,
+      text: characters.slice(0, limits.contentChunkCharacters).join(""), offset,
+      nextOffset: characters.length > limits.contentChunkCharacters ? offset + limits.contentChunkCharacters : null,
+    } }, input);
+  }
+
   async page(input: ConversationDisplayPageInput): Promise<ConversationDisplayPage> {
     identity(input.conversationId);
     const view = viewOf(input.view), limit = input.limit ?? limits.defaultPageSize;
@@ -564,7 +669,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
     const offset = input.offset ?? 0; integer(offset, 0, 2_147_483_646);
     if (offset > 0 && input.revision === undefined) invalid();
     if (!kinds.includes(input.kind)) invalid();
-    if (input.format !== undefined && input.format !== "json-text" && input.format !== "message-text" ||
+    if (input.format !== undefined && !["json-text", "message-text", "record-text"].includes(input.format) ||
         input.format === "message-text" && input.kind !== "message") invalid();
     await this.authorize(input.conversationId);
     const result = await this.client.query<{ generation: string; revision: string | null; content: string | null }>(`
@@ -572,6 +677,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
         CASE WHEN h.generation=$5 AND ($6::bigint IS NULL OR r.revision=$6) THEN substring(
           CASE WHEN $9='message-text' THEN COALESCE((SELECT string_agg(part->>'text',chr(10)||chr(10) ORDER BY ordinal)
             FROM jsonb_array_elements(r.payload::jsonb->'content') WITH ORDINALITY AS parts(part,ordinal)), '')
+            WHEN $9='record-text' THEN jsonb_pretty(r.payload::jsonb)
             ELSE r.payload END FROM $7::integer FOR $8::integer) ELSE NULL END AS content
       FROM handrail_ai_display_heads h LEFT JOIN handrail_ai_display_records r
         ON r.tenant_id=h.tenant_id AND r.conversation_id=h.conversation_id AND r.kind=$3 AND r.record_id=$4 AND NOT r.deleted
@@ -588,7 +694,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
     if (Number(row.generation) !== input.generation) throw new ConversationDisplayHistoryError("stale_cursor", "History was cleared");
     if (input.revision !== undefined && Number(row.revision) !== input.revision) throw new ConversationDisplayHistoryError("content_changed", "Record changed. Reload before reading more content.");
     const characters = Array.from(row.content ?? "");
-    return { encoding: input.format === "message-text" ? "plain-text" as const : "json-text" as const, text: characters.slice(0, limits.contentChunkCharacters).join(""),
+    return { encoding: input.format === "message-text" || input.format === "record-text" ? "plain-text" as const : "json-text" as const, text: characters.slice(0, limits.contentChunkCharacters).join(""),
       nextOffset: characters.length > limits.contentChunkCharacters ? offset + limits.contentChunkCharacters : null, revision: Number(row.revision) };
   }
 }

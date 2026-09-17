@@ -315,6 +315,36 @@ compare exact acknowledgement content, and enforce 32 pending conversations / a
 4 MiB scope budget without evicting ambiguous sends. An omitted adapter uses
 bounded account-lifetime memory and does **not** survive reload.
 
+The high-level client's catalog erases local pending sends, drafts, files and positions
+after a matching, confirmed permanent-delete response. Clear and archive preserve
+unsent drafts. IndexedDB schema version 4 includes an indexed, content-free deleted
+identity marker and erases the chat's rows and binary sources atomically. Old-tab saves, position
+writes and pending-send retention for that identity fail after deletion, including
+after a reload. Markers contain only the scope and conversation ID and are kept
+until explicit account erasure, since permanent conversation IDs cannot be reused.
+Account erasure scans keys incrementally rather than loading the complete marker
+history into memory. Existing version 1/2/3 rows are preserved by the upgrade.
+
+Custom pending/local-state stores should implement `eraseConversation(id)` with
+the same late-write fencing semantics. This optional interface addition preserves
+source compatibility; missing cleanup support is an explicit deletion-cleanup
+error at runtime. A combined store is called once. Callers using the low-level
+resource client directly own this local cleanup themselves.
+
+If device storage fails after the remote deletion succeeds,
+`ConversationLocalErasureError` carries the confirmed `result` and a `retry()`
+that performs device cleanup only. The standard picker removes the deleted row,
+reports what remains, and offers **Retry device cleanup**. The registry still
+invalidates the deleted runtime. A malformed or failed remote response never
+erases local data. Custom deletion UI must distinguish this error from a failed
+remote mutation and surface its retry. Retrying does not recreate the chat or
+issue another server deletion.
+
+Browser rollout note: an older SDK that explicitly opens IndexedDB version 2 or 3
+cannot open a database already upgraded to version 4. Preserve the upgraded
+schema when rolling back app code, using a compatible SDK revision; do not delete
+the database or pending intents as a rollback workaround.
+
 ### Drafts and saved positions
 
 That same IndexedDB adapter implements `ConversationLocalStateStore`. Standard
@@ -336,10 +366,142 @@ before an asynchronous write completes cannot be guaranteed durable.
 
 Scroll restoration requests one indexed page around the saved message; it does
 not fetch every preceding page. A changed clear-generation falls back to the
-latest page. Draft storage contains text only, not attachment bytes or transcripts.
-Selected files remain account-owned in memory; admitted attachment references
-are part of the separate durable submission journal. Attachment-selection reload
-recovery and browser deletion cleanup still require qualification.
+latest page. Text drafts and positions contain no transcripts or attachment bytes.
+Browser controllers also enforce limits before retaining an edit: 64 KiB per
+value, 512 KiB and 32 distinct nonempty editor/callback values across controllers
+sharing one account-scoped `ConversationLocalStateStore`. Equal text within the
+same owner shares a reservation; slow writes and captured sends keep older values
+charged until their actual callbacks settle. Reservation metadata is capped at
+128 references. These are retained-content budgets, not a total browser heap cap.
+An oversized paste is rejected before UTF-8 encoding when its character count
+already exceeds the byte limit. The previous text, edit identity and durable
+revision remain available. `ConversationDraftSnapshot.inputError` and the
+composer's optional `draftInputError` expose a safe, accessible error separately
+from storage failures. `setText` returns whether the edit was accepted.
+
+The standard hook captures send text automatically. Custom asynchronous editors
+can call `draft.retainText(capturedText)` and release the returned callback in
+`finally`, after the host operation actually settles; acceptance alone does not
+release it. Do not use display pagination or model context as this local budget.
+The legacy standalone hook enforces the same per-editor bound and shares retention
+within its conversation-store object. Custom multi-chat hosts should use
+controllers backed by one scoped local-state store for the account-wide budget.
+The standard bootstrap additionally owns a `ConversationDraftWorkspace` outside
+the transcript cache. A failed save remains recoverable after its transcript
+runtime is evicted; reopening the chat reuses the same editor and revision owner.
+Clean unused editors use an eight-entry cache. There is a separate 64-owner cap
+including closing owners, so even empty uncertain saves cannot accumulate
+unbounded metadata. The text and in-flight snapshot budgets above still apply.
+Manual `ApplicationConversationSession` hosts can share `draftWorkspace` across
+sessions; session disposal releases a lease, and the account disposes the owner.
+Confirmed permanent deletion forgets the editor and fences writes in its scoped
+store. A failed restoration/reload never erases saved content to make room. Disposal also
+drains edits made while confirmed-admission cleanup was pending before releasing
+its editor reservation. Store failures remain subject to the existing durability
+boundary described above.
+
+File selections use their own bounded stores, described below. Admitted attachment
+references are also part of the separate durable submission journal.
+
+### Exact draft cleanup after recovered admission
+
+The standard React composer captures a device-only `ConversationDraftOrigin`
+receipt with the exact persisted text revision and stable selected-file IDs.
+It saves that receipt with the original pending submission before making a
+server write. The receipt is excluded from canonical events, provider requests,
+and gateway admission/start bodies. It is neither authorization nor a content
+match: a newer draft containing identical text or bytes must survive.
+
+After confirmed admission (including duplicate replay after reload), the session
+conditionally removes that text revision and those file IDs. It waits for local
+writes, preserves newer edits/selections, and does not overwrite another tab's
+unseen revision. IndexedDB file cleanup reads bounded metadata and deletes exact
+Blob keys without loading the binary sources. A storage failure retains the
+original pending submission and exposes **Retry saved message**. Retry reuses
+server mutation/start identities and repeats local cleanup idempotently; partial
+cleanup cannot erase a new draft. The journal is acknowledged only after cleanup
+and the required server start acknowledgement. An uncertain server admission
+never clears local work.
+
+Pending submissions with a receipt use local journal **version 2**; existing
+version-1 submissions remain readable without guessed cleanup. This is separate
+from IndexedDB schema version 4 and does not change the server wire protocol.
+Older clients reject a version-2 journal before replay instead of silently
+acknowledging it without cleanup. Do not clear journals or downgrade their
+version to work around rollback: finish/retry them with a compatible client.
+
+Custom `ConversationLocalStateStore` / `AttachmentDraftStore` implementations may
+provide atomic `discardDraftVersion` / `discardAcceptedFiles`. Their existing
+atomic compare/replace methods support the compatibility fallback. Direct
+headless session users must capture the exact origin through their draft
+controllers and pass `localDraft` to `sendMessage`; custom file ownership must
+supply `reconcileAcceptedFiles`. Legacy custom upload queues and version-1
+journals retain their existing cleanup semantics. Flutter now supports the
+same version-2 receipt contract, while its native file-byte persistence remains
+an unfinished adapter qualification.
+
+### Browser file drafts
+
+`client.attachmentDrafts` owns files and upload queues for the authenticated
+account/API lifetime. The standard workspace uses it automatically with the
+default uploader, independently of mounted composers and retained transcript
+runtimes. Selecting another chat, closing a composer, or evicting an idle runtime
+does not remove its unsent files. Object URLs belong to the mounted view and are
+revoked there; they are never persisted. Only explicit removal, exact successful
+send admission, confirmed permanent deletion, or account erasure removes files.
+Late admission clears its original selection IDs even after the view has switched.
+
+The IndexedDB pending-store adapter implements `AttachmentDraftStore<Blob>` and
+is inferred by the client. A separate `attachmentDraftStore` may be supplied.
+Version 4 keeps file metadata/revisions in `attachment_drafts` and immutable Blobs
+in `attachment_blobs`; quota scans and ready-reference updates do not hydrate or
+rewrite file bytes. Only the selected chat's source blobs are read. Store writes
+atomically compare revisions, enforce account/API limits of 32 nonempty file
+drafts, 64 files and 64 MiB, and never evict another unsent selection to make room.
+An omitted adapter uses bounded account memory and cannot survive reload.
+
+Each selection gets a fresh immutable upload identity. Its bytes/key are saved
+before uploading; failed uploads and reloads reuse that exact identity. Saved
+completed references restore without another upload. New selections of a removed
+file get a new identity. The account permits two real host upload futures at a
+time. Cancellation removes queued work but does not free an active permit or its
+source-byte reservation until the actual host callback settles. Captured storage
+writes are also charged until settlement. These are retained-content limits,
+not a guarantee about total process heap or host/provider buffering.
+
+Storage failures preserve current selections and block Send. The standard UI
+exposes restoration status, **Retry saving files**, and explicit **Replace
+selections with saved files** for cross-tab conflicts. Files are not silently
+overwritten by an older tab. Use `client.dispose()` before closing the store;
+abrupt termination before a write completes remains outside the durability
+guarantee. Native Flutter file reload is a separate adapter qualification.
+
+For a custom upload route, prefer `attachmentUploadAdapter` on
+`createHandrailAiClient` or `HandrailAssistantLauncher`. The adapter receives the
+SDK's stable `idempotencyKey`, conversation ID, immutable source, abort signal and
+progress callback; its server must enforce scoped upload idempotency and current
+authorization. Keep the adapter instance stable for an account lifetime. The
+legacy `uploaderForConversation` override remains compatible but owns its own
+queues and does not opt into this draft owner. Do not supply both overrides.
+For a headless composer, pass both `attachmentDraftController` and its `uploader`:
+
+```ts
+const files = client.attachmentDrafts.forConversation(conversationId);
+const composer = useConversationComposer({
+  conversationId,
+  uploader: files.uploader,
+  attachmentDraftController: files,
+});
+```
+
+Local qualification uses `scripts/check-attachment-draft-browser.mjs` against the
+built public client, standard React workspace, actual IndexedDB and local upload
+HTTP. It covers exact bytes/key, runtime eviction, reload without reupload,
+account separation, persistent explicit removal, and process loss after server
+admission followed by exact replay that preserves newer text/files. The independent
+`check-local-erasure-browser.mjs` covers atomic file/deletion cleanup, upgrade,
+rollback on storage failure, and old-tab fencing. Neither contacts an app or
+production service.
 
 Run the synthetic component browser fixture with
 `TMPDIR=/tmp node scripts/check-display-window-browser.mjs`; set
@@ -415,3 +577,132 @@ normal authorized migration procedure. No production migration was run here.
 Oversized proposal/tool records remain explicitly deferred. The UI explains
 unavailable/incomplete review and disables confirmation; full deferred structured
 review remains follow-up work, not an implicit full-history download.
+
+
+### Completion notifications without hidden transcripts
+
+`workspace.subscribeSettlements(listener)` provides a small revalidation hint
+for an open conversation when its observed turn settles. It works for canonical
+and paged runtimes, including background chats whose message/tool bodies have
+been released. The callback receives `{ conversationId, turnId, hidden }` and
+returns an unsubscribe function. Initial saved history, duplicate controls,
+display-generation resets and loading older pages do not emit new completion
+notifications. A fast new turn seen only in its terminal control is included.
+Approval pause/resume can settle more than once under one durable turn ID.
+
+```ts
+const stop = client.workspace?.subscribeSettlements(({ conversationId }) => {
+  revalidateMountedBusinessData(conversationId);
+});
+// Account/client teardown also removes settlement subscribers.
+stop?.();
+```
+
+This event does not assert that a specific business mutation succeeded. Failed,
+cancelled or approval-paused turns may already have completed earlier actions,
+so a host should revalidate its authorized data instead of treating the hint as
+an action receipt. The SDK emits it before idle runtime eviction and isolates
+host callback errors from turn observation. It requires no extra history or tool
+page request. Custom UI should render action receipts from the normal authorized
+presentation records independently of these refresh notifications.
+
+### Explicit structured-record reading
+
+Gate the formatted record reader on `displayHistory.recordText === true`.
+`content` accepts `format: "record-text"` for any display-record kind and returns
+`encoding: "plain-text"` with up to 8,192 Unicode code points of formatted record
+JSON. Pass the record's revision and generation for the first section and every
+subsequent section. Only retain the current section; request previous/next parts
+by their code-point offsets. The server checks authorization before and after the
+single indexed read, rejects changed records/cleared generations, and returns no
+canonical events, checkpoint, or attachment bytes. Formatting happens inside SQL;
+only the bounded substring crosses the database boundary. An explicit read can
+still parse the individual large record inside PostgreSQL.
+
+The standard React transcript exposes deferred related records through
+`ConversationDeferredRecords`, and the pending inbox offers the same inspection
+for its selected proposal/tool pair. Flutter's transcript and exported
+`HandrailDeferredRecords` share the account-owned window's negotiated
+`readRecordText` callback. One detail reader retains one section; changing the
+account, chat, generation or revision invalidates it. Hosts with custom transcript
+formatting can place the shared component next to their activity cards. Older
+servers omit the capability, so the reader is not mounted.
+
+This reader is inspection only. Reading record text does not mark an approval as
+fully reviewed or bypass its exact argument-reference/proposal-version binding.
+A deferred structured approval still requires a separately verified bounded
+review protocol before confirmation can become available. Existing complete
+inline reviews and decisions keep their original authorization/idempotency path.
+
+
+## Bounded verified approval review
+
+Negotiate `displayHistory.approvalReview: true` separately from `recordText`.
+`POST /conversations/history` with operation `approval_review` accepts
+`{ conversationId, generation, proposalId, offset?, binding? }`. The first request
+uses offset zero and no binding. Later requests, including navigation backwards,
+include the first response's binding. A ready response contains at most 8,192
+Unicode code points of formatted, literal argument text, a next offset, the exact
+proposal version, argument reference, and immutable proposal binding. It never
+returns a checkpoint, event slice, attachment bytes or the entire tool record.
+The client enforces a 65,536-byte response ceiling independently of the text
+limit. Only the current section is retained and rendered.
+
+The server verifies opaque arguments against the materialized tool argument hash,
+turn, tool name and call identity. Redacted reviews expose only the exact redacted
+proposal view. The display binding includes tenant/account scope, clear generation,
+proposal revision and relevant tool revision. Changed bindings fail closed; account
+replacement, selection changes and disposal cancel held reads. `preparing` means
+that bounded background projection/summary work must finish before review.
+
+`POST /approvals/transition-display` accepts the existing versioned decision and
+idempotency fields plus `conversationId` and `proposalBinding`. Authorization is
+still the `approvals` action. It verifies the proposal binding before the existing
+store transition and returns a compact receipt containing schema version,
+conversation/proposal IDs, resulting proposal version/status and the original
+proposal binding. The client limits this response to 8,192 bytes. Replaying the
+same decision can recover its original receipt after execution advances; display
+pagination never substitutes for server authorization or model context.
+
+The standard React pending inbox uses `ConversationPagedApprovalReview` and the
+account-owned session reader. The headless `ConversationApprovalReview` controller
+tracks a contiguous review watermark and one immutable decision intent. Confirmation
+requires reaching every section and explicitly acknowledging review, then rechecks
+the pinned binding immediately before dispatch. Rejection is available after the
+initial verified section. Uncertain responses retry the original idempotent intent,
+without first requiring an already-decided proposal to remain pending. Rendering
+literal text prevents partial JSON or HTML from becoming executable content.
+
+The standard Flutter pending inbox uses the same section protocol and acknowledgement
+controls. It persists only decision identity/hashes through the existing account
+approval store before sending, and resumes compact receipts after process restart.
+Custom domain review loaders or permission predicates retain their existing review
+path; the generic section UI does not replace those policies. Custom Flutter hosts
+must place `HandrailPendingApprovalInbox` using `controller.approvals.uiBinding`.
+
+The additive `handrail_ai_display_missing_review_control` index tracks missing
+materialized tool/proposal summaries. Existing histories gain summaries through
+authorization-scoped background work, one entity per step by default, under the
+canonical append lock and existing bounded maintenance scheduler. Clear/deletion
+fences still apply. New projections write summaries during canonical updates.
+No summary backfill runs on list requests. This local goal has not applied a
+production migration. Install the schema with the authorized SDK adoption process.
+
+The explicit content read formats/slices one selected argument inside PostgreSQL;
+work for that individual oversized argument can still scale with its size. It does
+not scan other messages or ship the full argument to the client. Custom non-hash
+opaque review references require their authorized domain resolver; the standard
+reader does not treat an unverifiable reference as consent.
+
+
+### Definitive admission rejection and correction
+
+A synchronization response with `status: rejected` certifies that the proposed
+message was not admitted (for example, an unsent upload expired). The account
+session releases only that exact pending-send journal, keeps the editable draft
+and selected files, and reports a nonretryable correction message. The user can
+replace/remove the file and send a new intent. No accepted callback or provider
+start runs for the rejected admission. Rejection is distinct from a lost response,
+which retains the original intent for idempotent retry. If removing the local
+journal fails, it remains recoverable under the same identity; neither path
+clears a newer draft. The server's rejection remains authoritative on replay.

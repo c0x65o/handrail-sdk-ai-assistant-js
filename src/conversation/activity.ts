@@ -67,6 +67,12 @@ export interface LiveConversationActivityDelivery {
   subscribe(signal?: AbortSignal): LiveConversationActivitySubscription;
 }
 
+export interface ManagedLiveConversationActivityDelivery extends LiveConversationActivityDelivery {
+  readonly subscriberCount: number;
+  /** Close local subscriptions and release this channel's pub-sub listener. */
+  dispose(): Promise<void>;
+}
+
 /** Multi-instance fan-out seam for a principal/workspace-scoped activity channel. */
 export interface LiveConversationActivityPubSub {
   publish(channel: string, envelope: LiveConversationActivityEnvelope): Promise<void>;
@@ -138,11 +144,15 @@ function activityQueue(onClose: () => void): LiveConversationActivitySubscriptio
       if (closed) return;
       const waiter = waiters.shift();
       if (waiter) waiter({ done: false, value });
+      // Activity is a wake-up over durable state. A stalled observer reconnects
+      // and refreshes its snapshot rather than retaining an unbounded queue.
+      else if (values.length >= 256) this.close();
       else values.push(value);
     },
     close() {
       if (closed) return;
       closed = true;
+      values.length = 0;
       onClose();
       for (const waiter of waiters.splice(0)) waiter({ done: true, value: undefined });
     },
@@ -166,7 +176,7 @@ function activityQueue(onClose: () => void): LiveConversationActivitySubscriptio
 /** Process-local delivery with an injectable Redis/NATS/Postgres pub-sub bridge. */
 export function createInMemoryLiveConversationActivityDelivery(
   options: InMemoryLiveConversationActivityOptions = {},
-): LiveConversationActivityDelivery {
+): ManagedLiveConversationActivityDelivery {
   const subscribers = new Set<ActivitySubscriber>();
   const seen = new Set<string>();
   const channel = options.channel ?? "handrail:conversation-activity";
@@ -174,6 +184,15 @@ export function createInMemoryLiveConversationActivityDelivery(
   let sequence = 0;
   let counter = 0;
   let subscribed: Promise<() => void> | null = null;
+  let closed = false;
+  const instanceId = globalThis.crypto.randomUUID();
+  const releasing = new Set<Promise<void>>();
+  const detach = () => {
+    const current = subscribed; subscribed = null;
+    if (!current) return;
+    const release = current.then(unsubscribe => { unsubscribe(); }).catch(() => {}).finally(() => releasing.delete(release));
+    releasing.add(release);
+  };
   const emit = (envelope: LiveConversationActivityEnvelope) => {
     if (seen.has(envelope.deliveryId)) return;
     seen.add(envelope.deliveryId);
@@ -181,24 +200,46 @@ export function createInMemoryLiveConversationActivityDelivery(
     for (const subscriber of subscribers) subscriber.push(envelope);
   };
   return Object.freeze({
+    get subscriberCount() { return subscribers.size; },
+    async dispose() {
+      closed = true;
+      for (const subscriber of [...subscribers]) subscriber.close();
+      detach(); seen.clear();
+      await Promise.all(releasing);
+    },
     async publish(input: ConversationActivityRecord) {
+      if (closed) throw new Error("Activity delivery is closed");
       const record = parseConversationActivityRecord(input);
       const envelope = Object.freeze({
         version: LIVE_CONVERSATION_ACTIVITY_PROTOCOL_VERSION,
         sequence: ++sequence,
-        deliveryId: `${now().toString(36)}-${(++counter).toString(36)}`,
+        deliveryId: `${instanceId}-${now().toString(36)}-${(++counter).toString(36)}`,
         record,
       });
       emit(envelope);
       await options.pubSub?.publish(channel, envelope);
     },
     subscribe(signal?: AbortSignal) {
-      const queue = activityQueue(() => subscribers.delete(queue));
+      const abort = () => queue.close();
+      const queue = activityQueue(() => {
+        signal?.removeEventListener("abort", abort);
+        subscribers.delete(queue);
+        if (!subscribers.size) detach();
+      });
       subscribers.add(queue);
+      if (closed || signal?.aborted) { queue.close(); return queue; }
       if (options.pubSub && subscribed === null) {
-        subscribed = options.pubSub.subscribe(channel, emit);
+        // A unique callback per subscription prevents an older asynchronous
+        // unsubscribe from detaching a newly re-opened listener.
+        const current = Promise.resolve().then(() => options.pubSub!.subscribe(channel, envelope => {
+          if (!closed && subscribed === current) emit(envelope);
+        }));
+        subscribed = current;
+        void current.catch(() => {
+          if (subscribed === current) for (const subscriber of [...subscribers]) subscriber.close();
+        });
       }
-      signal?.addEventListener("abort", () => queue.close(), { once: true });
+      signal?.addEventListener("abort", abort, { once: true });
       return queue;
     },
   });

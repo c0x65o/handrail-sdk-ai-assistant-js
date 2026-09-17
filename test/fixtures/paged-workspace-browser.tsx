@@ -8,13 +8,20 @@ void (async () => {
   const params = new URLSearchParams(location.search);
   const messages = Number(params.get("messages") ?? 200);
   const single = params.get("single") === "true";
+  const review = params.get("review") === "true";
   const pending = params.get("pending") === "true";
-  const client = await createHandrailAiClient({ baseUrl: `${location.origin}/api/${messages}${single ? "/single" : ""}${pending ? "/pending" : ""}`,
+  const client = await createHandrailAiClient({ baseUrl: `${location.origin}/api/${messages}${single ? "/single" : ""}${pending ? "/pending" : ""}${review ? "/review" : ""}`,
     synchronizationPollingMilliseconds: 300000, idleSynchronizationPollingMilliseconds: 300000,
     conversations: { mode: "multiple", clientId: "browser" as never, authorize: () => "allow" } });
   const context = { account: "synthetic" };
+  const settlements: unknown[] = [];
+  client.workspace!.subscribeSettlements(event => { settlements.push(event); });
   const uploader = createAttachmentUploader<Blob>({ upload: async () => { throw new Error("Fixture has no uploads"); } });
   Object.assign(globalThis, { fixture: { client,
+    settlements,
+    async refreshConversation(id: string) {
+      await client.workspace!.getSnapshot().threads.find(thread => thread.conversationId === id)?.runtime.displaySession?.refresh();
+    },
     async select(index: number) { return client.workspace!.open({ authorizationContext: context, conversationId: `chat-${messages}-${index}` as never }); },
     async dispose() { await client.dispose(); },
     snapshot() { const workspace = client.workspace!.getSnapshot();
@@ -31,5 +38,6 @@ void (async () => {
     catalogOptions={{ catalog: client.catalog, authorizationContext: context, pageSize: 5 }}
     historyOptions={{ autoSelect: true }} historyLayout="sidebar"
     composerForConversation={(_runtime, conversationId) => ({ uploader, conversationId, createRequest: () => ({}) })}
+    {...(review ? { approvalResources: client.resources } : {})}
     attachmentsEnabled={false} approvals={false} transcription={false}/>);
 })();

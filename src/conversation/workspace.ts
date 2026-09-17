@@ -2,6 +2,7 @@ import type { ConversationPresentationRuntime } from "./presentation.js";
 import type { ConversationId } from "./events.js";
 import type { ConversationRuntimeRegistry } from "./runtime-registry.js";
 import type { ConversationRuntime } from "../runtime.js";
+import { ConversationLocalErasureError } from "./catalog.js";
 
 export type ConversationWorkspaceTurnStatus = "idle" | "running" | "completed" | "error";
 
@@ -30,12 +31,33 @@ export interface ConversationWorkspaceOpenInput<TAuthorizationContext> {
 
 type Listener = () => void;
 
+/** A revalidation hint, not proof that a particular domain record changed.
+ * Waiting for approval, failure and cancellation can follow earlier effects. */
+export interface ConversationWorkspaceSettlement {
+  readonly conversationId: ConversationId;
+  readonly turnId: string | null;
+  readonly hidden: boolean;
+}
+
 interface WorkspaceEntry<TRuntime> {
   readonly runtime: TRuntime;
   unsubscribe: () => void;
   turnStatus: ConversationWorkspaceTurnStatus;
   unread: boolean;
   revision: number | null;
+  settlement: { ready: boolean; generation: number; fingerprint: string; activeTurnId: string | null };
+}
+
+function settlementState(runtime: ConversationPresentationRuntime<unknown>) {
+  const state = runtime.store.getSnapshot(), display = runtime.displaySession?.getSnapshot().control;
+  const latest = display?.latestTurn;
+  const legacy = state.partial ? undefined : state.turns.at(-1);
+  const turnId = latest?.turnId ?? legacy?.turn_id ?? null;
+  const status = latest?.status ?? legacy?.status ?? null;
+  return { ready: state.partial ? display?.status === "ready" : state.revision !== null || state.turns.length > 0,
+    generation: display?.generation ?? 0, fingerprint: JSON.stringify([turnId, status]),
+    activeTurnId: display?.activeTurnId ?? state.active_turn_id,
+    turnId, terminal: status !== null && ["completed", "cancelled", "failed", "waiting_for_approval"].includes(status) };
 }
 
 export interface ConversationWorkspaceOptions {
@@ -48,7 +70,7 @@ export interface ConversationWorkspaceOptions {
 function statusOf(runtime: ConversationPresentationRuntime<unknown>): ConversationWorkspaceTurnStatus {
   const state = runtime.store.getSnapshot();
   if (state.active_turn_id !== null) return "running";
-  const latest = state.turns.at(-1);
+  const latest = runtime.displaySession?.getSnapshot().control?.latestTurn ?? state.turns.at(-1);
   if (latest === undefined) return "idle";
   if (latest.status === "failed") return "error";
   if (latest.status === "completed" || latest.status === "cancelled" || latest.status === "waiting_for_approval") return "completed";
@@ -65,6 +87,7 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown, TR
   readonly #options: ConversationWorkspaceOptions;
   readonly #entries = new Map<ConversationId, WorkspaceEntry<TRuntime>>();
   readonly #listeners = new Set<Listener>();
+  readonly #settlementListeners = new Set<(settlement: ConversationWorkspaceSettlement) => void>();
   #selectedConversationId: ConversationId | null = null;
   #visible = true;
   #snapshot: ConversationWorkspaceSnapshot = Object.freeze({
@@ -86,6 +109,13 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown, TR
     return () => this.#listeners.delete(listener);
   };
 
+  /** Observe new settlement while runtimes remain open, including hidden paged
+   * conversations. Initial history and scroll paging do not emit notifications. */
+  subscribeSettlements = (listener: (settlement: ConversationWorkspaceSettlement) => void): (() => void) => {
+    this.#settlementListeners.add(listener);
+    return () => { this.#settlementListeners.delete(listener); };
+  };
+
   async open(input: ConversationWorkspaceOpenInput<TAuthorizationContext>): Promise<TRuntime> {
     let entry = this.#entries.get(input.conversationId);
     if (entry === undefined) {
@@ -102,6 +132,7 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown, TR
         entry = {
           runtime, unsubscribe: () => undefined, turnStatus: statusOf(runtime), unread: false,
           revision: runtime.store.getSnapshot().revision,
+          settlement: settlementState(runtime),
         };
         const captured = entry;
         captured.unsubscribe = runtime.store.subscribe(() => this.#update(input.conversationId, captured));
@@ -171,11 +202,18 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown, TR
       clear: (input) => this.#registry.clear(input),
       archive: async (input) => { const result = await this.#registry.archive(input); await this.close(input.conversationId); return result; },
       restore: (input) => this.#registry.restore(input),
-      permanentlyDelete: async (input) => { const result = await this.#registry.permanentlyDelete(input); await this.close(input.conversationId); return result; },
+      permanentlyDelete: async (input) => {
+        try { const result = await this.#registry.permanentlyDelete(input); await this.close(input.conversationId); return result; }
+        catch (error) {
+          if (error instanceof ConversationLocalErasureError && error.result.conversationId === input.conversationId) await this.close(input.conversationId);
+          throw error;
+        }
+      },
     });
   }
 
   async dispose(): Promise<void> {
+    this.#settlementListeners.clear();
     for (const entry of this.#entries.values()) entry.unsubscribe();
     this.#entries.clear();
     this.#selectedConversationId = null;
@@ -188,6 +226,20 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown, TR
     const previous = entry.turnStatus;
     entry.turnStatus = statusOf(entry.runtime);
     entry.revision = state.revision;
+    const prior = entry.settlement, current = settlementState(entry.runtime);
+    entry.settlement = current;
+    const hidden = !this.#visible || this.#selectedConversationId !== conversationId;
+    if (prior.ready && current.ready && prior.generation === current.generation &&
+      (prior.activeTurnId !== null && current.activeTurnId === null ||
+        current.terminal && prior.fingerprint !== current.fingerprint)) {
+      const settlement = Object.freeze({ conversationId,
+        turnId: current.terminal && prior.fingerprint !== current.fingerprint
+          ? current.turnId : prior.activeTurnId ?? current.turnId, hidden });
+      // Notify before idle trimming can release the completed background runtime.
+      for (const listener of this.#settlementListeners) {
+        try { listener(settlement); } catch { /* Host refresh cannot interrupt the workspace. */ }
+      }
+    }
     if ((!this.#visible || this.#selectedConversationId !== conversationId) && previous === "running" &&
       (entry.turnStatus === "completed" || entry.turnStatus === "error")) entry.unread = true;
     this.#trimIdleThreads();

@@ -1,11 +1,59 @@
-import { IDBFactory } from "fake-indexeddb";
-import { expect, it } from "vitest";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { expect, it, vi } from "vitest";
 import { IndexedDBApplicationConversationPendingStore } from "../src/browser/indexeddb-pending-store.js";
 import { prepareApplicationConversationSubmission } from "../src/client/session-submission.js";
 
 const submission = (conversation = "chat", operation = "one") => prepareApplicationConversationSubmission({
   conversationId: conversation as never, clientId: "client" as never, revision: 0, operationId: operation,
   now: "2026-09-16T12:00:00.000Z", input: { content: "Saved question", request: { text: "Saved question" } } });
+
+it("atomically erases a deleted chat and fences old-tab writes after reopening", async () => {
+  const indexedDB = new IDBFactory(), options = { indexedDB, scope: "account:api" };
+  const store = new IndexedDBApplicationConversationPendingStore(options);
+  const oldTab = new IndexedDBApplicationConversationPendingStore(options);
+  const other = new IndexedDBApplicationConversationPendingStore({ indexedDB, scope: "other:api" });
+  const position = { messageId: "message", generation: 0, offset: 10, following: false };
+  try {
+    const draft = await store.writeDraft("chat", "deleted private text", null);
+    await store.writePosition("chat", position); await store.retain(submission());
+    await store.writeDraft("keep", "other conversation", null);
+    await other.writeDraft("chat", "other account", null);
+    expect(await oldTab.readDraft("chat")).toEqual(draft);
+    await store.eraseConversation("chat");
+    expect(await store.readDraft("chat")).toBeNull(); expect(await store.readPosition("chat")).toBeNull();
+    expect(await store.load("chat")).toBeNull();
+    await expect(oldTab.writeDraft("chat", "late text", draft!.version)).rejects.toThrow("permanently deleted");
+    await expect(oldTab.writeDraft("chat", "late new text", null)).rejects.toThrow("permanently deleted");
+    await expect(oldTab.writePosition("chat", position)).rejects.toThrow("permanently deleted");
+    await expect(oldTab.retain(submission())).rejects.toThrow("permanently deleted");
+    store.close();
+    const reopened = new IndexedDBApplicationConversationPendingStore(options);
+    try {
+      await reopened.eraseConversation("chat"); // Idempotent, no content resurrection.
+      await expect(reopened.retain(submission())).rejects.toThrow("permanently deleted");
+      expect((await reopened.readDraft("keep"))?.text).toBe("other conversation");
+      expect((await other.readDraft("chat"))?.text).toBe("other account");
+    } finally { reopened.close(); }
+  } finally { store.close(); oldTab.close(); other.close(); }
+});
+
+it("rolls back all local erasure when its durable fence cannot be saved", async () => {
+  const store = new IndexedDBApplicationConversationPendingStore({ indexedDB: new IDBFactory(), scope: "account:api" });
+  const draft = await store.writeDraft("chat", "keep until atomic erasure", null);
+  await store.retain(submission());
+  const original = IDBObjectStore.prototype.put;
+  const failure = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, value, key) {
+    if (this.name === "deleted") throw new DOMException("Storage full", "QuotaExceededError");
+    return original.call(this, value, key);
+  });
+  try {
+    await expect(store.eraseConversation("chat")).rejects.toThrow("Storage full");
+    expect(await store.readDraft("chat")).toEqual(draft); expect(await store.load("chat")).toEqual(submission());
+    failure.mockRestore();
+    await store.eraseConversation("chat");
+    expect(await store.readDraft("chat")).toBeNull(); expect(await store.load("chat")).toBeNull();
+  } finally { failure.mockRestore(); store.close(); }
+});
 
 it("upgrades the original pending journal without losing an unconfirmed send", async () => {
   const indexedDB = new IDBFactory(), value = submission(), json = JSON.stringify(value);

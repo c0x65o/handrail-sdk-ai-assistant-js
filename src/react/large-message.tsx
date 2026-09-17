@@ -5,11 +5,13 @@ export type ConversationMessageTextReader = (input: ConversationDisplayContentIn
 
 /** One explicit, revision-pinned text section. Never assembles record JSON or
  * grows the transcript cache. The parent permits only one expanded reader. */
-export function ConversationLargeMessage({ conversationId, generation, record, read, expanded, onOpen, onClose, onRefresh }:
+export function ConversationLargeMessage({ conversationId, generation, record, read, expanded, onOpen, onClose, onRefresh, structured = false }:
   { readonly conversationId: string; readonly generation: number; readonly record: ConversationDisplayRecord;
     readonly read: ConversationMessageTextReader; readonly expanded: boolean;
-    readonly onOpen: () => void; readonly onClose: () => void; readonly onRefresh: () => void }) {
-  const key = JSON.stringify([conversationId, generation, record.id, record.revision]);
+    readonly onOpen: () => void; readonly onClose: () => void; readonly onRefresh: () => void; readonly structured?: boolean }) {
+  const key = JSON.stringify([conversationId, generation, record.kind, record.id, record.revision, structured]);
+  const noun = structured ? "details" : "message";
+  const title = structured ? "Details" : "Message text";
   const [navigation, setNavigation] = useState({ key, owner: read, offset: 0, retry: 0 });
   const current = navigation.key === key && navigation.owner === read ? navigation : { key, owner: read, offset: 0, retry: 0 };
   const [page, setPage] = useState<{ key: string; owner: ConversationMessageTextReader; offset: number;
@@ -18,8 +20,8 @@ export function ConversationLargeMessage({ conversationId, generation, record, r
     if (!expanded) { setPage(null); setNavigation({ key, owner: read, offset: 0, retry: 0 }); return; }
     const abort = new AbortController();
     setPage({ key, owner: read, offset: current.offset, text: "", next: null, error: null, loading: true });
-    void read({ conversationId, generation, kind: "message", id: record.id, revision: record.revision,
-      format: "message-text", offset: current.offset }, abort.signal).then(chunk => {
+    void read({ conversationId, generation, kind: structured ? record.kind : "message", id: record.id, revision: record.revision,
+      format: structured ? "record-text" : "message-text", offset: current.offset }, abort.signal).then(chunk => {
       if (abort.signal.aborted) return;
       const length = Array.from(chunk.text).length;
       if (chunk.encoding !== "plain-text" || chunk.revision !== record.revision || length > 8192 ||
@@ -33,20 +35,20 @@ export function ConversationLargeMessage({ conversationId, generation, record, r
           : ["forbidden", "permission_denied", "unauthenticated", "not_found"].includes(code ?? "") ? "denied" : "unavailable" });
     });
     return () => { abort.abort(); };
-  }, [conversationId, generation, key, read, record.id, record.revision, expanded, current.offset, current.retry]);
-  if (!expanded) return <p>Large message. <button type="button" onClick={onOpen}>Read message</button></p>;
+  }, [conversationId, generation, key, read, record.id, record.revision, expanded, current.offset, current.retry, record.kind, structured]);
+  if (!expanded) return <p>{structured ? `Large ${record.kind} details.` : "Large message."} <button type="button" onClick={onOpen}>Read {noun}</button></p>;
   const visible = page?.key === key && page.owner === read && page.offset === current.offset ? page : null;
-  return <section aria-label="Large message text" aria-busy={visible?.loading ?? true}>
-    <div><strong>Message text — part {Math.floor(current.offset / 8192) + 1}</strong>{" "}
-      <button type="button" onClick={onClose}>Close message</button></div>
-    {!visible || visible.loading ? <p role="status">Loading message…</p> : visible.error ? <div role="alert">
-      <p>{visible.error === "changed" ? "This message changed. Reload it to read the latest version."
-        : visible.error === "denied" ? "This message is no longer available." : "This part could not be loaded."}</p>
+  return <section aria-label={structured ? "Record details" : "Large message text"} aria-busy={visible?.loading ?? true}>
+    <div><strong>{title} — part {Math.floor(current.offset / 8192) + 1}</strong>{" "}
+      <button type="button" onClick={onClose}>Close {noun}</button></div>
+    {!visible || visible.loading ? <p role="status">Loading {noun}…</p> : visible.error ? <div role="alert">
+      <p>{visible.error === "changed" ? (structured ? "These details changed. Reload to read the latest version." : "This message changed. Reload it to read the latest version.")
+        : visible.error === "denied" ? (structured ? "These details are no longer available." : "This message is no longer available.") : "This part could not be loaded."}</p>
       {visible.error === "unavailable" && <button type="button" onClick={() => setNavigation({ ...current, retry: current.retry + 1 })}>Retry reading</button>}
-      {visible.error === "changed" && <button type="button" onClick={() => { onClose(); onRefresh(); }}>Reload message</button>}
-    </div> : <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "50vh", overflowY: "auto" }} tabIndex={0} aria-label="Message text part">
-      {visible.text || "This message has no text."}</div>}
-    <div aria-label="Message text navigation">
+      {visible.error === "changed" && <button type="button" onClick={() => { onClose(); onRefresh(); }}>Reload {noun}</button>}
+    </div> : <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "50vh", overflowY: "auto" }} tabIndex={0} aria-label={structured ? "Details part" : "Message text part"}>
+      {visible.text || (structured ? "No details in this section." : "This message has no text.")}</div>}
+    <div aria-label={structured ? "Details navigation" : "Message text navigation"}>
       <button type="button" disabled={!visible || visible.loading || current.offset === 0 || visible.error === "denied"}
         onClick={() => setNavigation({ key, owner: read, offset: Math.max(0, current.offset - 8192), retry: 0 })}>Previous part</button>{" "}
       <button type="button" disabled={!visible || visible.loading || visible.error !== null || visible.next === null}

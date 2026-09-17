@@ -20,6 +20,7 @@ import {
   createConversationStore,
   type ConversationStore,
 } from "./store.js";
+import { awaitWithSignal } from "../await-signal.js";
 
 // Version 3 adds normalized citation source/link projections. Older
 // checkpoints intentionally fall back to full durable-log replay.
@@ -106,6 +107,9 @@ export interface ReplayConversationOptions {
   readonly checkpointPolicy?: ConversationCheckpointPolicy | false;
   /** Observe each validated, newly applied tail event without reading history again. */
   readonly onEvent?: (event: ConversationEvent) => void;
+  /** Stop replay between pages/events and stop observing outstanding reads.
+   * Adapters still own cancellation/release of their underlying I/O. */
+  readonly signal?: AbortSignal;
 }
 
 export interface ReplayConversationResult {
@@ -127,6 +131,9 @@ export async function replayConversation(
   options: ReplayConversationOptions,
 ): Promise<ReplayConversationResult> {
   const { conversationId, eventStore } = options;
+  const read = <T>(operation: () => Promise<T>): Promise<T> => options.signal
+    ? awaitWithSignal(options.signal, operation) : operation();
+  options.signal?.throwIfAborted();
   if (
     options.readBatchSize !== undefined &&
     (!Number.isSafeInteger(options.readBatchSize) || options.readBatchSize <= 0)
@@ -137,11 +144,11 @@ export async function replayConversation(
   const rawCheckpoint =
     eventStore.checkpoints === undefined
       ? null
-      : await eventStore.checkpoints.read(conversationId);
+      : await read(() => eventStore.checkpoints!.read(conversationId));
   // The final event page carries an atomic head revision. A separate head read
   // is only needed to validate a checkpoint before trusting its projection.
   const durableLatestRevision = rawCheckpoint === null
-    ? null : await eventStore.getLatestRevision(conversationId);
+    ? null : await read(() => eventStore.getLatestRevision(conversationId));
   const checkpoint = parseCheckpoint(
     rawCheckpoint,
     conversationId,
@@ -162,7 +169,7 @@ export async function replayConversation(
 
   try {
     for (;;) {
-      const page = await eventStore.read({
+      const page = await read(() => eventStore.read({
         conversationId,
         ...(readCursor !== null
           ? { after: { cursor: readCursor } }
@@ -172,9 +179,10 @@ export async function replayConversation(
         ...(options.readBatchSize === undefined
           ? {}
           : { limit: options.readBatchSize }),
-      });
+      }));
 
       for (const entry of page.entries) {
+        options.signal?.throwIfAborted();
         let event: ConversationEvent;
         try {
           event = parseConversationEvent(entry.event);
@@ -235,6 +243,7 @@ export async function replayConversation(
       }
 
       if (!page.hasMore) {
+        options.signal?.throwIfAborted();
         if (page.latestRevision !== lastSafeRevision) {
           throw replayFailure("revision_gap", conversationId, {
             lastSafeCursor,

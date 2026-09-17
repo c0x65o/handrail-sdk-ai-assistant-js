@@ -24,6 +24,7 @@ import {
 export const ATTACHMENT_UPLOAD_MAX_CONCURRENCY = 16 as const;
 
 interface InternalItem<TSource> {
+  held: boolean;
   source: TSource | undefined;
   sourceRetained: boolean;
   item: AttachmentUploadItem;
@@ -137,7 +138,7 @@ function validateMetadata(
   if (metadata.conversationId !== undefined) validateOpaqueKey(metadata.conversationId, "conversationId");
 }
 
-function validateSelection<TSource>(
+export function validateAttachmentSelection<TSource>(
   selection: AttachmentSelection<TSource>,
 ): NormalizedAttachmentUploadMetadata {
   if (selection === null || typeof selection !== "object") {
@@ -216,7 +217,7 @@ function validatedAdapterResult(
   );
 }
 
-function validateAdapterResult(
+export function validateAttachmentUploadReference(
   value: unknown,
   requested: NormalizedAttachmentUploadMetadata,
 ): AttachmentReference {
@@ -323,9 +324,15 @@ export class AttachmentUploader<TSource = unknown> {
     };
   }
 
-  enqueue(selection: AttachmentSelection<TSource>): string {
+  enqueue(selection: AttachmentSelection<TSource>, options: {
+    /** Hold a new upload until its immutable source and upload key are durable. */
+    readonly defer?: boolean;
+    /** Restore a validated completed upload without sending its bytes again. */
+    readonly reference?: AttachmentReference;
+  } = {}): string {
     this.#assertUsable();
-    const metadata = validateSelection(selection);
+    const metadata = validateAttachmentSelection(selection);
+    const reference = options.reference === undefined ? undefined : validateAttachmentUploadReference(options.reference, metadata);
 
     for (const entry of this.#items.values()) {
       if (entry.item.fingerprint === selection.fingerprint) return entry.item.id;
@@ -342,18 +349,20 @@ export class AttachmentUploader<TSource = unknown> {
 
     const id = `attachment-upload-${this.#nextId}`;
     this.#nextId += 1;
-    const item: AttachmentUploadItem = {
+    const base = {
       id,
       fingerprint: selection.fingerprint,
       idempotencyKey: selection.idempotencyKey,
       ...metadata,
       attempt: 0,
-      status: "queued",
-      progress: initialProgress(metadata.byteSize),
     };
+    const item: AttachmentUploadItem = reference === undefined
+      ? { ...base, status: "queued", progress: initialProgress(metadata.byteSize) }
+      : { ...base, status: "ready", reference, progress: { uploadedBytes: metadata.byteSize, totalBytes: metadata.byteSize } };
     this.#items.set(id, {
-      source: selection.source,
-      sourceRetained: true,
+      held: options.defer === true,
+      source: reference === undefined ? selection.source : undefined,
+      sourceRetained: reference === undefined,
       item,
       controller: null,
       runToken: 0,
@@ -361,6 +370,30 @@ export class AttachmentUploader<TSource = unknown> {
     this.#emit();
     this.#pump();
     return id;
+  }
+
+  /** Release an upload held for durable draft admission. */
+  start(id: string): boolean {
+    this.#assertUsable();
+    const entry = this.#items.get(id);
+    if (!entry || !entry.held || entry.item.status !== "queued") return false;
+    entry.held = false;
+    this.#pump();
+    return true;
+  }
+
+  /** Adopt completion saved by another view of this exact selected upload. */
+  restoreReady(id: string, reference: AttachmentReference): boolean {
+    this.#assertUsable();
+    const entry = this.#items.get(id);
+    if (!entry) return false;
+    const validated = validateAttachmentUploadReference(reference, metadataFrom(entry.item));
+    entry.runToken++;
+    entry.controller?.abort();
+    entry.source = undefined; entry.sourceRetained = false; entry.held = false;
+    entry.item = { ...entry.item, status: "ready", reference: validated,
+      progress: { uploadedBytes: entry.item.byteSize, totalBytes: entry.item.byteSize } };
+    this.#emit(); this.#pump(); return true;
   }
 
   cancel(id: string): boolean {
@@ -474,7 +507,7 @@ export class AttachmentUploader<TSource = unknown> {
     if (this.#disposed) return;
     while (this.#activeCount < this.#concurrency) {
       const entry = [...this.#items.values()].find(
-        (candidate) => candidate.item.status === "queued",
+        (candidate) => !candidate.held && candidate.item.status === "queued",
       );
       if (!entry) return;
       void this.#upload(entry);
@@ -535,7 +568,7 @@ export class AttachmentUploader<TSource = unknown> {
       ) {
         return;
       }
-      const reference = validateAdapterResult(result, metadata);
+      const reference = validateAttachmentUploadReference(result, metadata);
       entry.item = {
         ...entry.item,
         status: "ready",

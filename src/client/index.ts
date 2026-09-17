@@ -1,5 +1,7 @@
 /** Cross-platform client entry point: no React, Node, database, or provider dependencies. */
 export * from "./bootstrap.js";
+export * from "../attachments/draft-store.js";
+export * from "../attachments/draft-workspace.js";
 export * from "../attachments/downloader.js";
 export * from "../transcription-http.js";
 export * from "./presence.js";
@@ -7,6 +9,8 @@ export * from "./synchronization.js";
 export * from "./display-window.js";
 export * from "./application-session.js";
 export * from "./session-submission.js";
+export * from "./draft-origin.js";
+export { ConversationLocalErasureError } from "../conversation/catalog.js";
 export * from "../conversation/display-history.js";
 export * from "../conversation/display-control.js";
 export {
@@ -51,6 +55,7 @@ export {
   type ConversationWorkspaceSnapshot,
   type ConversationWorkspaceThreadSnapshot,
   type ConversationWorkspaceTurnStatus,
+  type ConversationWorkspaceSettlement,
 } from "../conversation/workspace.js";
 export {
   createRetryDiagnosticHooks,
@@ -92,3 +97,7 @@ export { assistantToolArgumentReference, reviewedToolArguments } from "../conver
 export * from "../conversation/presentation.js";
 export * from "./application-runtime.js";
 export * from "./local-state.js";
+export * from "./draft-workspace.js";
+
+export * from "./approval-review.js";
+export * from "../conversation/approval-display-review.js";

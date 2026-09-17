@@ -9,12 +9,13 @@ import type { AppendMutationsInput, AppendMutationsResult } from "../src/sync/ty
 import { InMemoryConversationLocalStateStore, type ConversationLocalStateStore } from "../src/client/local-state.js";
 import { applicationConversationPresentation } from "../src/client/application-runtime.js";
 import { relatedViews } from "../src/client/related-records.js";
+import { toConversationAttachmentReference } from "../src/attachments/references.js";
 
 const sessions: ApplicationConversationSession<{ text: string }>[] = [];
 afterEach(() => { for (const session of sessions.splice(0)) session.dispose(); vi.useRealTimers(); });
 const flush = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(accept => { resolve = accept; }); return { promise, resolve }; }
-function fixture(count = 0, localStateStore?: ConversationLocalStateStore) {
+function fixture(count = 0, localStateStore?: ConversationLocalStateStore, reconcileAcceptedFiles?: (ids: readonly string[]) => Promise<void>, recordText = false) {
   const records: ConversationDisplayRecord[] = Array.from({ length: count }, (_, index) => ({
     kind: "message", id: `message-${index + 1}`, revision: index + 1, turnId: null, bytes: 200, deferred: false,
     value: { message_id: `message-${index + 1}` as never, role: "user", content: [{ type: "text", text: `Text ${index + 1}` }],
@@ -68,14 +69,138 @@ function fixture(count = 0, localStateStore?: ConversationLocalStateStore) {
   };
   let sequence = 0;
   const session = new ApplicationConversationSession({ conversationId: "chat" as never, clientId: "client" as never,
-    reader, resources, transport, pendingStore, pollMilliseconds: 100, idlePollMilliseconds: 1000,
+    reader, resources, transport, pendingStore, pollMilliseconds: 100, idlePollMilliseconds: 1000, recordText, approvalReview: recordText,
     ...(localStateStore ? { localStateStore } : {}),
+    ...(reconcileAcceptedFiles ? { reconcileAcceptedFiles } : {}),
     createId: () => `op${++sequence}`, now: () => "2026-09-16T12:00:00.000Z" });
   sessions.push(session);
   return { session, reader, resources, transport, pendingStore, calls, records, cancellation, disconnect, control, page,
     saved: () => saved, setTurn: (value: ConversationDisplayTurnControl) => { turn = value; revision = Math.max(revision, value.revision); },
     addMessage: () => { revision++; records.push({ ...records.at(-1)!, id: `message-${records.length + 1}`, revision }); } };
 }
+
+it("releases definitively rejected admission for correction without clearing the draft or starting a provider", async () => {
+  const storage = new InMemoryConversationLocalStateStore();
+  const cleanup = vi.fn(async () => {}), f = fixture(0, storage, cleanup);
+  await f.session.initialize(); f.session.draft!.setText("keep this draft"); await f.session.draft!.flush();
+  const accepted = vi.fn();
+  vi.mocked(f.resources.appendMutations).mockResolvedValueOnce({ status: "rejected", code: "attachment_expired", message: "ignored server detail" });
+  await expect(f.session.sendMessage({ content: "keep this draft", request: { text: "expired file" }, onAccepted: accepted }))
+    .rejects.toMatchObject({ code: "attachment_expired", retryable: false, message: "A file upload expired before the message was saved. Select the file again." });
+  expect(f.saved()).toBeNull(); expect(f.session.getSnapshot().hasPendingSubmission).toBe(false);
+  expect((await storage.readDraft("chat"))?.text).toBe("keep this draft");
+  expect(cleanup).not.toHaveBeenCalled(); expect(accepted).not.toHaveBeenCalled(); expect(f.transport.startTurn).not.toHaveBeenCalled();
+  await f.session.sendMessage({ content: "corrected", request: { text: "replacement file" } });
+  expect(f.transport.startTurn).toHaveBeenCalledOnce();
+});
+
+it("keeps a rejected send journal if exact local removal fails and retries only that identity", async () => {
+  const f = fixture(); await f.session.initialize();
+  vi.mocked(f.resources.appendMutations).mockResolvedValue({ status: "rejected", code: "attachment_expired", message: "expired" });
+  vi.mocked(f.pendingStore.acknowledge).mockRejectedValueOnce(new Error("device unavailable"));
+  await expect(f.session.sendMessage({ content: "draft", request: { text: "draft" } })).rejects.toMatchObject({ retryable: true });
+  const original = f.saved(); expect(original).not.toBeNull();
+  await expect(f.session.retryPending()).rejects.toMatchObject({ code: "attachment_expired", retryable: false });
+  expect(f.resources.appendMutations).toHaveBeenNthCalledWith(2, original!.admission);
+  expect(f.saved()).toBeNull(); expect(f.transport.startTurn).not.toHaveBeenCalled();
+});
+
+it("cancels selected approval reads and prevents decisions after a chat is deactivated", async () => {
+  const f = fixture(4, undefined, undefined, true); await f.session.initialize();
+  const held = deferred<import("../src/conversation/approval-display-review.js").ConversationApprovalDisplayReview>();
+  f.reader.approvalReview = vi.fn(() => held.promise); f.reader.decideApproval = vi.fn();
+  const input = { conversationId: "chat", generation: 0, proposalId: "proposal" };
+  const signal = new AbortController().signal;
+  await expect(f.session.readApprovalReview({ ...input, conversationId: "other" }, signal)).rejects.toThrow("unavailable");
+  const reading = f.session.readApprovalReview(input, signal);
+  const rejected = expect(reading).rejects.toMatchObject({ name: "AbortError" });
+  await f.session.setActive(false); expect(vi.mocked(f.reader.approvalReview).mock.calls[0]?.[1]?.aborted).toBe(true);
+  held.resolve({ ...input, schemaVersion: 1, status: "preparing", review: null }); await rejected;
+  await expect(f.session.decideApproval({ conversationId: "chat", proposalId: "proposal", expectedVersion: 1,
+    proposalBinding: "a".repeat(64), status: "confirmed", idempotencyKey: "choice", idempotencyFingerprint: "choice" }, signal)).rejects.toThrow("unavailable");
+  expect(f.reader.decideApproval).not.toHaveBeenCalled();
+});
+
+it("scopes explicit record inspection to negotiated active account/selection lifetime", async () => {
+  const f = fixture(4, undefined, undefined, true); await f.session.initialize();
+  const held = deferred<{ encoding: "plain-text"; text: string; nextOffset: null; revision: number }>();
+  f.reader.content = vi.fn(() => held.promise);
+  const input = { conversationId: "chat", generation: 0, kind: "tool" as const, id: "call", revision: 4, format: "record-text" as const };
+  const signal = new AbortController().signal;
+  await expect(f.session.readRecordText({ ...input, conversationId: "other" }, signal)).rejects.toThrow("unavailable");
+  await expect(f.session.readRecordText({ ...input, generation: 1 }, signal)).rejects.toThrow("unavailable");
+  expect(f.reader.content).not.toHaveBeenCalled();
+  const reading = f.session.readRecordText(input, signal);
+  const rejected = expect(reading).rejects.toMatchObject({ name: "AbortError" });
+  await f.session.setActive(false);
+  expect(vi.mocked(f.reader.content).mock.calls[0]![1]!.aborted).toBe(true);
+  held.resolve({ encoding: "plain-text", text: "old chat", nextOffset: null, revision: 4 });
+  await rejected;
+  await expect(f.session.readRecordText(input, signal)).rejects.toThrow("unavailable");
+  const legacy = fixture(4); legacy.reader.content = vi.fn(); await legacy.session.initialize();
+  expect(legacy.session.supportsRecordText).toBe(false);
+});
+
+it("replays a saved draft origin after process loss without sending device metadata to the server", async () => {
+  const storage = new InMemoryConversationLocalStateStore(), f = fixture(0, storage);
+  await f.session.initialize(); f.session.draft!.setText("accepted before crash");
+  const version = (await f.session.draft!.captureVersion(f.session.draft!.getSnapshot().edit))!;
+  vi.spyOn(storage, "discardDraftVersion").mockRejectedValueOnce(new Error("device disconnected"));
+  const pending = await f.session.prepare({ content: "accepted before crash", request: { text: "accepted before crash" }, localDraft: { version: 1, textVersion: version } });
+  expect(pending.version).toBe(2);
+  expect(() => parseApplicationConversationSubmission({ ...pending, version: 1 }, "chat")).toThrow();
+  expect(() => parseApplicationConversationSubmission({ ...pending, localDraft: undefined }, "chat")).toThrow();
+  await expect(f.session.submit(pending)).rejects.toMatchObject({ code: "draft_cleanup_failed", retryable: true });
+  expect(f.saved()).toEqual(pending); expect(f.transport.startTurn).not.toHaveBeenCalled();
+  expect((await storage.readDraft("chat"))?.text).toBe("accepted before crash");
+  f.session.dispose(); await f.session.draft!.dispose();
+  const restarted = new ApplicationConversationSession({ conversationId: "chat" as never, clientId: "new-client" as never,
+    reader: f.reader, resources: f.resources, transport: f.transport, pendingStore: f.pendingStore, localStateStore: storage }); sessions.push(restarted);
+  await restarted.initialize(); await restarted.retryPending();
+  expect(await storage.readDraft("chat")).toBeNull(); expect(restarted.draft!.getSnapshot().text).toBe(""); expect(f.saved()).toBeNull();
+  expect(f.resources.appendMutations).toHaveBeenNthCalledWith(1, pending.admission);
+  expect(f.resources.appendMutations).toHaveBeenNthCalledWith(2, pending.admission);
+  expect(f.transport.startTurn).toHaveBeenCalledExactlyOnceWith(pending.start);
+  expect(JSON.stringify(vi.mocked(f.resources.appendMutations).mock.calls)).not.toContain("textVersion");
+  expect(JSON.stringify(vi.mocked(f.transport.startTurn).mock.calls)).not.toContain("localDraft");
+});
+
+it("preserves a same-text newer draft across retry after partial local cleanup", async () => {
+  const storage = new InMemoryConversationLocalStateStore(), files = vi.fn<(ids: readonly string[]) => Promise<void>>().mockRejectedValueOnce(new Error("disk"))
+    .mockResolvedValue(undefined), f = fixture(0, storage, files);
+  await f.session.initialize(); f.session.draft!.setText("same text");
+  const version = (await f.session.draft!.captureVersion(f.session.draft!.getSnapshot().edit))!;
+  const pending = await f.session.prepare({ content: "same text", request: { text: "same text" },
+    attachments: [toConversationAttachmentReference({ attachment_id: "att_file", content_ref: "ref_file", media_type: "application/pdf", byte_size: 3 })],
+    localDraft: { version: 1, textVersion: version, fileIds: ["selected-file"] } });
+  await expect(f.session.submit(pending)).rejects.toMatchObject({ code: "draft_cleanup_failed" });
+  expect(await storage.readDraft("chat")).toBeNull(); expect(f.saved()).toEqual(pending);
+  f.session.draft!.setText("same text"); await f.session.draft!.flush();
+  await f.session.retryPending();
+  expect((await storage.readDraft("chat"))?.text).toBe("same text"); expect(f.session.draft!.getSnapshot().text).toBe("same text");
+  expect(files).toHaveBeenNthCalledWith(1, ["selected-file"]); expect(files).toHaveBeenNthCalledWith(2, ["selected-file"]);
+  expect(f.saved()).toBeNull();
+});
+
+it("does not clean any local draft until exact server admission is confirmed", async () => {
+  const storage = new InMemoryConversationLocalStateStore(), f = fixture(0, storage); await f.session.initialize();
+  f.session.draft!.setText("not confirmed"); const version = (await f.session.draft!.captureVersion(f.session.draft!.getSnapshot().edit))!;
+  const discard = vi.spyOn(storage, "discardDraftVersion");
+  vi.mocked(f.resources.appendMutations).mockResolvedValueOnce({ status: "mutations", latestRevision: 2 as never, acknowledgements: [] });
+  await expect(f.session.sendMessage({ content: "not confirmed", request: { text: "not confirmed" }, localDraft: { version: 1, textVersion: version } }))
+    .rejects.toMatchObject({ code: "admission_unconfirmed" });
+  expect(discard).not.toHaveBeenCalled(); expect((await storage.readDraft("chat"))?.text).toBe("not confirmed"); expect(f.saved()).not.toBeNull();
+});
+
+it("rejects malformed draft origins before any journal or network mutation", async () => {
+  const f = fixture(); await f.session.initialize();
+  const pending = await f.session.prepare({ content: "text", request: { text: "text" } });
+  for (const localDraft of [{ version: 2 }, { version: 1, textVersion: "" }, { version: 1, fileIds: ["same", "same"] },
+    { version: 1, fileIds: ["https://file.invalid/private"] }, { version: 1, accountId: "injected" }, { version: 1, fileIds: ["not-attached"] }]) {
+    expect(() => f.session.submit({ ...pending, version: 2, localDraft } as never)).toThrow();
+  }
+  expect(f.pendingStore.retain).not.toHaveBeenCalled(); expect(f.resources.appendMutations).not.toHaveBeenCalled();
+});
 
 it("opens only the newest message page, bounds history while scrolling, and evicts inactive bodies", async () => {
   const f = fixture(200); await f.session.initialize();
@@ -276,8 +401,11 @@ it("does not start a provider or notify later callbacks after admission closes t
 
 it("rejects corrupted persisted admissions before touching network or storage", async () => {
   const f = fixture(); const submission = await f.session.prepare({ content: "hello", request: { text: "hello" } });
-  const corrupt = structuredClone(submission) as any;
-  corrupt.admission.mutations[1].events[0].event_id = corrupt.admission.mutations[0].events[0].event_id;
+  const corrupt = { ...submission, admission: { ...submission.admission,
+    mutations: submission.admission.mutations.map(mutation => ({ ...mutation,
+      events: [{ ...mutation.events[0], event_id: submission.admission.mutations[0]!.events[0]!.event_id }] as const,
+    })),
+  } };
   expect(() => parseApplicationConversationSubmission(corrupt, "chat")).toThrow();
   expect(() => f.session.submit(corrupt)).toThrow(); expect(f.pendingStore.retain).not.toHaveBeenCalled();
   expect(f.resources.appendMutations).not.toHaveBeenCalled();

@@ -1,13 +1,22 @@
-/** @vitest-environment jsdom */
+/** @vitest-environment node */
 
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { builtinEnvironments } from "vitest/environments";
 import * as clipboardImages from "../src/browser/clipboard-image.js";
 import { createSavedConversationRequestPreparer } from "../src/server/saved-conversation-request.js";
 import { createAttachmentContentValidator } from "../src/server/attachment-content.js";
 import { createOpenAIResponsesProviderAdapter, type OpenAIResponsesProviderOptions } from "../src/providers/openai-responses.js";
 import { ConversationDraftController, InMemoryConversationLocalStateStore } from "../src/client/local-state.js";
+import { AttachmentDraftWorkspace } from "../src/attachments/draft-workspace.js";
+import { InMemoryAttachmentDraftStore } from "../src/attachments/draft-store.js";
+
+// This fixture carries DOM file intake into the real server preparer. Keep
+// Node module resolution for server primitives while installing real jsdom APIs.
+let dom: Awaited<ReturnType<typeof builtinEnvironments.jsdom.setup>>;
+beforeAll(async () => { dom = await builtinEnvironments.jsdom.setup(globalThis, {}); });
+afterAll(async () => { await dom.teardown(globalThis); });
 
 import {
   AttachmentUploadAdapterError,
@@ -31,6 +40,172 @@ import {
 } from "../src/react/index.js";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+for (const durable of [false, true]) it(`rejects oversized editor input without sending or changing retained text; durable=${durable}`, async () => {
+  const storage = new InMemoryConversationLocalStateStore(), controller = durable ? new ConversationDraftController("conversation_composer", storage) : undefined;
+  await controller?.flush();
+  const { runtime, sendMessage } = fakeRuntime(), uploader = immediateUploader();
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, ...(controller ? { draftController: controller } : {}), initialDraft: "kept" }), { wrapper: wrapper(runtime) });
+  try {
+    await waitFor(() => expect(result.current.draft).toBe("kept"));
+    act(() => result.current.setDraft("🦊".repeat(16385)));
+    expect(result.current.draft).toBe("kept"); expect(result.current.getTextareaProps().value).toBe("kept");
+    expect(result.current.draftInputError).toContain("64 KiB"); expect(sendMessage).not.toHaveBeenCalled();
+    await act(async () => { await result.current.submit(); });
+    expect(sendMessage.mock.calls[0]?.[0].content).toBe("kept");
+    act(() => result.current.setDraft("valid edit")); expect(result.current.draftInputError).toBeNull();
+  } finally { unmount(); await controller?.dispose(); uploader.dispose(); }
+});
+
+for (const durable of [false, true]) it(`rejects oversized initial text without a restore notification loop; durable=${durable}`, async () => {
+  const controller = durable ? new ConversationDraftController("conversation_composer", new InMemoryConversationLocalStateStore()) : undefined;
+  const { runtime } = fakeRuntime(), uploader = immediateUploader();
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, ...(controller ? { draftController: controller } : {}), initialDraft: "x".repeat(65537) }), { wrapper: wrapper(runtime) });
+  try {
+    await waitFor(() => expect(result.current.draftInputError).toContain("64 KiB"));
+    expect(result.current.draft).toBe(""); expect(result.current.canSend).toBe(false);
+    act(() => result.current.setDraft("valid edit")); expect(result.current.draftInputError).toBeNull();
+  } finally { unmount(); await controller?.dispose(); uploader.dispose(); }
+});
+
+it("retains accepted send text through unmount until the actual request callback settles", async () => {
+  const storage = new InMemoryConversationLocalStateStore();
+  const controller = new ConversationDraftController("conversation_composer", storage);
+  const other = Array.from({ length: 7 }, (_, i) => new ConversationDraftController(`other-${i}`, storage));
+  await Promise.all([controller, ...other].map(c => c.flush()));
+  for (const c of other) c.setText("x".repeat(65536));
+  const { runtime, sendMessage } = fakeRuntime(), uploader = immediateUploader();
+  let accept!: () => void, settle!: (value: ConversationRuntimeTurnResult) => void;
+  sendMessage.mockImplementation(input => {
+    accept = () => input.onAccepted?.({ conversationId: "conversation_composer" as never, messageId: "accepted" as never, turnId: "turn_composer" as never });
+    return new Promise(resolve => { settle = resolve; });
+  });
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, draftController: controller }), { wrapper: wrapper(runtime) });
+  let sending!: ReturnType<ConversationComposerResult["submit"]>;
+  try {
+    act(() => result.current.setDraft("y".repeat(65536)));
+    act(() => { sending = result.current.submit(); });
+    act(() => accept()); expect(result.current.draft).toBe("");
+    act(() => result.current.setDraft("next")); expect(result.current.draft).toBe("");
+    expect(result.current.draftInputError).toContain("account’s text limit");
+    unmount(); await controller.dispose();
+    expect(other[0]!.setText("z".repeat(65536))).toBe(true);
+    const extra = new ConversationDraftController("extra", storage); other.push(extra);
+    expect(extra.setText("new")).toBe(false);
+    await act(async () => { settle(completed()); await sending; });
+    expect(extra.setText("new")).toBe(true);
+  } finally {
+    settle?.(completed()); await sending; unmount();
+    await Promise.all([controller, ...other].map(c => c.dispose())); uploader.dispose();
+  }
+});
+
+it("saves the exact device receipt before dispatching a session send and keeps source bytes out of the input", async () => {
+  const storage = new InMemoryConversationLocalStateStore(), text = new ConversationDraftController("conversation_composer", storage);
+  const fileStore = new InMemoryAttachmentDraftStore<Blob>(), owner = new AttachmentDraftWorkspace(fileStore, { upload: async request => reference(request) });
+  const files = owner.forConversation("conversation_composer"); await text.flush(); await files.flush();
+  const { runtime, sendMessage } = fakeRuntime<{ prompt: string }>(); Object.defineProperty(runtime, "displaySession", { value: { draft: text } });
+  let savedVersion: string | undefined;
+  sendMessage.mockImplementation(async () => { savedVersion = (await storage.readDraft("conversation_composer"))?.version; return completed(); });
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader: files.uploader, attachmentDraftController: files,
+    attachmentIntake: { previews: false }, createRequest: ({ text }) => ({ prompt: text }),
+  }), { wrapper: wrapper(runtime) });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), write = storage.writeDraft.bind(storage);
+  try {
+    act(() => result.current.getFileInputProps().onChange({ currentTarget: { files: fileList(file("file.pdf", "application/pdf")) } } as never));
+    await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
+    await act(async () => { await files.flush(); });
+    const ids = files.getSnapshot().files.map(value => value.id);
+    vi.spyOn(storage, "writeDraft").mockImplementationOnce(async (...args) => { await gate; return write(...args); });
+    let sending!: ReturnType<ConversationComposerResult["submit"]>;
+    act(() => { result.current.setDraft("question"); sending = result.current.submit(); });
+    await waitFor(() => expect(storage.writeDraft).toHaveBeenCalledOnce()); expect(sendMessage).not.toHaveBeenCalled();
+    await act(async () => { release(); await sending; });
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage.mock.calls[0]![0].localDraft).toEqual({ version: 1, textVersion: savedVersion, fileIds: ids });
+    expect(sendMessage.mock.calls[0]![0].request).toEqual({ prompt: "question" });
+    expect(sendMessage.mock.calls[0]![0].attachments?.[0]).not.toHaveProperty("source");
+  } finally { release(); unmount(); await text.dispose(); await owner.dispose(); }
+});
+
+it("keeps account-owned files through chat switches/unmount and recreates only view-owned previews", async () => {
+  const { runtime } = fakeRuntime(), urls = objectUrls(), storage = new InMemoryAttachmentDraftStore<Blob>();
+  let settle!: (result: AttachmentReference) => void, uploaded!: AttachmentUploadRequest<Blob>;
+  const upload = vi.fn((request: AttachmentUploadRequest<Blob>) => { uploaded = request; return new Promise<AttachmentReference>(resolve => { settle = resolve; }); });
+  const owner = new AttachmentDraftWorkspace(storage, { upload });
+  const first = owner.forConversation("first"), second = owner.forConversation("second"); await first.flush(); await second.flush();
+  const { result, rerender, unmount } = renderHook(({ controller }) => useConversationComposer({
+    uploader: controller.uploader, attachmentDraftController: controller, conversationId: controller.conversationId as ConversationId,
+    attachmentIntake: { previews: { objectUrlApi: urls.api } },
+  }), { wrapper: wrapper(runtime), initialProps: { controller: first } });
+  try {
+    act(() => result.current.getFileInputProps().onChange({ currentTarget: { files: fileList(file("keep.png")) } } as never));
+    await waitFor(() => expect(result.current.attachments[0]?.status).toBe("uploading"));
+    rerender({ controller: second }); expect(result.current.attachments).toEqual([]); expect(uploaded.signal.aborted).toBe(false);
+    await act(async () => { settle(reference(uploaded)); await first.flush(); });
+    rerender({ controller: first });
+    await waitFor(() => expect(result.current.canSend).toBe(true));
+    expect(result.current.attachments[0]?.filename).toBe("keep.png"); expect(upload).toHaveBeenCalledTimes(1);
+    unmount(); expect(first.uploader.disposed).toBe(false); expect(first.getSnapshot().files).toHaveLength(1);
+    expect(urls.revoked.length).toBe(urls.created.length);
+    await first.flush(); expect((await storage.readAttachmentDraft("first"))?.files[0]?.reference).toEqual(reference(uploaded));
+  } finally { unmount(); await owner.dispose(); }
+});
+
+it("clears only admitted files from the original account after its composer is replaced", async () => {
+  const { runtime, sendMessage } = fakeRuntime(), a = new InMemoryAttachmentDraftStore<Blob>(), b = new InMemoryAttachmentDraftStore<Blob>();
+  const adapter = { upload: async (request: AttachmentUploadRequest<Blob>) => reference(request) };
+  const firstOwner = new AttachmentDraftWorkspace(a, adapter), secondOwner = new AttachmentDraftWorkspace(b, adapter);
+  const first = firstOwner.forConversation("conversation_composer"), second = secondOwner.forConversation("conversation_composer");
+  await first.flush(); await second.flush();
+  let accept!: () => void, settle!: (result: ConversationRuntimeTurnResult) => void;
+  sendMessage.mockImplementation(input => {
+    accept = () => input.onAccepted?.({ conversationId: "conversation_composer" as never, messageId: "accepted" as never, turnId: "turn_composer" as never });
+    return new Promise(resolve => { settle = resolve; });
+  });
+  const renders: { account: object; files: string[] }[] = [];
+  const { result, rerender, unmount } = renderHook(({ controller }) => {
+    const composer = useConversationComposer({ uploader: controller.uploader, attachmentDraftController: controller, attachmentIntake: { previews: false } });
+    renders.push({ account: controller, files: composer.attachments.map(value => value.filename!) }); return composer;
+  }, { wrapper: wrapper(runtime), initialProps: { controller: first } });
+  try {
+    act(() => result.current.getFileInputProps().onChange({ currentTarget: { files: fileList(file("private-a.png")) } } as never));
+    await waitFor(() => expect(result.current.canSend).toBe(true));
+    let sending!: ReturnType<ConversationComposerResult["submit"]>;
+    act(() => { sending = result.current.submit(); });
+    rerender({ controller: second });
+    act(() => result.current.getFileInputProps().onChange({ currentTarget: { files: fileList(file("private-b.png")) } } as never));
+    await waitFor(() => expect(result.current.canSend).toBe(true));
+    await act(async () => { accept(); settle(completed()); await sending; await first.flush(); });
+    expect(await a.readAttachmentDraft("conversation_composer")).toBeNull();
+    expect(result.current.attachments.map(value => value.filename)).toEqual(["private-b.png"]);
+    expect(renders.filter(value => value.account === second).every(value => !value.files.includes("private-a.png"))).toBe(true);
+  } finally { unmount(); await firstOwner.dispose(); await secondOwner.dispose(); }
+});
+
+it("exposes recoverable file storage errors and restores ready references after replacing the account owner", async () => {
+  const { runtime } = fakeRuntime(), storage = new InMemoryAttachmentDraftStore<Blob>();
+  const upload = vi.fn(async (request: AttachmentUploadRequest<Blob>) => reference(request));
+  const firstOwner = new AttachmentDraftWorkspace(storage, { upload }), first = firstOwner.forConversation("conversation_composer"); await first.flush();
+  const { result, rerender, unmount } = renderHook(({ controller }) => useConversationComposer({ uploader: controller.uploader,
+    attachmentDraftController: controller, attachmentIntake: { previews: false },
+  }), { wrapper: wrapper(runtime), initialProps: { controller: first } });
+  let secondOwner: AttachmentDraftWorkspace<Blob> | undefined;
+  try {
+    vi.spyOn(storage, "writeAttachmentDraft").mockRejectedValueOnce(new Error("quota"));
+    act(() => result.current.getFileInputProps().onChange({ currentTarget: { files: fileList(file("persist.pdf", "application/pdf")) } } as never));
+    await waitFor(() => expect(result.current.attachmentPersistence?.status).toBe("error"));
+    expect(result.current.canSend).toBe(false); expect(result.current.attachments).toHaveLength(1); expect(upload).not.toHaveBeenCalled();
+    await act(async () => { await result.current.attachmentPersistence!.retry(); });
+    await waitFor(() => expect(result.current.canSend).toBe(true));
+    await act(async () => { await firstOwner.dispose(); });
+    secondOwner = new AttachmentDraftWorkspace(storage, { upload }); const restored = secondOwner.forConversation("conversation_composer");
+    rerender({ controller: restored });
+    await waitFor(() => expect(result.current.canSend).toBe(true));
+    expect(result.current.attachments[0]?.filename).toBe("persist.pdf"); expect(upload).toHaveBeenCalledTimes(1);
+  } finally { unmount(); await firstOwner.dispose(); await secondOwner?.dispose(); }
+});
 
 it("restores the saved composer before sending, preserves it over initial text, and flushes on unmount", async () => {
   const storage = new InMemoryConversationLocalStateStore();

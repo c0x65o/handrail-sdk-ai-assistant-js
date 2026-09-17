@@ -36,6 +36,24 @@ class PagedEventStore extends InMemoryConversationEventStore {
 }
 
 describe("createHandrailAssistant", () => {
+  it("retries failed context construction on the next authorized request", async () => {
+    let attempts = 0;
+    const context = { principalId: "alice", tenantId: "tenant", scopeId: "alice", attribution: {} } as HandrailAssistantAuthorizationContext;
+    const assistant = await createHandrailAssistant({ id: "retry-construction", authorize: () => context,
+      persistence: postgres(pool), recoverPendingOnContext: false, attachmentCleanup: false,
+      provider: { metadata: { provider_id: "test", model_id: "test", capabilities: {
+        streaming: true, text: true, tool_calls: true, parallel_tool_calls: false, reasoning: false,
+        document_input: { supported: false }, provider_context: { supported: false, reason: "provider_not_supported" },
+        context_window_tokens: null, max_output_tokens: null,
+      } }, createTransport() { if (++attempts === 1) throw new Error("Provider startup unavailable"); return transport; } },
+    });
+    try {
+      expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(503);
+      expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(200);
+      expect(attempts).toBe(2);
+    } finally { await assistant.stopBackgroundWorkers(); }
+  });
+
   it("binds default confirmation policy to each durable request without bypassing permissions or mandatory review", async () => {
     type Context = HandrailAssistantAuthorizationContext;
     const context = { principalId: "alice", tenantId: "tenant", scopeId: "alice", attribution: {} } as Context;

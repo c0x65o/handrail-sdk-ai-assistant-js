@@ -1,4 +1,7 @@
+/* global document, performance, requestAnimationFrame, Event, innerWidth */
+// Browser globals occur only inside Playwright page/element evaluation callbacks.
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { writeFile } from 'node:fs/promises';
@@ -15,6 +18,8 @@ const output = await build({ configFile: false, logLevel: 'error',
     name: 'PagedWorkspaceFixture', formats: ['iife'] } } });
 const code = (Array.isArray(output) ? output : [output]).flatMap(bundle => bundle.output).find(item => item.type === 'chunk').code;
 const requests = [], failures = [];
+const backgroundTurns = new Map();
+const approvalBinding = "a".repeat(64), proposalBinding = "b".repeat(64);
 const descriptor = (messages, index) => ({ conversationId: `chat-${messages}-${index}`, title: `Chat ${index}`,
   lifecycle: 'active', archivedAt: null, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', version: 1, metadata: {} });
 const disabled = { supported: false, reason: 'not_implemented' };
@@ -41,7 +46,9 @@ const server = createServer(async (request, response) => {
     assert.ok([200, 1000].includes(messages));
     let value;
     if (request.url.endsWith('/capabilities')) value = request.url.includes('/pending/') ? { ...capabilities,
-      displayHistory: { ...capabilities.displayHistory, pendingApprovals: true } } : capabilities;
+      resources: { ...capabilities.resources, approvals: request.url.includes('/review/') },
+      displayHistory: { ...capabilities.displayHistory, pendingApprovals: true, recordText: true,
+        ...(request.url.includes('/review/') ? { approvalReview: true } : {}) } } : capabilities;
     else if (request.url.endsWith('/conversations/list')) {
       const start = input.cursor ? Number(decodeURIComponent(input.cursor.split('|').at(-1)).split('-').at(-1)) + 1 : 0;
       const count = request.url.includes('/single/') ? 1 : 25, end = Math.min(count, start + input.pageSize);
@@ -51,17 +58,22 @@ const server = createServer(async (request, response) => {
     } else if (request.url.endsWith('/conversations/get')) {
       value = { operation: 'get', status: 'found', descriptor: descriptor(messages, Number(input.conversationId.split('-').at(-1))) };
     } else if (request.url.endsWith('/conversations/history')) {
+      const turn = backgroundTurns.get(input.conversationId) ?? null;
       const header = { schemaVersion: 1, status: 'ready', conversationId: input.conversationId, generation: 0,
-        revision: messages * 100, canonicalRevision: messages * 100, activeTurnId: null };
-      if (body.operation === 'control') value = { ...header, activeTurn: null, latestTurn: null, requestedTurn: null,
+        revision: turn?.revision ?? messages * 100, canonicalRevision: turn?.revision ?? messages * 100,
+        activeTurnId: turn?.remoteMayStillBeRunning ? turn.turnId : null };
+      if (body.operation === 'control') value = { ...header,
+        activeTurn: turn?.remoteMayStillBeRunning ? turn : null, latestTurn: turn, requestedTurn: null,
         ...(request.url.includes('/pending/') ? { hasPendingApprovals: true } : {}) };
-      else if (body.operation === 'changes') value = { ...header, records: [], nextCursor: null, throughRevision: messages * 100 };
+      else if (body.operation === 'changes') value = { ...header, records: [], nextCursor: null, throughRevision: header.revision };
       else if (body.operation === 'page') {
         if (['pending_approvals', 'approval'].includes(input.view?.type)) {
           const id = input.view.proposalId ?? (input.cursor ? 'old-action' : 'new-action');
           value = { ...header, records: [{ kind: 'approval', id, revision: 2, turnId: 'old-turn', bytes: 300, deferred: false,
             value: { proposal_id: id, proposal_version: 1, tool_call_id: 'tool', tool_name: id, turn_id: 'old-turn', group_id: input.conversationId,
-              status: 'pending', expires_at: null, reviewed_arguments: { type: 'redacted_json', value: { amount: 42 } } } }],
+              status: 'pending', expires_at: null, reviewed_arguments: { type: 'redacted_json', value: { amount: 42 } } } },
+              ...(input.view.type === 'approval' ? [{ kind: 'tool', id: 'large-tool', revision: 2, turnId: 'old-turn',
+                bytes: 100000, deferred: true, value: null }] : [])],
             nextCursor: input.view.type === 'pending_approvals' && !input.cursor ? 'old' : null };
         }
         else if (input.view) value = { ...header, records: [], nextCursor: null };
@@ -72,7 +84,24 @@ const server = createServer(async (request, response) => {
           value = { ...header, records: Array.from({ length: end - start + 1 }, (_, i) => record(start + i, input.conversationId)),
             nextCursor: (anchor?.direction === 'newer' ? end < messages : start > 1) ? 'more' : null };
         }
+      } else if (body.operation === 'approval_review') {
+        assert.equal(input.proposalId, 'old-action');
+        if (input.offset) assert.equal(input.binding, approvalBinding);
+        value = { schemaVersion: 1, conversationId: input.conversationId, generation: 0, proposalId: input.proposalId, status: 'ready',
+          review: { binding: approvalBinding, proposalBinding, proposalVersion: 1, groupId: input.conversationId,
+            turnId: 'old-turn', toolCallId: 'tool', toolName: 'Send reviewed action', argumentReference: `args-sha256-${approvalBinding}`,
+            text: input.offset === 0 ? '😀'.repeat(8192) : 'Final reviewed detail <script>literal</script>',
+            offset: input.offset, nextOffset: input.offset === 0 ? 8192 : null } };
+      } else if (body.operation === 'content' && input.format === 'record-text') {
+        assert.equal(input.id, 'large-tool'); assert.equal(input.revision, 2);
+        value = { encoding: 'plain-text', revision: 2,
+          text: input.offset === 0 ? '😀'.repeat(8192) : 'Final detail <script>literal</script>',
+          nextOffset: input.offset === 0 ? 8192 : null };
       } else throw new Error('Unexpected history operation');
+    } else if (request.url.endsWith('/approvals/transition-display')) {
+      assert.equal(input.proposalBinding, proposalBinding); assert.equal(input.expectedVersion, 1); assert.equal(input.status, 'confirmed');
+      value = { schemaVersion: 1, conversationId: input.conversationId, proposalId: input.proposalId,
+        proposalVersion: 2, status: input.status, proposalBinding };
     } else throw new Error(`Unexpected endpoint ${request.url}`);
     const json = JSON.stringify({ ok: true, value });
     requests.push({ path: request.url, operation: body.operation, input, bytes: Buffer.byteLength(json) });
@@ -113,7 +142,7 @@ try {
     }
     const after = await readMetrics(); await cdp.send('HeapProfiler.collectGarbage');
     const heap = await readMetrics();
-    const state = await page.evaluate(() => { const { state: _state, ...summary } = globalThis.fixture.snapshot(); return summary; });
+    const state = await page.evaluate(() => { const { state: _state, ...summary } = globalThis.fixture.snapshot(); void _state; return summary; });
     assert.equal(state.loadedThreads, 1); assert.equal(state.threads, 4); assert.equal(state.records, 30);
     const transcript = page.locator('.hr-chat__transcript');
     await transcript.evaluate(element => { element.scrollTop = 320; element.dispatchEvent(new Event('scroll', { bubbles: true })); });
@@ -125,6 +154,10 @@ try {
     await ready(`chat-${messages}-12`, 60); await page.waitForTimeout(50); const next = await anchor();
     assert.equal(old.id, next.id); assert.ok(Math.abs(old.offset - next.offset) <= 2);
     for (let i = 0; i < 3; i++) {
+      // Record publication precedes the loading-finally notification. Preserve
+      // the measured viewport, but wait for the real button to accept a click.
+      await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button =>
+        button.textContent === 'Load older messages' && !button.disabled));
       const first = await page.locator('[data-display-message]').first().getAttribute('data-display-message');
       await page.getByRole('button', { name: 'Load older messages', exact: true }).evaluate(button => button.click());
       await page.waitForFunction(first => document.querySelector('[data-display-message]')?.getAttribute('data-display-message') !== first, first);
@@ -155,6 +188,27 @@ try {
       maximumBrowserTransferBytes: Math.max(...httpResources.map(entry => entry.transferBytes)) });
     await page.evaluate(() => globalThis.fixture.dispose());
   }
+  await page.goto(`${base}/?messages=200`); await ready('chat-200-0');
+  await page.evaluate(() => globalThis.fixture.select(1)); await ready('chat-200-1');
+  const beforeBackground = requests.length;
+  backgroundTurns.set('chat-200-0', { turnId: 'background', revision: 20001, status: 'running',
+    remoteMayStillBeRunning: true, error: null });
+  await page.evaluate(() => globalThis.fixture.refreshConversation('chat-200-0'));
+  backgroundTurns.set('chat-200-0', { turnId: 'background', revision: 20002, status: 'completed',
+    remoteMayStillBeRunning: false, error: null });
+  await page.evaluate(async () => {
+    await globalThis.fixture.refreshConversation('chat-200-0');
+    await globalThis.fixture.refreshConversation('chat-200-0');
+  });
+  assert.deepEqual(await page.evaluate(() => globalThis.fixture.settlements), [
+    { conversationId: 'chat-200-0', turnId: 'background', hidden: true },
+  ]);
+  const hiddenRequests = requests.slice(beforeBackground).filter(request => request.input.conversationId === 'chat-200-0');
+  assert.equal(hiddenRequests.length, 3);
+  assert.ok(hiddenRequests.every(request => request.operation === 'control'));
+  assert.equal(await page.evaluate(() => globalThis.fixture.client.workspace.getSnapshot().threads
+    .find(thread => thread.conversationId === 'chat-200-0').runtime.getSnapshot().messages.length), 0);
+  await page.evaluate(() => globalThis.fixture.dispose()); backgroundTurns.clear();
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 }); await page.goto(`${base}/?messages=200&single=true`); await ready('chat-200-0');
     assert.equal(await page.getByRole('button', { name: 'New', exact: true }).count(), 0);
@@ -177,13 +231,54 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     const pane = await page.getByRole('region', { name: 'Pending approvals', exact: true }).boundingBox();
     assert.ok(pane && pane.y >= 0 && pane.y + pane.height <= 844);
+    assert.equal(requests.filter(request => request.operation === 'content').length, 0);
+    await page.getByRole('button', { name: 'Read details', exact: true }).click();
+    await page.getByLabel('Details part', { exact: true }).waitFor();
+    assert.equal(Array.from(await page.getByLabel('Details part', { exact: true }).innerText()).length, 8192);
+    await page.getByRole('button', { name: 'Next part', exact: true }).click();
+    await page.getByText('Final detail <script>literal</script>', { exact: true }).waitFor();
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    assert.equal(requests.filter(request => request.operation === 'content').length, 2);
+    assert.ok(requests.filter(request => request.operation === 'content').every(request => request.bytes < 65536));
+    await page.getByRole('button', { name: 'Close details', exact: true }).click();
     await page.getByRole('button', { name: 'Close pending approvals', exact: true }).click();
     assert.equal(await page.getByText('Review required', { exact: true }).count(), 0);
     await page.evaluate(() => globalThis.fixture.dispose());
   }
+  const approvalMetrics = [];
+  for (const width of [320, 390]) {
+    requests.length = 0;
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`${base}/?messages=1000&single=true&pending=true&review=true`); await ready('chat-1000-0');
+    assert.equal(requests.filter(request => request.operation === 'approval_review').length, 0);
+    await page.getByRole('button', { name: 'Review pending approvals', exact: true }).click();
+    await page.getByRole('button', { name: 'Older pending approvals', exact: true }).click();
+    await page.getByRole('button', { name: 'Review old-action', exact: true }).click();
+    await page.getByLabel('Action arguments part', { exact: true }).waitFor();
+    assert.equal(Array.from(await page.getByLabel('Action arguments part', { exact: true }).innerText()).length, 8192);
+    assert.ok(await page.getByRole('button', { name: 'Confirm', exact: true }).isDisabled());
+    await page.getByRole('button', { name: 'Next part', exact: true }).click();
+    await page.getByText('Final reviewed detail <script>literal</script>', { exact: true }).waitFor();
+    assert.ok(await page.getByRole('button', { name: 'Confirm', exact: true }).isDisabled());
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.getByRole('checkbox', { name: 'I have reviewed every part of this action', exact: true }).check();
+    await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await page.getByText('Approval saved.', { exact: true }).waitFor();
+    const reads = requests.filter(request => request.operation === 'approval_review');
+    const decisions = requests.filter(request => request.path.endsWith('/approvals/transition-display'));
+    assert.equal(reads.length, 3); assert.equal(decisions.length, 1);
+    assert.ok(reads.every(request => request.bytes < 65536)); assert.ok(decisions[0].bytes < 1024);
+    assert.equal(requests.filter(request => request.input.view?.type === 'approval').length, 0);
+    assert.equal(requests.filter(request => request.operation === 'page' && !request.input.view).length, 1);
+    approvalMetrics.push({ width, sectionReads: reads.length, maximumSectionBytes: Math.max(...reads.map(request => request.bytes)),
+      receiptBytes: decisions[0].bytes, retainedSections: 1, fullReviewPairReads: 0, extraMessagePages: 0 });
+    await page.evaluate(() => globalThis.fixture.dispose());
+  }
   assert.deepEqual(failures, []);
   const report = { browser: await browser.version(), reactBuild: 'production, public dist exports', desktopWidth: 1280,
-    pendingApprovalWidths: [320, 390], pendingApprovalExtraMessagePages: 0,
+    approvalReview: approvalMetrics, pendingApprovalWidths: [320, 390], pendingApprovalExtraMessagePages: 0,
+    deferredRecordReader: { widths: [320, 390], eagerContentReads: 0, retainedSections: 1, sectionCharacters: 8192, literalRendering: true },
+    backgroundSettlement: { notifications: 1, metadataReads: 3, hiddenTranscriptRequests: 0 },
     singleConversationWidths: [320, 390], maximumRenderedMessages: 90, maximumIdleSessions: 4,
     budgets: { selectionToPaintMaximumMs: 1000, browserHeapAfterGcBytes: 32 * 1024 * 1024, maximumHttpBodyBytes: 65536 }, metrics,
     limitations: ['Local synthetic HTTP server; no production network, database, provider or business payloads.',

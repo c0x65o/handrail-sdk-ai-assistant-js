@@ -16,10 +16,15 @@ import {
   type KeyboardEvent,
 } from "react";
 import { ConversationContext } from "./context.js";
-import type { ConversationDraftController, ConversationDraftSnapshot } from "../client/local-state.js";
-const EMPTY_DRAFT: ConversationDraftSnapshot = Object.freeze({ text: "", edit: 0, status: "saved", error: null });
+import { validateDraftText, type ConversationDraftController, type ConversationDraftSnapshot } from "../client/local-state.js";
+import { DraftTextCapacityError, DraftTextRetentionOwner } from "../client/draft-retention.js";
+import type { AttachmentDraftController, AttachmentDraftSnapshot } from "../attachments/draft-workspace.js";
+import { AttachmentDraftCapacityError } from "../attachments/draft-store.js";
+const EMPTY_DRAFT: ConversationDraftSnapshot = Object.freeze({ text: "", edit: 0, status: "saved", error: null, inputError: null });
 const noDraftSubscribe = () => () => undefined;
 const noDraftSnapshot = () => EMPTY_DRAFT;
+const EMPTY_FILES: AttachmentDraftSnapshot<Blob> = Object.freeze({ files: Object.freeze([]), status: "saved", error: null });
+const noFileSnapshot = () => EMPTY_FILES;
 
 import type {
   AttachmentSelection,
@@ -32,6 +37,7 @@ import { toConversationAttachmentReference } from "../attachments/references.js"
 import { prepareClipboardImage } from "../browser/clipboard-image.js";
 import {
   intakeFileInputImages,
+  createBrowserImagePreviews,
   intakeFileInputPdfs,
   type BrowserAttachmentSource,
   type BrowserDropImageIntakeResult,
@@ -119,6 +125,8 @@ export interface UseConversationComposerOptions<TRequest = undefined> {
   readonly initialDraft?: string;
   /** Optional account/chat-owned controller; negotiated sessions supply their own. */
   readonly draftController?: ConversationDraftController;
+  /** Account-owned files. Its uploader must be the uploader supplied above. */
+  readonly attachmentDraftController?: AttachmentDraftController<BrowserAttachmentSource>;
 }
 
 export type ConversationComposerAttachmentStatus =
@@ -201,10 +209,15 @@ export interface ConversationComposerDropProps {
 }
 
 export interface ConversationComposerResult {
+  readonly attachmentPersistence?: {
+    readonly status: AttachmentDraftSnapshot<Blob>["status"]; readonly error: string | null;
+    readonly retry: () => Promise<void>; readonly reload: () => Promise<void>;
+  };
   readonly draftPersistence?: {
     readonly status: ConversationDraftSnapshot["status"]; readonly error: string | null;
     readonly retry: () => Promise<void>; readonly reload: () => Promise<void>;
   };
+  readonly draftInputError?: string | null;
   readonly draft: string;
   readonly setDraft: (draft: string) => void;
   readonly attachments: readonly ConversationComposerAttachment[];
@@ -479,7 +492,12 @@ export function useConversationComposer<TRequest = undefined>(
   const actions = useConversationActions<TRequest>();
   const store = useConversationStore();
   const conversationBinding = useContext(ConversationContext);
+  const durableDraftReceipts = Boolean(conversationBinding?.runtime?.displaySession);
   const draftController = options.draftController ?? conversationBinding?.runtime?.displaySession?.draft ?? undefined;
+  const fileController = options.attachmentDraftController;
+  if (fileController && fileController.uploader !== options.uploader) throw new TypeError("Attachment draft must use its owned uploader");
+  const persistedFiles = useSyncExternalStore(fileController?.subscribe ?? noDraftSubscribe,
+    fileController?.getSnapshot ?? noFileSnapshot, fileController?.getSnapshot ?? noFileSnapshot);
   const persistedDraft = useSyncExternalStore(draftController?.subscribe ?? noDraftSubscribe,
     draftController?.getSnapshot ?? noDraftSnapshot, draftController?.getSnapshot ?? noDraftSnapshot);
   const storeConversationId = useConversationSelector((state) => state.conversation_id);
@@ -495,6 +513,8 @@ export function useConversationComposer<TRequest = undefined>(
     onCancel,
   } = options;
   const conversationId = options.conversationId ?? storeConversationId;
+  if (draftController && draftController.conversationId !== conversationId) throw new TypeError("Text draft belongs to another conversation");
+  if (fileController && fileController.conversationId !== conversationId) throw new TypeError("Attachment draft belongs to another conversation");
   const generalizedIntake = options.attachmentIntake ?? (options.imageIntake === undefined ? {} : undefined);
   if (generalizedIntake !== undefined) validateAttachmentIntakeOptions(generalizedIntake);
   const acceptedMediaTypes: readonly AttachmentMimeType[] = generalizedIntake === undefined
@@ -527,8 +547,41 @@ export function useConversationComposer<TRequest = undefined>(
     ? options.imageIntake?.previews ?? true
     : generalizedIntake.previews ?? true;
 
-  const [localDraft, setDraftState] = useState(options.initialDraft ?? draftController?.getSnapshot().text ?? "");
-  const [owned, setOwned] = useState<readonly OwnedAttachment[]>([]);
+  const localTextOwner = useMemo(() => new DraftTextRetentionOwner(store), [store, conversationId]);
+  const [localDraft, setDraftState] = useState(() => {
+    if (draftController) return draftController.getSnapshot().text;
+    const initial = options.initialDraft ?? "";
+    try { validateDraftText(initial); return initial; } catch { return ""; }
+  });
+  const [localInputError, setLocalInputError] = useState<string | null>(() => {
+    if (draftController) return null;
+    try { validateDraftText(options.initialDraft ?? ""); return null; }
+    catch (cause) { return cause instanceof DraftTextCapacityError ? cause.message : "This edit could not be retained."; }
+  });
+  const [localOwned, setOwned] = useState<readonly OwnedAttachment[]>([]);
+  const [filePreviews, setFilePreviews] = useState<readonly BrowserImagePreview[]>([]);
+  const owned = useMemo<readonly OwnedAttachment[]>(() => fileController ? persistedFiles.files.map(file => ({
+    ...file.selection, id: file.uploadId, kind: file.selection.kind ?? "image",
+    ...(filePreviews.find(preview => preview.fingerprint === file.selection.fingerprint)
+      ? { preview: filePreviews.find(preview => preview.fingerprint === file.selection.fingerprint)! } : {}),
+  })) : localOwned, [fileController, persistedFiles.files, filePreviews, localOwned]);
+  const previewApi = previews === true || previews === false ? undefined : previews.objectUrlApi;
+  useEffect(() => {
+    if (!fileController || !previews) { setFilePreviews([]); return; }
+    try {
+      const result = createBrowserImagePreviews(persistedFiles.files.filter(file => (file.selection.kind ?? "image") === "image")
+        .map(file => file.selection), previewApi ? { objectUrlApi: previewApi } : {});
+      setFilePreviews(result.previews);
+      return () => result.dispose();
+    } catch { setFilePreviews([]); /* A preview failure must not discard a file. */ }
+  }, [fileController, persistedFiles.files, !!previews, previewApi]);
+  useEffect(() => {
+    if (!fileController) return;
+    const flush = () => { void fileController.flush().catch(() => undefined); };
+    const hidden = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("pagehide", flush); document.addEventListener("visibilitychange", hidden);
+    return () => { window.removeEventListener("pagehide", flush); document.removeEventListener("visibilitychange", hidden); flush(); };
+  }, [fileController]);
   const [snapshot, setSnapshot] = useState(() => uploader.getSnapshot());
   const [operationErrors, setOperationErrors] = useState<
     readonly ConversationComposerError[]
@@ -563,11 +616,12 @@ export function useConversationComposer<TRequest = undefined>(
     presence,
     initialized: false,
     draftController,
+    fileController,
   });
   const previousScope = lifecycleRef.current;
   const scopeChanged = previousScope.initialized && (previousScope.conversationId !== conversationId ||
     previousScope.store !== store || previousScope.uploader !== uploader || previousScope.presence !== presence ||
-    previousScope.draftController !== draftController);
+    previousScope.draftController !== draftController || previousScope.fileController !== fileController);
   // Storage snapshots belong to the current account immediately, before effects
   // run. Never render the previous scope's editor during a prop transition.
   const draft = draftController ? persistedDraft.text : scopeChanged ? "" : localDraft;
@@ -578,6 +632,16 @@ export function useConversationComposer<TRequest = undefined>(
   }, [conversationId, store, uploader, presence]);
 
   draftRef.current = draft;
+  useEffect(() => {
+    if (!draftController) {
+      try { localTextOwner.replace(draftRef.current); }
+      catch (cause) {
+        draftRef.current = ""; setDraftState("");
+        setLocalInputError(cause instanceof DraftTextCapacityError ? cause.message : "This edit could not be retained.");
+      }
+    }
+    return () => localTextOwner.clear();
+  }, [draftController, localTextOwner]);
   ownedRef.current = owned;
   uploaderRef.current = uploader;
   presenceRef.current = presence;
@@ -618,16 +682,17 @@ export function useConversationComposer<TRequest = undefined>(
       previous.conversationId === conversationId &&
       previous.store === store &&
       previous.uploader === uploader &&
-      previous.presence === presence && previous.draftController === draftController
+      previous.presence === presence && previous.draftController === draftController && previous.fileController === fileController
     ) {
       return;
     }
 
     const previousOwned = ownedRef.current;
-    releaseOwned(previousOwned, previous.uploader);
+    if (!previous.fileController) releaseOwned(previousOwned, previous.uploader);
     ownedRef.current = [];
     setOwned([]);
     draftRef.current = draftController?.getSnapshot().text ?? "";
+    setLocalInputError(null);
     draftRevision.current += 1;
     setDraftState(draftRef.current);
     sendingRef.current = false;
@@ -644,14 +709,15 @@ export function useConversationComposer<TRequest = undefined>(
       presence,
       initialized: true,
       draftController,
+      fileController,
     };
-  }, [conversationId, presence, releaseOwned, store, uploader, draftController]);
+  }, [conversationId, presence, releaseOwned, store, uploader, draftController, fileController]);
 
   useEffect(() => {
     if (!draftController) return;
     const adopt = () => {
       const snapshot = draftController.getSnapshot();
-      if (options.initialDraft !== undefined && snapshot.status === "saved" && snapshot.edit === 0 && !snapshot.text) {
+      if (options.initialDraft !== undefined && snapshot.status === "saved" && snapshot.inputError === null && snapshot.edit === 0 && !snapshot.text) {
         draftController.setText(options.initialDraft); return;
       }
       const next = snapshot.text;
@@ -673,7 +739,7 @@ export function useConversationComposer<TRequest = undefined>(
   useEffect(() => () => {
     // Late runtime notifications belong to the disposed composer, not a later mount.
     lifecycleRef.current = { ...lifecycleRef.current };
-    releaseOwned(ownedRef.current, uploaderRef.current);
+    if (!lifecycleRef.current.fileController) releaseOwned(ownedRef.current, uploaderRef.current);
     presenceRef.current?.stopTyping("destroy");
   }, [releaseOwned]);
 
@@ -752,13 +818,22 @@ export function useConversationComposer<TRequest = undefined>(
   const hasContent = draft.trim().length > 0 || attachments.length > 0;
   const canPrepare = submissionBlockCount > 0 && [...submissionBlocks.current.values()].every((prepare) => prepare !== undefined);
   const canSend = (submissionBlockCount === 0 || canPrepare) && !isPreparingSubmission && !isSending &&
-    persistedDraft.status !== "loading" && activeTurnId === null && (hasContent || canPrepare) && uploadsReady;
+    persistedDraft.status !== "loading" && persistedFiles.status === "saved" && activeTurnId === null && (hasContent || canPrepare) && uploadsReady;
 
   const updateDraft = useCallback((nextDraft: string): void => {
+    // Never retain a rejected edit in local React state or the submission ref.
+    if (draftController) { if (!draftController.setText(nextDraft)) return; }
+    else {
+      try { localTextOwner.replace(nextDraft); }
+      catch (cause) {
+        setLocalInputError(cause instanceof DraftTextCapacityError ? cause.message : "This edit could not be retained.");
+        return;
+      }
+    }
+    setLocalInputError(null);
     draftRevision.current += 1;
     draftRef.current = nextDraft;
     setDraftState(nextDraft);
-    draftController?.setText(nextDraft);
     // A send/cancel failure describes the previous attempt. Once the user
     // edits the draft it is no longer actionable and must not linger beside a
     // new message (intake errors remain until the next intake operation).
@@ -770,7 +845,7 @@ export function useConversationComposer<TRequest = undefined>(
     presence?.noteActivity();
     if (nextDraft.length === 0) presence?.stopTyping("explicit");
     else presence?.setTyping(true);
-  }, [presence, draftController]);
+  }, [presence, draftController, localTextOwner]);
 
   const imageOptions = useCallback((): BrowserImageIntakeOptions => ({
     acceptedMediaTypes: acceptedImageMediaTypes,
@@ -798,7 +873,11 @@ export function useConversationComposer<TRequest = undefined>(
   const acceptIntake = useCallback((result: ComposerIntakeResult) => {
     const added: OwnedAttachment[] = [];
     try {
-      for (const selection of result.selections) {
+      if (fileController) {
+        fileController.add(result.selections);
+        result.dispose();
+      }
+      for (const selection of fileController ? [] : result.selections) {
         const preview = result.previews.find(
           (candidate) => candidate.fingerprint === selection.fingerprint,
         );
@@ -819,13 +898,13 @@ export function useConversationComposer<TRequest = undefined>(
           ...(preview === undefined ? {} : { preview }),
         });
       }
-    } catch {
+    } catch (error) {
       releaseOwned(added);
       result.dispose();
       setOperationErrors([{
         source: "intake",
         code: "intake_failed",
-        message: "The selected attachments could not be prepared.",
+        message: error instanceof AttachmentDraftCapacityError ? error.message : "The selected attachments could not be prepared.",
         retryable: false,
       }]);
       return;
@@ -852,7 +931,7 @@ export function useConversationComposer<TRequest = undefined>(
         : { fingerprint: rejection.fingerprint }),
       ...(rejection.filename === undefined ? {} : { filename: rejection.filename }),
     })));
-  }, [conversationId, releaseOwned, scope, uploader, maxImageFileBytes, maxDocumentFileBytes]);
+  }, [conversationId, releaseOwned, scope, uploader, maxImageFileBytes, maxDocumentFileBytes, fileController]);
 
   const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>): void => {
     if (sendingRef.current || store.getSnapshot().active_turn_id !== null) {
@@ -971,6 +1050,7 @@ export function useConversationComposer<TRequest = undefined>(
   ]);
 
   const removeAttachment = useCallback((attachmentId: string): boolean => {
+    if (fileController) return fileController.remove([attachmentId]);
     const entry = ownedRef.current.find((candidate) => candidate.id === attachmentId);
     if (entry === undefined) return false;
     releaseOwned([entry]);
@@ -980,7 +1060,7 @@ export function useConversationComposer<TRequest = undefined>(
       return next;
     });
     return true;
-  }, [releaseOwned]);
+  }, [releaseOwned, fileController]);
 
   const retryAttachment = useCallback((attachmentId: string): boolean => {
     if (!ownedRef.current.some((entry) => entry.id === attachmentId)) return false;
@@ -992,6 +1072,7 @@ export function useConversationComposer<TRequest = undefined>(
   }, [uploader]);
 
   const cancelAttachment = useCallback((attachmentId: string): boolean => {
+    if (fileController) return fileController.remove([attachmentId]);
     const entry = ownedRef.current.find((candidate) => candidate.id === attachmentId);
     if (entry === undefined) return false;
     try {
@@ -1006,13 +1087,14 @@ export function useConversationComposer<TRequest = undefined>(
       return next;
     });
     return true;
-  }, [releaseOwned, uploader]);
+  }, [releaseOwned, uploader, fileController]);
 
   const submit = useCallback(async (
     event?: FormEvent<Element>,
   ): Promise<ConversationRuntimeTurnResult | null> => {
     event?.preventDefault();
-    if (preparingSubmission.current !== null || sendingRef.current || draftController?.getSnapshot().status === "loading" || store.getSnapshot().active_turn_id !== null) return null;
+    if (preparingSubmission.current !== null || sendingRef.current || draftController?.getSnapshot().status === "loading" ||
+        fileController && fileController.getSnapshot().status !== "saved" || store.getSnapshot().active_turn_id !== null) return null;
     const preparations = [...submissionBlocks.current.values()];
     if (preparations.some((prepare) => prepare === undefined)) return null;
     if (preparations.length > 0) {
@@ -1055,6 +1137,12 @@ export function useConversationComposer<TRequest = undefined>(
       (currentDraft.trim().length > 0 || currentOwned.length > 0) &&
       readyReferences.length === currentOwned.length;
     if (!eligible) return null;
+    let releaseText: () => void;
+    try { releaseText = draftController?.retainText(currentDraft) ?? localTextOwner.retain(currentDraft); }
+    catch (cause) {
+      setLocalInputError(cause instanceof DraftTextCapacityError ? cause.message : "This draft could not be retained for sending.");
+      return null;
+    }
 
     sendingRef.current = true;
     pendingCancellation.current = { scope: submissionScope, requested: false };
@@ -1069,6 +1157,7 @@ export function useConversationComposer<TRequest = undefined>(
       accepted = true;
       const clearsCurrentDraft = isCurrent() && draftRevision.current === submittedRevision;
       if (submittedDraftEdit !== undefined) draftController?.accepted(submittedDraftEdit);
+      fileController?.remove(currentOwned.map(entry => entry.id));
       if (!isCurrent()) return;
       if (pendingCancellation.current?.scope === submissionScope && pendingCancellation.current.requested) {
         pendingCancellation.current.requested = false;
@@ -1080,13 +1169,15 @@ export function useConversationComposer<TRequest = undefined>(
             message: "The active response could not be stopped.", retryable: true }]);
         });
       }
-      releaseOwned(currentOwned, uploader);
+      if (!fileController) releaseOwned(currentOwned, uploader);
       const submittedIds = new Set(currentOwned.map((entry) => entry.id));
       const nextOwned = ownedRef.current.filter((entry) => !submittedIds.has(entry.id));
       ownedRef.current = nextOwned;
       setOwned(nextOwned);
       // Revision identity protects the next draft even when it has identical text.
       if (clearsCurrentDraft) {
+        localTextOwner.clear();
+        setLocalInputError(null);
         draftRevision.current += 1;
         draftRef.current = "";
         setDraftState("");
@@ -1094,12 +1185,21 @@ export function useConversationComposer<TRequest = undefined>(
       }
     };
     try {
+      // Keep a device-only origin in the durable pending journal. Await saving
+      // before the first network mutation; a newer edit never inherits this send.
+      const fileIds = durableDraftReceipts ? fileController?.captureFileIds(currentOwned.map(entry => entry.id)) : undefined;
+      const textVersion = durableDraftReceipts && submittedDraftEdit !== undefined
+        ? await draftController?.captureVersion(submittedDraftEdit) : undefined;
+      const localDraft = textVersion !== undefined || fileIds?.length
+        ? { version: 1 as const, ...(textVersion === undefined ? {} : { textVersion }), ...(fileIds?.length ? { fileIds } : {}) } : undefined;
       const outcome = await actions.sendMessage({
         content: currentDraft.trim().length === 0 ? [] : currentDraft,
         attachments: readyReferences.map(durableAttachment),
         request: createRequest === undefined ? request as TRequest : createRequest(submission),
         onAccepted: accept,
+        ...(localDraft === undefined ? {} : { localDraft }),
       });
+      if (outcome.status === "completed" || outcome.status === "waiting_for_approval") accept();
       if (!isCurrent()) return outcome;
       if (outcome.status !== "completed" && outcome.status !== "waiting_for_approval") {
         setOperationErrors([outcome.error === undefined
@@ -1126,13 +1226,14 @@ export function useConversationComposer<TRequest = undefined>(
       }]);
       return null;
     } finally {
+      releaseText();
       if (isCurrent()) {
         sendingRef.current = false;
         pendingCancellation.current = null;
         setIsSending(false);
       }
     }
-  }, [actions, createRequest, presence, releaseOwned, request, store, uploader, draftController]);
+  }, [actions, createRequest, presence, releaseOwned, request, store, uploader, draftController, fileController, durableDraftReceipts, localTextOwner]);
 
   const cancel = useCallback(async (): Promise<boolean> => {
     try {
@@ -1213,6 +1314,9 @@ export function useConversationComposer<TRequest = undefined>(
   }), [handleDragOver, handleDrop]);
 
   return useMemo(() => Object.freeze({
+    ...(fileController ? { attachmentPersistence: { status: persistedFiles.status, error: persistedFiles.error,
+      retry: fileController.flush, reload: () => fileController.reload() } } : {}),
+    draftInputError: persistedDraft.inputError ?? (scopeChanged ? null : localInputError),
     ...(draftController ? { draftPersistence: { status: persistedDraft.status, error: persistedDraft.error,
       retry: draftController.flush, reload: () => draftController.reload() } } : {}),
     draft,
@@ -1249,6 +1353,9 @@ export function useConversationComposer<TRequest = undefined>(
     updateDraft,
     draftController,
     persistedDraft,
+    localInputError,
+    fileController,
+    persistedFiles,
     scopeChanged,
   ]);
 }

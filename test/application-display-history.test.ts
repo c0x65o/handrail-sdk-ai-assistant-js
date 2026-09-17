@@ -10,24 +10,26 @@ const transport: ConversationTransport<never, never> = {
 };
 const point = () => ({ lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null });
 
-it("negotiates message text separately and validates bounded Unicode sections", async () => {
+it.each(["message-text", "record-text"] as const)("negotiates %s separately and validates bounded Unicode sections", async format => {
   let value = { encoding: "plain-text" as const, text: "😀".repeat(8192), revision: 4, nextOffset: 8192 as number | null };
   const history: ConversationDisplayHistory = { page: vi.fn(), changes: vi.fn(), content: vi.fn(async () => value) };
   const resolve = vi.fn(() => transport);
   const options = { transportFor: resolve, authorize: async () => ({ principalId: "user" }),
     checkpointForEvent: point, displayHistoryFor: () => history };
-  const gateway = createApplicationGateway({ ...options, displayMessageText: true });
+  const gateway = createApplicationGateway({ ...options, displayMessageText: true, displayRecordText: true });
   const client = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test",
     fetch: (async (url, init) => gateway.handle(new Request(url, init))) as typeof fetch });
-  const input = { conversationId: "conversation", generation: 0, kind: "message" as const, id: "message", revision: 4, format: "message-text" as const };
+  const input = { conversationId: "conversation", generation: 0, kind: format === "message-text" ? "message" as const : "tool" as const, id: "record", revision: 4, format };
   expect(await client.content(input)).toEqual(value);
   expect(history.content).toHaveBeenCalledWith(input);
   expect(resolve).not.toHaveBeenCalled();
   expect(await (await gateway.handle(new Request("https://app.test/capabilities"))).json())
-    .toMatchObject({ value: { displayHistory: { messageText: true } } });
+    .toMatchObject({ value: { displayHistory: { messageText: true, recordText: true } } });
   const legacy = createApplicationGateway(options);
   expect((await (await legacy.handle(new Request("https://app.test/capabilities"))).json()).value.displayHistory)
     .not.toHaveProperty("messageText");
+  expect((await (await legacy.handle(new Request("https://app.test/capabilities"))).json()).value.displayHistory)
+    .not.toHaveProperty("recordText");
   for (const invalid of [{ ...value, text: "short", nextOffset: 5 }, { ...value, nextOffset: 16384 },
     { ...value, revision: 5 }, { ...value, text: "x".repeat(8193), nextOffset: null }]) {
     value = invalid;
@@ -176,4 +178,34 @@ it("bounds stalled reads by a deadline and rejects unsupported client budgets be
   await expect(client.page({ conversationId: "a" })).rejects.toMatchObject({ name: "TimeoutError" });
   await expect(client.page({ conversationId: "a", maximumBytes: 1_000_000_000 })).rejects.toThrow("page bounds");
   await expect(client.page({ conversationId: "a", limit: 51 })).rejects.toThrow("page bounds");
+});
+
+it("returns bounded idempotent decision receipts and refuses mismatched review bindings before mutation", async () => {
+  const { approvalDisplayProposalBinding } = await import("../src/conversation/approval-display-review.js");
+  const p = { proposal_id: "proposal", proposal_version: 1, group_id: "conversation", turn_id: "turn", tool_call_id: "tool",
+    tool_name: "save", status: "pending", expires_at: null, reviewed_arguments: { type: "redacted_json", value: { text: "🙂".repeat(500000) } } } as never;
+  const proposalBinding = approvalDisplayProposalBinding("conversation", p);
+  const input = { conversationId: "conversation", proposalId: "proposal", expectedVersion: 1,
+    status: "confirmed" as const, idempotencyKey: "decision", idempotencyFingerprint: "decision", proposalBinding };
+  let current = p, wireBytes = 0;
+  const receipt = { ...p as object, proposal_version: 2, status: "confirmed" } as never;
+  const transition = vi.fn(async (_input: unknown) => { void _input; current = receipt; return receipt; });
+  const authorize = vi.fn(async (_request: Request, action: string) => { expect(action).toBe("approvals"); return { principalId: "user" }; });
+  const gateway = createApplicationGateway({ transport, authorize, checkpointForEvent: point, displayApprovalReview: true,
+    approvals: { get: vi.fn(async () => current), transition, create: vi.fn(), listGroup: vi.fn() } });
+  const client = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test",
+    fetch: (async (url, init) => { const response = await gateway.handle(new Request(url, init));
+      wireBytes = new TextEncoder().encode(await response.clone().text()).length; return response; }) as typeof fetch });
+  await expect(client.decideApproval({ ...input, proposalBinding: "f".repeat(64) })).rejects.toMatchObject({ resourceCode: "content_changed" });
+  expect(transition).not.toHaveBeenCalled();
+  const result = await client.decideApproval(input);
+  expect(result).toEqual({ schemaVersion: 1, conversationId: "conversation", proposalId: "proposal", proposalVersion: 2, status: "confirmed", proposalBinding });
+  expect(wireBytes).toBeLessThan(1024);
+  expect(await client.decideApproval(input)).toEqual(result);
+  expect(transition).toHaveBeenCalledTimes(2);
+  expect(transition.mock.calls[1]?.[0]).toMatchObject({ idempotencyKey: "decision", permissionContext: { principalId: "user" } });
+  const forged = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test", fetch: (async () => Response.json({ ok: true, value: { ...result, proposalVersion: 99 } })) as typeof fetch });
+  await expect(forged.decideApproval(input)).rejects.toThrow("Invalid approval decision receipt");
+  const bytes = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test", fetch: (async () => new Response("x".repeat(8193))) as typeof fetch });
+  await expect(bytes.decideApproval(input)).rejects.toThrow("byte budget");
 });

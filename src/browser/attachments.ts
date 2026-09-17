@@ -350,7 +350,7 @@ function browserObjectUrlApi(): BrowserObjectUrlApi {
   return candidate as BrowserObjectUrlApi;
 }
 
-function createPreviews(
+export function createBrowserImagePreviews(
   selections: readonly AttachmentSelection<BrowserAttachmentSource>[],
   options: false | BrowserImagePreviewOptions,
 ): {
@@ -441,7 +441,7 @@ function intakeImages(
     selections.push(selection(source, fingerprint, mediaType as ImageMimeType));
   }
 
-  const previewResult = createPreviews(selections, options.previews);
+  const previewResult = createBrowserImagePreviews(selections, options.previews);
   return Object.freeze({
     selections: Object.freeze(selections),
     rejections: Object.freeze(rejections),

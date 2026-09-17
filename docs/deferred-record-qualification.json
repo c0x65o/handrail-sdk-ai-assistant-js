@@ -1,0 +1,124 @@
+{
+  "qualification": "Local formatted deferred record inspection; approval authorization is unchanged; no SDK release or dependency installation",
+  "capability": "displayHistory.recordText",
+  "limits": {
+    "sectionUnicodeCodePoints": 8192,
+    "httpBodyBytes": 65536,
+    "retainedSectionsPerDetailSurface": 1,
+    "eagerContentReads": 0
+  },
+  "validation": {
+    "jsTests": 73,
+    "jsTestFiles": 7,
+    "dartClientTests": 17,
+    "flutterWidgetTests": 27,
+    "flutterJsGatewayTests": 20,
+    "testWorkers": 1,
+    "jsBuild": "passed",
+    "jsTypecheck": "passed",
+    "jsScopedLint": "passed",
+    "dartAnalyze": "passed",
+    "flutterAnalyze": "passed",
+    "browser": "deferred-record-browser-qualification.json"
+  },
+  "consumerContracts": [
+    {
+      "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4",
+      "config": "tsconfig.json",
+      "sdkVersion": "0.2.56",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/client/assistant/MillsAssistantRuntime.tsx",
+        "src/server/assistant/handrail-ai-gateway.ts"
+      ],
+      "sourceFiles": 1341,
+      "errors": 0,
+      "milliseconds": 8239,
+      "rssBytes": 714727424
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
+      "config": "tsconfig.browser.json",
+      "sdkVersion": "0.2.56",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/browser/features/cents/CentsDrawer.tsx"
+      ],
+      "sourceFiles": 308,
+      "errors": 0,
+      "milliseconds": 1783,
+      "rssBytes": 287686656
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
+      "config": "tsconfig.server.json",
+      "sdkVersion": "0.2.56",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/server/cents/native-runtime.ts"
+      ],
+      "sourceFiles": 884,
+      "errors": 0,
+      "milliseconds": 10671,
+      "rssBytes": 778858496
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/spartan-cyber-services-spartan-cyber-erp-v3",
+      "config": "tsconfig.json",
+      "sdkVersion": "0.2.56",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/client/features/aegis-assistant/HandrailAiAssistant.tsx",
+        "src/server/aegis/handrail-ai-gateway.ts",
+        "src/client/features/contracts/page.tsx",
+        "tests/aegis-resource-changes.test.ts"
+      ],
+      "sourceFiles": 1915,
+      "errors": 0,
+      "milliseconds": 22355,
+      "rssBytes": 1347665920
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4-mobile",
+      "roots": [
+        "lib/repositories/sdk_assistant_repository.dart",
+        "lib/screens/assistant_screen.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 12862
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp-mobile",
+      "roots": [
+        "lib/features/cents/cents_sdk.dart",
+        "lib/features/cents/cents_sheet.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 8479
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/scs-erp-mobile",
+      "roots": [
+        "lib/src/aegis/aegis_sdk_repository.dart",
+        "lib/src/aegis/aegis_conversation_screen.dart"
+      ],
+      "qualification": "local Flutter frontend source compile; installed Git dependencies unchanged",
+      "exitCode": 0,
+      "milliseconds": 13807
+    }
+  ],
+  "remaining": [
+    "Bounded verified oversized approval review/decision protocol",
+    "Expanded reconnect and worker restart behavior qualification",
+    "Full consumer behavior audit and authorized future SDK adoption"
+  ],
+  "release": {
+    "committed": false,
+    "pushed": false,
+    "deployed": false,
+    "consumerDependenciesChanged": false,
+    "sdkProjectConfigurationChanged": false
+  }
+}

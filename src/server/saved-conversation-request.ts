@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { assertConversationAttachmentMatches, conversationAttachmentKind } from "../attachments/references.js";
 import { awaitWithSignal } from "../await-signal.js";
 import type { ConversationAttachmentReference } from "../conversation/events.js";
@@ -5,6 +6,7 @@ import type { ConversationMessageRecord } from "../conversation/state.js";
 import type { ConversationEventStore } from "../conversation/event-store.js";
 import { replayConversation } from "../conversation/replay.js";
 import { AI_RUNTIME_PROTOCOL_LIMITS, parseChatRequest, type AttachmentReference, type ChatRequest, type JsonObject, type JsonValue } from "../protocol.js";
+import { savedInputFingerprint } from "./saved-input-fingerprint.js";
 
 export class SavedConversationPreparationError extends Error {
   constructor(readonly code: "saved_input_unavailable" | "attachment_limit" | "attachment_changed" | "attachment_unsupported" | "application_context_unavailable") {
@@ -58,7 +60,7 @@ export function createSavedConversationRequestPreparer(options: SavedConversatio
     const authorizeNow = () => awaitWithSignal(signal, () => authorize(input));
     const load = async () => {
       const replay = await replayConversation({ conversationId: input.conversationId as never,
-        eventStore, checkpointPolicy: false });
+        eventStore, checkpointPolicy: false, readBatchSize: 128, signal });
       try {
         const state = replay.state;
         const turn = state.turns.find(candidate => candidate.turn_id === input.turnId);
@@ -67,24 +69,37 @@ export function createSavedConversationRequestPreparer(options: SavedConversatio
           !["queued", "running"].includes(turn.status)) {
           throw new SavedConversationPreparationError("saved_input_unavailable");
         }
-        return { messages: state.messages, inputMessageIds: turn.input_message_ids };
+        return { messages: state.messages, inputMessageIds: turn.input_message_ids, revision: state.revision };
       } finally { replay.store.destroy(); }
     };
     await authorizeNow();
-    const before = await awaitWithSignal(signal, load);
-    const fingerprint = JSON.stringify(before);
-    const prepared = await prepareSavedConversationRequest({ ...limits, ...input, ...before,
-      ...(applicationContext ? { applicationContext: (prepared: SavedConversationContextInput) =>
-        applicationContext({ ...input, request: prepared.request }) } : {}),
-      resolveAttachment: async (attachment, messageId) => {
-        await authorizeNow();
-        return resolveAttachment({ ...input, attachment, messageId });
-      } });
+    // Keep canonical replay in a separate lifetime. Only the bounded provider
+    // request, prior-file catalog and a small equality token escape preparation.
+    const { pending, fingerprint, revision } = await load().then(before => {
+      const fingerprint = savedInputFingerprint({ messages: before.messages, inputMessageIds: before.inputMessageIds });
+      const pending = prepareSavedConversationRequest({ ...limits, ...input, ...before,
+        ...(applicationContext ? { applicationContext: (prepared: SavedConversationContextInput) =>
+          applicationContext({ ...input, request: prepared.request }) } : {}),
+        resolveAttachment: async (attachment, messageId) => {
+          await authorizeNow();
+          return resolveAttachment({ ...input, attachment, messageId });
+        } });
+      return { pending, fingerprint, revision: before.revision };
+    });
+    const prepared = await pending;
     // History or permissions can change while bytes/storage metadata are loading.
     // Ignore unrelated activity revisions but refuse any changed message input.
     await authorizeNow();
-    const after = await awaitWithSignal(signal, load);
-    if (JSON.stringify(after) !== fingerprint) throw new SavedConversationPreparationError("saved_input_unavailable");
+    // An append-only canonical head is sufficient when nothing changed. A
+    // changed head (including clear/deletion) retains full admission/equality
+    // validation, so harmless metadata writes still do not invalidate input.
+    const latest = await awaitWithSignal(signal, () => eventStore.getLatestRevision(input.conversationId as never));
+    if (latest !== revision) {
+      const after = await load();
+      if (savedInputFingerprint({ messages: after.messages, inputMessageIds: after.inputMessageIds }) !== fingerprint) {
+        throw new SavedConversationPreparationError("saved_input_unavailable");
+      }
+    }
     signal.throwIfAborted();
     return prepared;
   };
@@ -96,6 +111,13 @@ export interface SavedConversationFile {
   readonly included: boolean;
   /** Set only after an authorized storage read establishes its absence/expiry. */
   readonly unavailableReason?: "expired" | "not_found";
+}
+
+interface SelectedConversationFile {
+  readonly messageId: string;
+  readonly attachment: Readonly<ConversationAttachmentReference>;
+  included: boolean;
+  unavailableReason?: "expired" | "not_found";
 }
 
 export interface SavedConversationContextInput {
@@ -115,7 +137,9 @@ export interface SavedConversationRequestOptions {
   readonly turnId: string;
   readonly signal: AbortSignal;
   /** Synchronous text-only redaction. Cannot replace roles, messages or files.
-   * Applied before historical text limits; saved events remain unchanged. */
+   * Applied to current input and historical candidates before text limits;
+   * older text is not visited once the message quota is filled. Must be pure.
+   * Saved events remain unchanged. */
   readonly transformText?: (input: { readonly text: string; readonly messageId: string;
     readonly role: "user" | "assistant" }) => string;
   /** Authorized business facts for this invocation. Null omits the context.
@@ -201,24 +225,39 @@ export async function prepareSavedConversationRequest(options: SavedConversation
   const textLimit = bounded(options.maximumHistoricalTextCharacters, 24_000);
   const inputs = new Set(options.inputMessageIds);
   if (inputs.size === 0 || inputs.size !== options.inputMessageIds.length) throw new SavedConversationPreparationError("saved_input_unavailable");
-  // Capture immutable scalar metadata before any host callback can yield.
-  const snapshot = options.messages.map(message => ({ ...message,
-    content: message.content.map(part => ({ ...part })), attachments: message.attachments.map(file => ({ ...file })) }));
-  for (const id of inputs) {
-    const matching = snapshot.filter(message => message.message_id === id);
-    if (matching.length !== 1 || matching[0]!.role !== "user") throw new SavedConversationPreparationError("saved_input_unavailable");
+  const foundInputs = new Set<string>();
+  let lastInput = -1;
+  for (let index = 0; index < options.messages.length; index++) {
+    const message = options.messages[index]!;
+    if (!inputs.has(message.message_id)) continue;
+    if (message.role !== "user" || foundInputs.has(message.message_id)) {
+      throw new SavedConversationPreparationError("saved_input_unavailable");
+    }
+    foundInputs.add(message.message_id); lastInput = index;
   }
-  const lastInput = Math.max(...snapshot.map((message, index) => inputs.has(message.message_id) ? index : -1));
-  const history = snapshot.slice(0, lastInput + 1).filter(message =>
-    (message.role === "user" || message.role === "assistant") &&
-    (inputs.has(message.message_id) || message.turn_id !== options.turnId));
-  const files: { messageId: string; attachment: Readonly<ConversationAttachmentReference>; included: boolean;
-    unavailableReason?: "expired" | "not_found" }[] = history.filter(message => message.role === "user").flatMap(message => message.attachments.map(attachment => ({
+  if (foundInputs.size !== inputs.size) throw new SavedConversationPreparationError("saved_input_unavailable");
+  // Capture only provider-relevant scalar values before host callbacks. Text
+  // strings are immutable: do not clone every content object/attribution or any
+  // post-admission messages. Canonical history itself is never truncated.
+  const history: { message_id: string; role: "user" | "assistant"; text: string[];
+    attachments: ConversationAttachmentReference[] }[] = [];
+  for (let index = 0; index <= lastInput; index++) {
+    const message = options.messages[index]!;
+    if ((message.role !== "user" && message.role !== "assistant") ||
+      (!inputs.has(message.message_id) && message.turn_id === options.turnId)) continue;
+    history.push({ message_id: message.message_id, role: message.role,
+      text: message.content.map(part => part.text),
+      attachments: message.role === "user" ? message.attachments.map(file => ({ ...file })) : [] });
+  }
+  const files: SelectedConversationFile[] = history.flatMap(message => message.attachments.map(attachment => ({
     messageId: String(message.message_id), attachment, included: false,
   })));
   const explicit = options.historicalAttachmentIds === undefined ? null : new Set(options.historicalAttachmentIds);
-  if (explicit && [...explicit].some(id => !files.some(file => file.attachment.attachment_id === id))) {
-    throw new SavedConversationPreparationError("saved_input_unavailable");
+  if (explicit) {
+    const available = new Set<string>(files.map(file => file.attachment.attachment_id));
+    for (const id of explicit) if (!available.has(id)) {
+      throw new SavedConversationPreparationError("saved_input_unavailable");
+    }
   }
   const selectedIds = new Set<string>(), messageCounts = new Map<string, { image: number; document: number }>();
   const totals = { image: 0, document: 0 };
@@ -241,36 +280,67 @@ export async function prepareSavedConversationRequest(options: SavedConversation
     messageCounts.set(file.messageId, counts);
     file.included = true; selectedIds.add(file.attachment.attachment_id);
   };
-  for (const file of files.filter(file => inputs.has(file.messageId))) select(file, true);
-  for (const file of [...files].reverse().filter(file => !inputs.has(file.messageId))) {
-    if (!explicit || explicit.has(file.attachment.attachment_id)) select(file, explicit !== null);
+  for (const file of files) if (inputs.has(file.messageId)) select(file, true);
+  for (let index = files.length - 1; index >= 0; index--) {
+    const file = files[index]!;
+    if (!inputs.has(file.messageId) && (!explicit || explicit.has(file.attachment.attachment_id))) select(file, explicit !== null);
   }
   // Keep recent text plus every message carrying required/current or selected
   // file input. The catalog still includes older files excluded from this pass.
   const texts = new Map<string, ChatRequest["messages"][number]["content"]>();
   let textRemaining = textLimit, historicalCount = 0;
-  for (const message of [...history].reverse()) {
-    let content = message.content;
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index]!;
+    if (!inputs.has(message.message_id) && historicalCount >= messageLimit) continue;
+    let text = message.text;
     if (options.transformText) {
       try {
-        content = content.map(part => {
-          const text = options.transformText!({ text: part.text, messageId: message.message_id, role: message.role as "user" | "assistant" });
-          if (typeof text !== "string" || text.length > AI_RUNTIME_PROTOCOL_LIMITS.textLength) throw new Error();
-          return { ...part, text };
+        text = text.map(value => {
+          const transformed = options.transformText!({ text: value, messageId: message.message_id, role: message.role });
+          if (typeof transformed !== "string" || transformed.length > AI_RUNTIME_PROTOCOL_LIMITS.textLength) throw new Error();
+          return transformed;
         });
       } catch { throw new SavedConversationPreparationError("application_context_unavailable"); }
     }
-    if (inputs.has(message.message_id)) { texts.set(message.message_id, content); continue; }
-    const length = content.reduce((sum, part) => sum + part.text.length, 0);
-    if (historicalCount < messageLimit && length <= textRemaining) {
-      texts.set(message.message_id, content); textRemaining -= length; historicalCount++;
+    const length = text.reduce((sum, part) => sum + part.length, 0);
+    if (inputs.has(message.message_id) || length <= textRemaining) {
+      // JSON parsers may retain short strings as slices of a multi-megabyte
+      // checkpoint. Give selected provider text its own backing allocation;
+      // UTF-16 preserves lone surrogates as well as ordinary Unicode.
+      texts.set(message.message_id, text.map(value => ({ type: "text", text: Buffer.from(value, "utf16le").toString("utf16le") })));
+      if (!inputs.has(message.message_id)) { textRemaining -= length; historicalCount++; }
     }
   }
+  const selectedFiles = new Map<string, typeof files>();
+  for (const file of files) if (file.included) {
+    const group = selectedFiles.get(file.messageId);
+    if (group) group.push(file); else selectedFiles.set(file.messageId, [file]);
+  }
+  // Hand only selected text/files to the asynchronous phase. No resolver or
+  // business-context callback needs to keep the full canonical snapshot alive.
+  const selected = history.filter(message => texts.has(message.message_id) || selectedFiles.has(message.message_id))
+    .map(message => ({ id: message.message_id, role: message.role,
+      content: texts.get(message.message_id) ?? [], files: selectedFiles.get(message.message_id) ?? [] }));
+  return resolveSavedConversationInput({ request: options.request, turnId: options.turnId, signal,
+    resolveAttachment: options.resolveAttachment, ...(options.applicationContext ? { applicationContext: options.applicationContext } : {}) },
+  { selected, files, inputs, explicit });
+}
+
+async function resolveSavedConversationInput(options: Pick<SavedConversationRequestOptions,
+  "request" | "turnId" | "signal" | "resolveAttachment" | "applicationContext">, selection: {
+    readonly selected: readonly { id: string; role: "user" | "assistant"; content: ChatRequest["messages"][number]["content"];
+      files: readonly SelectedConversationFile[] }[];
+    readonly files: SelectedConversationFile[];
+    readonly inputs: ReadonlySet<string>;
+    readonly explicit: ReadonlySet<string> | null;
+  }): Promise<{ request: ChatRequest; files: readonly SavedConversationFile[] }> {
+  const { signal } = options;
+  const { selected, files, inputs, explicit } = selection;
   const messages: ChatRequest["messages"] = [];
-  for (const message of history) {
+  for (const message of selected) {
     signal.throwIfAborted();
-    const content = [...(texts.get(message.message_id) ?? [])] as ChatRequest["messages"][number]["content"];
-    for (const file of files.filter(file => file.messageId === message.message_id && file.included)) {
+    const content = [...message.content];
+    for (const file of message.files) {
       let resolved: AttachmentReference;
       try {
         resolved = await awaitWithSignal(signal, () =>
@@ -292,7 +362,7 @@ export async function prepareSavedConversationRequest(options: SavedConversation
       catch { throw new SavedConversationPreparationError("attachment_changed"); }
       content.push({ type: canonical.kind, attachment: { ...resolved } } as ChatRequest["messages"][number]["content"][number]);
     }
-    if (content.length > 0) messages.push({ role: message.role as "user" | "assistant", content });
+    if (content.length > 0) messages.push({ role: message.role, content });
   }
   signal.throwIfAborted();
   const request = parseChatRequest({ ...options.request, messages, continuation_of: null, tool_results: [] });

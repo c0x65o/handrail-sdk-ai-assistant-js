@@ -27,10 +27,10 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
 });
 
 /** Source-derived HTTP projections, deliberately not a persistence emulator.
- * @param {Partial<{authorized: boolean, actor: string, remoteError: boolean, invalidReceipt: boolean}>} overrides
+ * @param {Partial<{authorized: boolean, actor: string, remoteError: boolean, invalidReceipt: boolean, unversionedLookup: boolean}>} overrides
  */
 export function qualificationFixture(overrides = {}) {
-  const controls = { authorized: true, actor: "fixture-alice", remoteError: false, invalidReceipt: false, ...overrides };
+  const controls = { authorized: true, actor: "fixture-alice", remoteError: false, invalidReceipt: false, unversionedLookup: false, ...overrides };
   /** @type {{posts: JsonObject[], closed: number, sessions: (string | undefined)[]}} */
   const observations = { posts: [], closed: 0, sessions: [] };
   const request = {
@@ -61,9 +61,10 @@ export function qualificationFixture(overrides = {}) {
         : json({ bug_id: "fixture-bug", event_id: body.event_id,
           reporter_identity: { verification_result: true } }, 201);
     }
-    // Canonical API returns publicRequest directly, with no version envelope:
-    // enhancement-reporting.js publicRequest + getEnhancementReportingRequest.
-    if (url.endsWith("/requests/fixture-enhancement")) return json(request);
+    // Synthetic projection of verified v1 source, not execution of the platform route.
+    // Historical unversioned publicRequest is retained as a negative case.
+    if (url.endsWith("/requests/fixture-enhancement")) return json(controls.unversionedLookup
+      ? request : { ...request, contract_version: "v1" });
     throw new Error("Unexpected fixture request");
   };
   return { controls, observations, fetch };

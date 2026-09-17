@@ -86,7 +86,7 @@ it("runs the negotiated JS session through the protected gateway and PostgreSQL 
   } finally { release(); await client.dispose(); await assistant.stopBackgroundWorkers(); await db.close(); }
 }, 20_000);
 
-it.each([false, true])("publishes running text without a browser runtime and settles once; stop projection workers: %s", async stop => {
+it.each([false, true])("publishes running text without a browser runtime and settles once; graceful shutdown: %s", async stop => {
   const context = { principalId: "alice", tenantId: "tenant", scopeId: "alice", attribution };
   const events = new InMemoryConversationEventStore();
   const turns = new InMemoryDurableApplicationTurnStore<ChatRequest, StreamEvent>();
@@ -142,8 +142,14 @@ it.each([false, true])("publishes running text without a browser runtime and set
       .toEqual([{ type: "text", text: "Before disconnect" }]));
     expect((await state()).turns[0]?.status).toBe("running");
     expect((await turns.load("chat", "turn"))?.record.status).toBe("running");
-    if (stop) await assistant.stopBackgroundWorkers();
+    // Graceful shutdown joins active execution with projection still alive.
+    // Release the test provider before awaiting its drain.
+    let stopped = false;
+    const stopping = stop ? assistant.stopBackgroundWorkers().then(() => { stopped = true; }) : undefined;
+    if (stop) { await Promise.resolve(); expect(stopped).toBe(false); }
     release();
+    await stopping;
+    if (stop) expect(stopped).toBe(true);
     await vi.waitFor(async () => expect((await state()).turns[0]?.status).toBe("completed"));
     const completed = await state();
     expect(completed.messages.filter(message => message.role === "assistant")).toHaveLength(1);

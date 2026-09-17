@@ -1,3 +1,4 @@
+import { ConversationPagedApprovalReview } from "../react/paged-approval-review.js";
 import type { ConversationPresentationRuntime as ConversationRuntime } from "../conversation/presentation.js";
 import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
 import { ConversationActivityCard, HANDRAIL_ACTIVITY_CSS } from "./activity.js";
@@ -33,6 +34,7 @@ import { ConversationContext } from "../react/context.js";
 import type { ApplicationConversationPendingStore } from "../client/session-submission.js";
 import { createHandrailAiClient, type HandrailAiClient } from "../client/bootstrap.js";
 import { type AttachmentUploader } from "../attachments/uploader.js";
+import type { AttachmentUploadAdapter } from "../attachments/types.js";
 import type { ApplicationGatewayCapabilities } from "../transports/application-gateway.js";
 import { AI_RUNTIME_DOCUMENT_MIME_TYPES, AI_RUNTIME_IMAGE_MIME_TYPES, AI_RUNTIME_PROTOCOL_LIMITS,
   AI_RUNTIME_PROTOCOL_VERSION, type AttachmentMimeType, type ChatRequest, type StreamEvent } from "../protocol.js";
@@ -361,6 +363,14 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
           <TypingIndicator/>
         </ConversationTranscript>}
       {session && resolvedState && <ConversationPendingApprovals key={resolvedState.conversation_id ?? "unselected"} session={session}
+        {...(!props.renderApproval && props.approvalResources ? { renderPagedReview: (proposalId: string, generation: number, refresh: () => void) =>
+          <ConversationPagedApprovalReview conversationId={resolvedState.conversation_id!} generation={generation} proposalId={proposalId}
+            read={session.readApprovalReview} readOnly={Boolean(props.readOnly)} onRefresh={refresh}
+            decide={async (input, signal) => {
+              const result = await session.decideApproval(input, signal);
+              void session.refresh().catch(() => undefined);
+              return result;
+            }}/> } : {})}
         renderApproval={(proposal, tools) => {
           const context: StyledApprovalRenderContext = { state: { ...resolvedState, tool_calls: tools }, busy: approvalReview.busy !== null,
             readOnly: Boolean(props.readOnly || !props.approvalResources || approvalReview.error),
@@ -841,6 +851,8 @@ export interface HandrailAssistantLauncherProps extends Omit<HandrailChatWorkspa
   readonly endpoint: string;
   /** Account/API-scoped durable retry storage, retained by the host across reloads. */
   readonly pendingStore?: ApplicationConversationPendingStore<ChatRequest>;
+  /** Domain upload adapter with SDK-owned durable files and bounded queues. */
+  readonly attachmentUploadAdapter?: AttachmentUploadAdapter<Blob>;
   readonly fetch?: typeof globalThis.fetch;
   readonly protectedRequest?: (input: RequestInit & { readonly url: string }) => RequestInit | Promise<RequestInit>;
   /** Receives safe lifecycle diagnostics from browser transports and controllers. */
@@ -1049,7 +1061,11 @@ function ClientAssistantWorkspace(props: HandrailAssistantWorkspaceProps & {
       return { authorizationContext, conversationId: created.descriptor.conversationId };
     },
     composerForConversation: (_runtime, conversationId) => ({
-      conversationId, uploader: uploaderFor(conversationId),
+      conversationId,
+      ...(props.uploaderForConversation ? { uploader: uploaderFor(conversationId) } : {
+        uploader: client.attachmentDrafts.forConversation(conversationId).uploader,
+        attachmentDraftController: client.attachmentDrafts.forConversation(conversationId),
+      }),
       ...(attachmentIntake ? { attachmentIntake } : {}),
       createRequest: ({ text, attachments }) => {
         if (props.maxPromptCharacters !== undefined && text.length > props.maxPromptCharacters) {
@@ -1072,8 +1088,9 @@ function browserIdentity(prefix: string): string {
 
 /** Endpoint-only production launcher. It owns negotiation, catalog, runtimes, uploads, recovery, and cleanup. */
 export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps): ReactNode {
+  if (props.attachmentUploadAdapter && props.uploaderForConversation) throw new TypeError("Choose an attachment adapter or a custom uploader factory, not both");
   const configurationKey = useMemo(() => Object.freeze({}),
-    [props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId, props.pendingStore]);
+    [props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId, props.pendingStore, props.attachmentUploadAdapter]);
   const [savedState, setState] = useState<AssistantLauncherState | null>(null);
   // Never render or observe a previous account/endpoint while the replacement boots.
   const state = savedState?.configurationKey === configurationKey ? savedState : null;
@@ -1090,6 +1107,7 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
         const client = await createHandrailAiClient<StreamEvent, ChatRequest, object>({
           baseUrl: props.endpoint,
           ...(props.pendingStore ? { pendingStore: props.pendingStore } : {}),
+          ...(props.attachmentUploadAdapter ? { attachmentUploadAdapter: props.attachmentUploadAdapter } : {}),
           ...(props.fetch === undefined ? {} : { fetch: props.fetch }),
           ...(props.protectedRequest === undefined ? {} : { protectedRequest: props.protectedRequest }),
           ...(props.diagnostics === undefined ? {} : { diagnostics: props.diagnostics }),
@@ -1129,7 +1147,7 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
       const previous = owned; owned = null;
       void previous?.client.dispose();
     };
-  }, [configurationKey, props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId, props.pendingStore]);
+  }, [configurationKey, props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId, props.pendingStore, props.attachmentUploadAdapter]);
 
   const voiceMonitor = useMemo(() => {
     if (!state || !props.voiceActivity) return null;
@@ -1155,13 +1173,13 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
   if (error !== null) return <>{styles}{props.failure?.(error) ?? <span role="alert">Assistant unavailable.</span>}</>;
   if (state === null || state.client.workspace === null) return <>{styles}{props.loading ?? null}</>;
   const { endpoint: _endpoint, fetch: _fetch, protectedRequest: _protected, diagnostics: _diagnostics, clientId: _clientId,
-    deviceId: _deviceId, pendingStore: _pendingStore, loading: _loading, failure: _failure, includeStyles: _includeStyles,
+    deviceId: _deviceId, pendingStore: _pendingStore, attachmentUploadAdapter: _attachmentAdapter, loading: _loading, failure: _failure, includeStyles: _includeStyles,
     onWorkingChange: _onWorkingChange, autoTitle: _autoTitle,
     presentation: _presentation, uploaderForConversation: _uploaderForConversation,
     attachmentIntake: _attachmentIntake, voiceActivity: _voiceOptions, ...launcher } = props;
   void _endpoint; void _fetch; void _protected; void _diagnostics; void _clientId; void _deviceId; void _loading;
   void _failure; void _includeStyles; void _onWorkingChange; void _autoTitle; void _presentation; void _pendingStore;
-  void _uploaderForConversation; void _attachmentIntake; void _voiceOptions;
+  void _uploaderForConversation; void _attachmentIntake; void _voiceOptions; void _attachmentAdapter;
   const authorizationContext = EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT;
   return <>{styles}<AssistantWorkingObserver workspace={state.client.workspace}
     {...(voiceMonitor ? { voiceActivity: voiceMonitor } : {})}

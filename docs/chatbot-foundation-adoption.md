@@ -75,43 +75,137 @@ node tool/check-consumer-contract.mjs "$FLUTTER_SDK" "$SPARTAN_MOBILE_REPO" \
   --test test/aegis_sdk_repository_test.dart test/aegis_sdk_projection_test.dart
 ```
 
-## Feature qualification still required before completion
+## Local acceptance and later adoption checks
 
-The goal remains active. Passing source contracts does not establish the complete
-chatbot experience or production scaling.
+The requested local SDK implementation and regression qualification are complete.
+[The acceptance map](chatbot-foundation-qualification.md) connects the six requested
+deliverables to implementation, tests and benchmarks. The final machine-readable
+record is [chatbot-foundation-final-qualification.json](chatbot-foundation-final-qualification.json).
+This supersedes earlier progress notes that called the broader audit open.
 
-| Area | Implemented and locally exercised | Remaining qualification/work |
+| Area | Locally qualified | Later adoption/optimization boundary |
 | --- | --- | --- |
-| Display | Newest page, upward/forward navigation, anchors, stale cancellation, bounded windows, Flutter viewport body virtualization, explicit large text | Full deferred attachment/citation/tool/approval presentation; custom aggregate Flutter formatting |
-| Related activity | On-demand paging, revision merge, removal, byte/count bounds, long-ID request groups, visible restart, paired citation presentation across page boundaries; indexed pending inbox in standard React/Flutter surfaces | Oversized structured approval review; custom consumer inbox placement; deferred source reader |
-| Sending | Streaming wake-ups, exact durable intent, stop, retry, requested-turn controls, account isolation | Expanded reconnect/worker-restart matrix and background domain-change notifications |
-| Local state | Scoped durable text drafts, compare-and-swap, scroll positions, teardown flushes | Unsent file reload recovery, exceptional aggregate upload/draft bounds, browser deletion cleanup |
-| Canonical execution | Display is separate from canonical admission, checkpoints and model input; indexed recovery discovery, fresh authorization per bounded batch, shared four-worker recovery cap, fair scheduling, durable approval wake-ups, paged trusted-scope discovery and graceful worker drain | Provider-context policy/memory bounds; context-cache retirement and broader forced-restart qualification |
-| Scale | Synthetic 20k/100k storage tests, real PostgreSQL 30-connection workload over 1.8M events; standard production React workspace HTTP/render/memory metrics, Flutter offscreen render/VM memory budgets | Native device frame qualification; expanded mixed activity/writer workloads |
-| Adoption | Three web/server contracts and three mobile entrypoint compiles | Full consumer behavior matrix, published-pin install/build checks and authorized release |
+| Display and related activity | Bounded complete messages, stale cancellation, anchors, virtualization, explicit large content, paged pending inbox and verified approval review | Custom app placement and domain formatting |
+| Sending and recovery | Streaming, stop/retry/reconnect, durable admission, exact receipts, approval restarts, competing leases, graceful drain, authorization and account isolation | Deployed failover/network qualification for each environment |
+| Local state | Durable text/files and positions, bounded ownership, exact admission cleanup, deletion fences and expired-upload correction | Host encrypted storage/logout policy and custom upload adapter adoption |
+| Canonical execution | Separate canonical input and display, bounded provider text policy, safe concurrent-change revalidation, one unchanged checkpoint read | Cold canonical decode/prior-file catalogs still scale with saved state |
+| Scale | 20k/100k event fixtures, real PostgreSQL 30-connection isolated workloads, HTTP bytes, production React rendering/heap and offscreen Flutter VM/render budgets | Physical-device frames and actual production workload capacity |
+| Compatibility | Full JS/Dart/Flutter suites and all three web/server/mobile source contracts | Published full-SHA installs with matching locks, migration and authorized deployment |
 
-One concrete background audit item: Spartan's web resource-refresh hook observes
-completed tool records. Hidden paged sessions release their bodies and primarily
-observe scalar controls. Completion notification must remain reliable without
-requiring a hidden full transcript. This behavior must be qualified before adoption.
+Spartan's web resource-refresh integration now uses the SDK workspace settlement
+notification. It revalidates mounted data when background work settles without
+reading hidden tool bodies; the contract register accepts that general
+revalidation hint. Initial saved history and older-page loads do not trigger it.
+The previous completed-result hook remains the compatibility fallback for older
+SDKs. Runtime-keyed weak bookkeeping prevents one account's old chat identity
+from leaking into another account's fallback observer. Local source changes
+still require future authorized SDK dependency adoption.
+
+Flutter draft retention is now qualified locally, including storage failure and
+callbacks that outlive the editor. Defaults are eight idle editor instances,
+64 KiB per text draft, 32 retained text drafts/snapshots with 512 KiB total UTF-8
+content, 64 selected files / 64 MiB across the account, and two concurrent host
+upload futures. Empty idle editors can be evicted without a storage adapter.
+Rejected edits and file replacements preserve the existing work and expose a
+capacity error. Pending sends, slow saves and cancelled uploads stay charged
+until their actual callbacks settle. A selected file is converted to immutable
+upload metadata/bytes once, preserving exact retries without repeated render-time
+byte copies. These are retained-content budgets, not a total heap limit.
+
+Text uses the account's durable draft store. Native unsent file persistence is
+now available through the optional `HandrailKeyValueAttachmentDraftStore`, backed
+by host encrypted metadata and binary callbacks. The standard workspace/factory
+restores the selected conversation, persists upload identity before network work,
+and reuses ready references after recreation. Unconfigured hosts retain the
+existing account-memory behavior. Each app still needs explicit encrypted-adapter
+configuration and native qualification when it adopts a published SDK SHA.
+See `flutter-draft-retention-qualification.json` for the focused tests, analysis
+and three real mobile source compiles. No dependency pins or locks were changed.
+
+Browser deletion cleanup now runs after a validated server deletion response.
+The standard IndexedDB adapter atomically removes that chat's pending intent,
+draft, files and position and retains only its immutable deleted identity. Old tabs
+cannot recreate the rows; unrelated chats and account/API scopes remain intact.
+The runtime registry and picker treat a device cleanup failure as an already
+completed remote deletion, and the shared picker offers a device-only retry.
+Custom stores must implement `eraseConversation`; custom deletion UI should
+handle `ConversationLocalErasureError`. The API document records the version-4
+IndexedDB upgrade and rollback restriction. Local Chromium qualification is
+recorded in `local-erasure-browser-qualification.json`; it does not use an app
+preview or production data.
+
+The browser's standard SDK uploader now has account-owned file drafts. This fixes
+the previous composer cleanup that removed selections on chat switch/unmount.
+`attachment-draft-browser-qualification.json` exercises the real standard React
+workspace, account-scoped IndexedDB, and local HTTP upload: one upload across
+switches, transcript-cache eviction and reload, exact source/key preservation,
+account isolation, and explicit removal surviving reload. Storage and owner tests
+also cover quota rollback, cross-tab replacement, callback settlement, and late
+send admission after an account change. These are local synthetic proofs.
+
+All three inspected web integrations currently omit durable `pendingStore`
+configuration; omission intentionally provides account-memory retention only.
+For later adoption, construct one `IndexedDBApplicationConversationPendingStore`
+per stable authenticated account AND API endpoint, pass it to the client/launcher,
+and dispose the client before closing it. Account changes must replace both.
+Apply the host's logout erasure policy explicitly; never use a token as the scope.
+Hitcents and Spartan already use the standard SDK uploader and will obtain owned
+file drafts through the new client after the authorized SHA/lock upgrade.
+
+Mills currently passes a custom `uploaderForConversation`. Convert its existing
+authorized upload route into `attachmentUploadAdapter` so draft ownership and
+queue limits stay in the SDK. Preserve its sole-conversation policy and stricter
+intake limits. Its current upload function creates fresh intent/completion keys;
+the adoption must carry the SDK's exact selection key through both stages and
+qualify server replay, rather than claiming reload idempotency from the browser
+alone. The additive adapter seam is implemented/tested in this SDK; this change
+does not modify the installed Mills route or dependency pin.
+
+The browser process-loss boundary now has an exact device-origin receipt. The
+standard composer saves the persisted text revision and stable file IDs with
+pending admission; a restarted client removes only those identities after
+confirmed replay. Newer edits, even identical text or file bytes, remain. Failed
+cleanup keeps the original journal and offers retry without changing server
+mutation/start identities. Real Chromium qualification covers interrupted file
+cleanup, reload, newer text/file edits, and successful exact replay; no local
+receipt reaches server bodies. Local journal version 2 is required for receipts;
+old version-1 journals remain readable. Older SDKs reject version 2, so preserve
+pending journals and use a compatible client during rollback. See the API guide
+for headless/custom store integration. Flutter now shares version-2 origin
+receipts and account-owned replay cleanup. Its optional native attachment store
+now makes source bytes and ready references durable. Metadata-only accepted
+cleanup works without opening the originating chat; permanent deletion fences
+late writers. Store writes use revision comparison, so competing editors or
+uncertain commits require explicit reload instead of replacing unseen work.
+The Flutter repository's `docs/native-attachment-draft-qualification.json` records
+source-level tests and consumer compiles. Physical-device encrypted-store
+qualification is a later adoption obligation.
 
 Provider-input audit: Hitcents' `native-request.ts` already keeps at most twenty
 historical text messages / 24,000 characters. Mills calls the shared saved-turn
 preparer with the same defaults, plus its document limits and text redaction.
 Spartan keeps thirty input messages through `AEGIS_MAXIMUM_INPUT_MESSAGES`, with
 its own authorized file materialization. These policies are independent of the
-display window and must stay independent. Remaining memory work is in canonical
-replay/preparation: the shared preparer currently copies all message metadata and
-serializes the full before/after message state for concurrent-change detection,
-and its complete prior-file catalog grows with retained attachments. A bounded
-replacement must preserve exact admitted input, file authorization and concurrent
-change detection; taking the visible browser page as model input would be wrong.
+display window and must stay independent. The shared preparer now avoids a second replay when the canonical head is unchanged,
+uses a streaming equality token instead of whole-transcript JSON, and detaches
+selected text from parsed checkpoint backing storage before asynchronous host
+callbacks. Changed heads still receive full admission/history revalidation.
+Replay reads are paged and cancellable. Historical redaction is a pure callback
+and stops once the configured message quota is filled. Current input remains
+required and prior file identities remain available.
+
+See `provider-preparation-qualification.json` and the repeatable benchmark script.
+Cold canonical loading and the complete prior-file catalog still scale with
+retained state; these costs are separate from bounded display reads. Further
+indexed provider-context/catalog work must preserve the admitted input, file
+authorization and concurrent-change semantics. Visible browser pages are never
+used as a substitute for canonical model input.
 
 ## Later release procedure (requires separate authorization)
 
-1. Finish the open feature and scaling checks above, and freeze the tested SDK
-   source. Record benchmark environment, concurrent connections, wire bytes,
-   render costs and retained heap separately. Synthetic single-connection PGlite
+1. Review and freeze the locally tested SDK source. Preserve the acceptance
+   artifacts and rerun relevant checks if the source changes. Record benchmark
+   environment, connections, wire bytes, render costs and retained heap separately. Synthetic single-connection PGlite
    timing must not be presented as production concurrency.
 2. Commit/release both SDK repositories only after authorization. Resolve the
    actual public HTTPS Git full commit SHAs. Use those exact frozen revisions in
@@ -159,3 +253,23 @@ application's custom approval surface. Custom Flutter hosts should place
 `HandrailPendingApprovalInbox(binding: controller.approvals.uiBinding)` outside
 the scrolling transcript during future authorized adoption. Dependency pins and
 production data are unchanged by this continuation.
+
+
+## Bounded approval review qualification (local continuation)
+
+Standard web/Flutter approval review now supports one verified argument section
+at a time, explicit acknowledgement, scoped cancellation, version checks and
+compact decision receipts. Native uncertain decisions retain their exact intent
+through restart. The real Dart-to-JavaScript gateway test uses PostgreSQL stores,
+oversized hash-bound tool arguments, a lost decision response and subsequent
+execution advancement before replay. Existing custom review/permission callbacks
+remain authoritative.
+
+See `approval-review-qualification.json` and
+`approval-review-browser-qualification.json` for scoped test/compile evidence.
+The production React browser fixture at 320px and 390px used a maximum 33,325-byte
+section and a 222-byte decision receipt, retained one section and made no full
+review-pair or extra transcript-page reads. These are local fixtures, separate
+from the production latency observation and database benchmarks. This closes the
+standard oversized-review gap. The final acceptance map above records the
+subsequent full regression and recovery audit. No dependency pins, lockfiles, production data or deployments changed.
