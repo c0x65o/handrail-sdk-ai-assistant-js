@@ -7,6 +7,8 @@ import type { ConversationDisplayPage, ConversationDisplayRecord } from "../src/
 import type { ConversationTransport } from "../src/transports/types.js";
 import type { AppendMutationsInput, AppendMutationsResult } from "../src/sync/types.js";
 import { InMemoryConversationLocalStateStore, type ConversationLocalStateStore } from "../src/client/local-state.js";
+import { applicationConversationPresentation } from "../src/client/application-runtime.js";
+import { relatedViews } from "../src/client/related-records.js";
 
 const sessions: ApplicationConversationSession<{ text: string }>[] = [];
 afterEach(() => { for (const session of sessions.splice(0)) session.dispose(); vi.useRealTimers(); });
@@ -93,6 +95,119 @@ it("opens only the newest message page, bounds history while scrolling, and evic
   expect(f.session.getSnapshot()).not.toHaveProperty("processed_event_ids");
 });
 
+it("retains earlier activity pages within hard bounds, refreshes loaded records and exposes a restart", async () => {
+  const f = fixture(30);
+  f.setTurn({ turnId: "turn", revision: 30, status: "running", remoteMayStillBeRunning: true, error: null });
+  const base = f.reader.page;
+  const tool = (id: number, revision = 30): ConversationDisplayRecord => ({ kind: "tool", id: `tool-${id}`, turnId: "turn",
+    revision, bytes: 200, deferred: false, value: { tool_call_id: `tool-${id}`, turn_id: "turn", name: `Tool ${id}`, status: "completed" } as never });
+  let first = 90;
+  f.reader.page = vi.fn(async (input, signal) => input.view?.type !== "context" ? base(input, signal)
+    : { ...f.page(Array.from({ length: 30 }, (_, index) => tool((input.cursor ? Number(input.cursor) : first) + index))),
+      nextCursor: input.cursor === "0" ? null : String((input.cursor ? Number(input.cursor) : first) - 30) });
+  await f.session.initialize(); await f.session.loadMoreRelated();
+  expect(f.session.getSnapshot().related).toHaveLength(60);
+  expect(f.session.getSnapshot().related.map(row => row.id)).toContain("tool-119");
+  await f.session.loadMoreRelated(); await f.session.loadMoreRelated();
+  expect(f.session.getSnapshot().related).toHaveLength(90);
+  expect(f.session.getSnapshot().relatedTruncated).toBe(true);
+  // A live update outside the latest activity page still updates/removes cached records.
+  f.setTurn({ turnId: "turn", revision: 31, status: "running", remoteMayStillBeRunning: true, error: null });
+  vi.mocked(f.reader.changes).mockResolvedValue({ ...f.page([{ ...tool(70, 31), deleted: true, value: null }]), throughRevision: 31 });
+  await f.session.refresh();
+  expect(f.session.getSnapshot().related.some(row => row.id === "tool-70")).toBe(false);
+  expect(f.session.getSnapshot().related.some(row => row.id === "tool-30")).toBe(true);
+  first = 90;
+  await f.session.showLatestRelated();
+  expect(f.session.getSnapshot().related).toHaveLength(30);
+  expect(f.session.getSnapshot().relatedTruncated).toBe(false);
+});
+
+it("does not resurrect activity when a changes read overtakes an older page", async () => {
+  const f = fixture(2), base = f.reader.page;
+  const tool: ConversationDisplayRecord = { kind: "tool", id: "gone", revision: 2, turnId: null,
+    bytes: 100, deferred: false, value: { tool_call_id: "gone", status: "completed" } as never };
+  const held = deferred<ConversationDisplayPage>();
+  f.reader.page = vi.fn(async (input, signal) => input.view?.type !== "context" ? base(input, signal)
+    : input.cursor ? held.promise : { ...f.page([tool]), nextCursor: "older" });
+  await f.session.initialize();
+  const more = f.session.loadMoreRelated();
+  vi.mocked(f.reader.changes).mockResolvedValue({ ...f.page([{ ...tool, revision: 3, value: null, deleted: true }]),
+    revision: 3, canonicalRevision: 3, throughRevision: 3 });
+  await f.session.window.refresh();
+  held.resolve(f.page([tool])); await more;
+  expect(f.session.getSnapshot().related).toEqual([]);
+  // A lagging response read after the watermark advanced must also be rejected.
+  vi.mocked(f.reader.page).mockImplementation(async (input, signal) => input.view?.type !== "context" ? base(input, signal) : f.page([tool]));
+  await expect(f.session.refresh()).rejects.toMatchObject({ code: "stale_activity", retryable: true });
+  expect(f.session.getSnapshot().related).toEqual([]);
+});
+
+it("exposes citations only with a retained source and reports incomplete citation presentation", async () => {
+  const f = fixture(2), base = f.reader.page;
+  const citation: ConversationDisplayRecord = { kind: "citation", id: "c", revision: 2, turnId: null,
+    bytes: 150, deferred: false, value: { citation_id: "c", source_id: "s", order: 0,
+      target: { type: "assistant_message", message_id: "message-2" } } as never };
+  const source: ConversationDisplayRecord = { kind: "source", id: "s", revision: 2, turnId: null,
+    bytes: 100, deferred: false, value: { source_id: "s", label: "Source", type: "record" } as never };
+  f.reader.page = vi.fn(async (input, signal) => input.view?.type !== "context" ? base(input, signal)
+    : { ...f.page(input.cursor ? [source] : [citation]), nextCursor: input.cursor ? null : "source" });
+  const view = () => applicationConversationPresentation(f.session.getSnapshot());
+  await f.session.initialize();
+  expect(view().citations).toEqual([]); expect(view().unresolvedCitationCount).toBe(1);
+  await f.session.loadMoreRelated();
+  expect(view().citations).toEqual([citation.value]); expect(view().unresolvedCitationCount).toBe(0);
+  vi.mocked(f.reader.changes).mockResolvedValue({ ...f.page([{ ...source, revision: 3, deleted: true, value: null }]),
+    revision: 3, canonicalRevision: 3, throughRevision: 3 });
+  await f.session.window.refresh();
+  expect(view().citations).toEqual([]); expect(view().unresolvedCitationCount).toBe(1);
+  expect(view().citation_sources).toEqual([]);
+});
+
+it("publishes activity-page errors and clears all presentation after access revocation", async () => {
+  const f = fixture(2), base = f.reader.page;
+  f.reader.page = vi.fn(async (input, signal) => input.view?.type !== "context" ? base(input, signal)
+    : { ...f.page([]), nextCursor: "more" });
+  await f.session.initialize();
+  vi.mocked(f.reader.page).mockRejectedValueOnce({ resourceCode: "forbidden", retryable: false });
+  await expect(f.session.loadMoreRelated()).rejects.toMatchObject({ code: "forbidden", retryable: false });
+  expect(f.session.getSnapshot().window.records).toEqual([]);
+  expect(f.session.getSnapshot().related).toEqual([]);
+  expect(f.session.getSnapshot().control).toBeNull();
+  expect(f.session.getSnapshot().error?.code).toBe("forbidden");
+});
+
+it("bounds large activity pages by serialized bytes independently of row count", async () => {
+  const f = fixture(2), base = f.reader.page;
+  let sequence = 0;
+  f.reader.page = vi.fn(async (input, signal) => input.view?.type !== "context" ? base(input, signal)
+    : { ...f.page(Array.from({ length: 2 }, () => ({ kind: "source", id: `source-${++sequence}`, revision: 1,
+      turnId: null, bytes: 30000, deferred: false, value: { text: "x".repeat(30000) } as never }))), nextCursor: String(sequence) });
+  await f.session.initialize();
+  for (let i = 0; i < 6; i++) await f.session.loadMoreRelated();
+  const snapshot = f.session.getSnapshot();
+  expect(snapshot.related.length).toBeLessThan(9);
+  expect(new TextEncoder().encode(JSON.stringify(snapshot.related)).byteLength).toBeLessThanOrEqual(262144);
+  expect(snapshot.relatedTruncated).toBe(true);
+});
+
+it("pages long context references on demand without exceeding the gateway request budget", async () => {
+  const f = fixture(30), base = f.reader.page;
+  for (let i = 0; i < f.records.length; i++) f.records[i] = { ...f.records[i]!, id: `${"界".repeat(500)}-${i}` };
+  f.reader.page = vi.fn(async (input, signal) => input.view?.type !== "context" ? base(input, signal) : f.page([]));
+  await f.session.initialize();
+  const contexts = () => vi.mocked(f.reader.page).mock.calls.map(([input]) => input).filter(input => input.view?.type === "context");
+  expect(contexts()).toHaveLength(1);
+  for (let i = 0; f.session.getSnapshot().hasMoreRelated && i < 40; i++) await f.session.loadMoreRelated();
+  expect(f.session.getSnapshot().hasMoreRelated).toBe(false);
+  const references = contexts().flatMap(input => input.view?.type === "context" ? input.view.messageIds : []);
+  expect(new Set(references)).toEqual(new Set(f.records.map(record => record.id)));
+  const views = relatedViews(f.records.map(record => record.id), "界".repeat(512));
+  for (const view of views) expect(new TextEncoder().encode(JSON.stringify({ operation: "page", input: {
+    conversationId: "界".repeat(512), view, cursor: "x".repeat(4096), limit: 30, maximumBytes: 65536,
+  } })).byteLength).toBeLessThanOrEqual(8192);
+});
+
 it("restores one indexed anchor page and flushes the latest position when its session closes", async () => {
   const storage = new InMemoryConversationLocalStateStore();
   await storage.writePosition("chat", { messageId: "message-80", generation: 0, offset: -20, following: false });
@@ -103,9 +218,20 @@ it("restores one indexed anchor page and flushes the latest position when its se
   expect(f.session.getPosition()).toMatchObject({ offset: -20, following: false });
   f.session.savePosition({ messageId: "message-90", generation: 0, offset: -5, following: false });
   f.session.dispose();
+  expect(f.session.getPosition()).toBeUndefined();
   await vi.waitFor(async () => expect(await storage.readPosition("chat")).toMatchObject({ messageId: "message-90" }));
   const reopened = fixture(200, storage); await reopened.session.initialize();
   expect(reopened.session.getSnapshot().window.records[0]?.id).toBe("message-90");
+});
+
+it("does not hold the transcript behind a blocked local position read", async () => {
+  const storage = new InMemoryConversationLocalStateStore();
+  vi.spyOn(storage, "readPosition").mockImplementation(() => new Promise(() => {}));
+  const f = fixture(200, storage);
+  await f.session.initialize();
+  expect(f.session.getSnapshot().window.records).toHaveLength(30);
+  expect(f.session.getSnapshot().window.records.at(-1)?.id).toBe("message-200");
+  expect(vi.mocked(f.reader.page).mock.calls[0]![0].anchor).toBeUndefined();
 });
 
 it("captures content and request before asynchronous storage or refresh; retains exact intent before writes", async () => {

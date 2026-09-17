@@ -90,6 +90,7 @@ export async function createRequestScopedMcpSession<TContext>(
     throw new TypeError("timeoutMilliseconds is invalid");
   }
   if (await options.authorize({ operation: "discover", context }) !== "allow") throw new TypeError("MCP discovery is not authorized");
+  signal?.throwIfAborted();
   const controller = new AbortController();
   const abort = () => controller.abort(signal?.reason);
   signal?.addEventListener("abort", abort, { once: true });
@@ -101,6 +102,7 @@ export async function createRequestScopedMcpSession<TContext>(
   };
   try {
     client = await options.connect(context, controller.signal);
+    controller.signal.throwIfAborted();
     const listed = await diagnoseAiOperation(options.diagnostics,
       { domain: "mcp", operation: "scoped_list_tools", requestId: connectorId },
       () => client!.listTools({ signal: controller.signal }));

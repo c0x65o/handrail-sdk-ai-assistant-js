@@ -178,7 +178,10 @@ export function createAIRuntimeUsageDelivery(options: {
       timer.unref?.();
     }
   });
-  return Object.freeze({ ready, stop() { stopped = true; if (timer !== null) clearInterval(timer); } });
+  return Object.freeze({ ready, stop(): Promise<void> {
+    stopped = true; if (timer !== null) clearInterval(timer);
+    return running ?? Promise.resolve();
+  } });
 }
 
 /** High-level constructor input with an explicit disabled state when environment configuration is absent. */

@@ -38,6 +38,7 @@ afterAll(async () => { await database.close(); });
 
 it("removes only the authorized canonical history/state and retains business and usage receipts", async () => {
   await seed("finished"); await seed("other"); await seed("finished", "foreign");
+  await client.query("SELECT handrail_ai_wake_approval_recovery('tenant','finished')");
   for (const kind of ["durable_turn", "turn_state", "sync_state"] as const) {
     await persistence.compareAndSetDocument({ tenantId: "tenant", kind, scopeId: "finished", recordId: "record",
       expectedVersion: null, value: { conversationId: "finished", status: "completed", privateText: "remove me" } });
@@ -49,6 +50,8 @@ it("removes only the authorized canonical history/state and retains business and
       expectedVersion: null, value: { receipt: "retain me" } });
   }
   expect(await remove("finished")).toEqual({ status: "deleted" });
+  await client.query("SELECT handrail_ai_wake_approval_recovery('tenant','finished')");
+  expect((await client.query("SELECT conversation_id FROM handrail_ai_approval_recovery WHERE tenant_id='tenant' AND conversation_id='finished'")).rows).toEqual([]);
   expect(await persistence.readEvents("tenant", "finished")).toEqual([]);
   expect(await persistence.readEvents("tenant", "other")).toHaveLength(1);
   expect(await persistence.readEvents("foreign", "finished")).toHaveLength(1);

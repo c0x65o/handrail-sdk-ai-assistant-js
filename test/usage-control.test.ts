@@ -160,7 +160,10 @@ describe("shared usage delivery worker", () => {
     try {
       await vi.advanceTimersByTimeAsync(0);
       expect(flush).toHaveBeenCalledOnce();
-      worker.stop(); release();
+      let stopped = false;
+      const stopping = worker.stop().then(() => { stopped = true; });
+      await Promise.resolve(); expect(stopped).toBe(false);
+      release(); await stopping;
       await worker.ready; await disabled.ready;
       await vi.advanceTimersByTimeAsync(100);
       expect(flush).toHaveBeenCalledOnce();

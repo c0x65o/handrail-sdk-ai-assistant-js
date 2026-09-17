@@ -15,7 +15,7 @@ type Context = HandrailAssistantAuthorizationContext & { role: "admin" | "user" 
 const fact = <T extends string | null>(id: T) => ({ id, source: "server_derived" as const, trust: "authoritative" as const });
 const checkpoint = { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null };
 
-it.each(["role", "session"] as const)("cancels the original worker after a trusted %s change without claiming its live lease", async change => {
+it.each(["role", "session", "instance", "cache-pressure"] as const)("cancels the original worker after a trusted %s change without claiming its live lease", async change => {
   let context: Context = { principalId: "alice", tenantId: "tenant", scopeId: "alice", role: "admin",
     attribution: { organization: fact("org"), project: fact("project"), service_environment: fact("test"),
       known_user: fact("alice"), session: fact("original-session"), automation: fact(null) } };
@@ -45,7 +45,8 @@ it.each(["role", "session"] as const)("cancels the original worker after a trust
   let release!: () => void;
   const cleanup = new Promise<void>(resolve => { release = resolve; });
   const executions: Array<{ context: Context; signal: AbortSignal; finished: boolean }> = [];
-  const assistant = await createHandrailAssistant<Context>({ id: "worker-ownership", workerId: "host-worker",
+  const constructed: Context[] = [];
+  const createAssistant = () => createHandrailAssistant<Context>({ id: "worker-ownership", workerId: "host-worker",
     authorize: () => context, persistence: { attachmentLimits: { maximumBytes: 1000, acceptedMediaTypes: ["text/plain"],
       ttlMilliseconds: 60000 }, persistence: {}, forScope: () => bundle } as unknown as PostgresAssistantPersistence,
     provider: { metadata: { provider_id: "test", model_id: "test", capabilities: {
@@ -53,6 +54,7 @@ it.each(["role", "session"] as const)("cancels the original worker after a trust
       document_input: { supported: false }, provider_context: { supported: false, reason: "provider_not_supported" },
       context_window_tokens: null, max_output_tokens: null,
     } }, createTransport(input) {
+      constructed.push(input.context);
       return createApplicationTurnTransport<StreamEvent, ChatRequest>({ async execute(_request, turn) {
         const execution = { context: input.context, signal: turn.signal, finished: false };
         executions.push(execution);
@@ -65,13 +67,41 @@ it.each(["role", "session"] as const)("cancels the original worker after a trust
       } });
     } },
   });
+  const assistant = await createAssistant();
+  let peer: typeof assistant | undefined;
   try {
     expect((await assistant.handle(new Request("https://assistant.test/capabilities"))).status).toBe(200);
     await vi.waitFor(() => expect(executions).toHaveLength(1));
     const originalLease = (await durableTurns.load(conversationId, turnId))!.record.lease;
-    context = change === "role" ? { ...context, role: "user" }
-      : { ...context, attribution: { ...context.attribution, session: fact("refreshed-session") } };
-    const response = await assistant.handle(new Request("https://assistant.test/turns/cancel", { method: "POST",
+    if (change === "instance") {
+      // Two live hosts can have identical configured worker names and PIDs.
+      peer = await createAssistant();
+      expect((await peer.handle(new Request("https://assistant.test/capabilities"))).status).toBe(200);
+      await peer.recoverPending();
+      expect(executions).toHaveLength(1);
+      expect((await durableTurns.load(conversationId, turnId))!.record.attempt).toBe(1);
+    } else if (change === "cache-pressure") {
+      const original = context;
+      for (let index = 0; index < 40; index++) {
+        context = { ...original, attribution: { ...original.attribution, session: fact(`pressure-${index}`) } };
+        expect((await assistant.handle(new Request("https://assistant.test/capabilities"))).status).toBe(200);
+      }
+      context = original;
+      expect((await assistant.handle(new Request("https://assistant.test/capabilities"))).status).toBe(200);
+      expect(constructed.filter(value => value === original)).toHaveLength(1);
+      expect(executions).toHaveLength(1);
+      expect((await durableTurns.load(conversationId, turnId))!.record.attempt).toBe(1);
+      // The idle early session was evicted and receives a fresh transport.
+      const oldest = constructed.find(value => value.attribution.session?.id === "pressure-0")!;
+      context = oldest;
+      expect((await assistant.handle(new Request("https://assistant.test/capabilities"))).status).toBe(200);
+      expect(constructed.filter(value => value === oldest)).toHaveLength(2);
+      context = original;
+    } else {
+      context = change === "role" ? { ...context, role: "user" }
+        : { ...context, attribution: { ...context.attribution, session: fact("refreshed-session") } };
+    }
+    const response = await (peer ?? assistant).handle(new Request("https://assistant.test/turns/cancel", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId, turnId,
         mutationId: "cancel", idempotencyKey: "cancel", reason: "user" }) }));
     expect(response.status).toBe(200);
@@ -85,6 +115,6 @@ it.each(["role", "session"] as const)("cancels the original worker after a trust
   } finally {
     release();
     await vi.waitFor(() => expect(executions.every(execution => execution.finished)).toBe(true));
-    assistant.stopUsageWorker();
+    await Promise.all([assistant.stopBackgroundWorkers(), peer?.stopBackgroundWorkers()]);
   }
 });

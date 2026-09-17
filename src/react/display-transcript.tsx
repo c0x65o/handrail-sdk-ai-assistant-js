@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type ReactNode } from "react";
 import type { ConversationDisplayWindow, ConversationDisplayWindowSnapshot } from "../client/display-window.js";
 import type { ConversationDisplayRecord } from "../conversation/display-history.js";
+import { ConversationLargeMessage, type ConversationMessageTextReader } from "./large-message.js";
 
 export interface ConversationDisplayPosition {
   readonly messageId: string;
@@ -61,6 +62,7 @@ export interface ConversationDisplayTranscriptProps extends Omit<HTMLAttributes<
   readonly renderMessage: (record: Extract<ConversationDisplayRecord, { kind: "message" }>) => ReactNode;
   /** Oversized records are explicit; opening their bounded content viewer is a separate action. */
   readonly renderDeferred?: (record: ConversationDisplayRecord) => ReactNode;
+  readonly readMessageText?: ConversationMessageTextReader;
   readonly emptyState?: ReactNode;
   readonly children?: ReactNode;
 }
@@ -68,7 +70,9 @@ export interface ConversationDisplayTranscriptProps extends Omit<HTMLAttributes<
 /** A bounded DOM window with upward/downward paging and message-based anchors.
  * It deliberately does not manufacture a partial ConversationState. */
 export function ConversationDisplayTranscript({ controller, conversationId, positions, visible,
-  pollingMilliseconds, manageSelection, onFollowingLatestChange, renderMessage, renderDeferred, emptyState, children, onScroll, ...props }: ConversationDisplayTranscriptProps) {
+  pollingMilliseconds, manageSelection, onFollowingLatestChange, renderMessage, renderDeferred, readMessageText, emptyState, children, onScroll, ...props }: ConversationDisplayTranscriptProps) {
+  const [expanded, setExpanded] = useState<{ controller: ConversationDisplayWindow; conversationId: string; id: string } | null>(null);
+  useEffect(() => { setExpanded(null); }, [controller, conversationId]);
   const local = useRef({ controller, values: new Map<string, ConversationDisplayPosition>() });
   if (local.current.controller !== controller) local.current = { controller, values: new Map() };
   const localStore = useRef<ConversationDisplayPositionStore>({
@@ -109,6 +113,9 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       setAway(!following.current);
     }
     if (previousVersion.current === state.version || !state.records.length) return;
+    if (anchor.current && anchor.current.generation !== state.generation) {
+      anchor.current = undefined; following.current = true; setAway(false);
+    }
     if (previousVersion.current === -1 && conversationId) {
       const restored = store.get(conversationId);
       if (restored && restored.generation === state.generation) { anchor.current = restored; following.current = restored.following; setAway(!restored.following); }
@@ -172,7 +179,12 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       {state.hasOlder && <button type="button" disabled={state.loading !== null} onClick={() => load("older")}>Load older messages</button>}
       {(state.status === "loading" || state.status === "preparing") && <p role="status">{state.status === "preparing" ? "Preparing conversation history…" : "Loading conversation…"}</p>}
       {state.records.map(record => record.kind === "message" && <article key={record.id} data-display-message={record.id}>
-        {record.deferred ? renderDeferred?.(record) ?? <p>This message is too large for the history preview.</p> : renderMessage(record)}
+        {record.deferred ? renderDeferred?.(record) ?? (record.kind === "message" && readMessageText && conversationId
+          ? <ConversationLargeMessage conversationId={conversationId} generation={state.generation} record={record} read={readMessageText}
+              expanded={expanded?.controller === controller && expanded.conversationId === conversationId && expanded.id === record.id}
+              onOpen={() => setExpanded({ controller, conversationId, id: record.id })} onClose={() => setExpanded(null)}
+              onRefresh={() => { void controller.refresh().catch(() => undefined); }}/>
+          : <p>This message is too large for the history preview.</p>) : renderMessage(record)}
       </article>)}
       {state.status === "ready" && state.records.length === 0 ? emptyState : null}
       {state.error && <div role="alert"><p>Conversation history could not be loaded.</p>

@@ -1,0 +1,55 @@
+{
+  "environment": {
+    "postgres": "postgres (PostgreSQL) 15.19 (Debian 15.19-0+deb12u1)",
+    "node": "v22.23.1",
+    "connection": "owned disposable local Unix socket",
+    "nodeMaximumRssKiB": 236140
+  },
+  "sizes": [
+    {
+      "retainedFrames": 20000,
+      "legacySingleRead": {
+        "milliseconds": 99.56922200000008,
+        "bytes": 3304875
+      },
+      "metadataSamples": 10,
+      "metadataP95Milliseconds": 3.08730300000002,
+      "metadataMaximumBytes": 90,
+      "heapBefore": 8717408,
+      "heapAfter": 8764136,
+      "unauthorizedBodyLoads": 0
+    },
+    {
+      "retainedFrames": 100000,
+      "legacySingleRead": {
+        "milliseconds": 450.614055,
+        "bytes": 16744880
+      },
+      "metadataSamples": 10,
+      "metadataP95Milliseconds": 1.928490000000238,
+      "metadataMaximumBytes": 90,
+      "heapBefore": 8823112,
+      "heapAfter": 8823320,
+      "unauthorizedBodyLoads": 0
+    }
+  ],
+  "competingWorkers": 2,
+  "effectExecutions": 1,
+  "lockedLegacyRowsSkipped": true,
+  "repeatedMigrationPreservedState": true,
+  "postDiscoveryTerminalDispatches": 0,
+  "approvalClaimsWon": 1,
+  "newerApprovalDecisionSurvivedOldAck": true,
+  "budgets": {
+    "metadataPageBytes": 1024,
+    "localMetadataReadMaximumMs": 100,
+    "unauthorizedBodyLoads": 0,
+    "competingWorkerEffects": 1
+  },
+  "limitations": [
+    "Synthetic adapter measurements, not HTTP or production latency.",
+    "Legacy latency is one baseline sample per size; metadata uses ten samples.",
+    "The large retained frame fixtures are never executed; competing workers use a separate small admitted record.",
+    "Tests local leases/CAS and metadata lifecycle, not host-wide recovery scheduling or graceful process shutdown."
+  ]
+}

@@ -1,0 +1,413 @@
+{
+  "environment": {
+    "engine": "postgres (PostgreSQL) 15.19 (Debian 15.19-0+deb12u1)",
+    "node": "v22.23.1",
+    "connection": "private local Unix socket; disposable cluster",
+    "sharedBuffersMiB": 64,
+    "workMemMiB": 4,
+    "durability": "default fsync and synchronous_commit enabled",
+    "nodeMaximumRssKiB": 120612
+  },
+  "reports": [
+    {
+      "events": 20000,
+      "backfill": {
+        "steps": 20,
+        "milliseconds": 754.764
+      },
+      "list": {
+        "samples": 30,
+        "p50Milliseconds": 0.956,
+        "p95Milliseconds": 1.115,
+        "databaseP95Milliseconds": 0.9,
+        "maximumWireBytes": 1240,
+        "maximumDatabaseBytes": 1156,
+        "maximumQueries": 1,
+        "maximumAuthorizationQueries": 0
+      },
+      "firstPage": {
+        "samples": 30,
+        "p50Milliseconds": 2.984,
+        "p95Milliseconds": 3.474,
+        "databaseP95Milliseconds": 2.543,
+        "maximumWireBytes": 59128,
+        "maximumDatabaseBytes": 60680,
+        "maximumQueries": 3,
+        "maximumAuthorizationQueries": 2
+      },
+      "catalogActivityIndex": {
+        "beforeMilliseconds": 27.523,
+        "afterMilliseconds": 1.689,
+        "beforePlan": {
+          "executionMilliseconds": 23.179,
+          "nodes": [
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_conversations",
+              "rows": 5,
+              "loops": 1,
+              "sharedHitBlocks": 1,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_documents",
+              "rows": 0,
+              "loops": 1,
+              "sharedHitBlocks": 0,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_events",
+              "rows": 4000,
+              "loops": 5,
+              "sharedHitBlocks": 6905,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_events",
+              "rows": 4000,
+              "loops": 5,
+              "sharedHitBlocks": 6905,
+              "sharedReadBlocks": 0
+            }
+          ]
+        },
+        "afterPlan": {
+          "executionMilliseconds": 0.113,
+          "nodes": [
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_conversations",
+              "rows": 5,
+              "loops": 1,
+              "sharedHitBlocks": 1,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_documents",
+              "rows": 0,
+              "loops": 1,
+              "sharedHitBlocks": 0,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Index Only Scan",
+              "relation": "handrail_ai_events",
+              "index": "handrail_ai_events_activity",
+              "rows": 0,
+              "loops": 5,
+              "sharedHitBlocks": 16,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Index Only Scan",
+              "relation": "handrail_ai_events",
+              "index": "handrail_ai_events_activity",
+              "rows": 0,
+              "loops": 5,
+              "sharedHitBlocks": 16,
+              "sharedReadBlocks": 0
+            }
+          ]
+        }
+      },
+      "firstPagePlan": {
+        "executionMilliseconds": 0.538,
+        "nodes": [
+          {
+            "node": "Index Only Scan",
+            "relation": "handrail_ai_events",
+            "index": "handrail_ai_events_pkey",
+            "rows": 1,
+            "loops": 1,
+            "sharedHitBlocks": 4,
+            "sharedReadBlocks": 0
+          },
+          {
+            "node": "Seq Scan",
+            "relation": "handrail_ai_documents",
+            "rows": 0,
+            "loops": 1,
+            "sharedHitBlocks": 0,
+            "sharedReadBlocks": 0
+          },
+          {
+            "node": "Seq Scan",
+            "relation": "handrail_ai_display_heads",
+            "rows": 1,
+            "loops": 1,
+            "sharedHitBlocks": 1,
+            "sharedReadBlocks": 0
+          },
+          {
+            "node": "Seq Scan",
+            "relation": "handrail_ai_display_records",
+            "rows": 200,
+            "loops": 1,
+            "sharedHitBlocks": 13,
+            "sharedReadBlocks": 0
+          },
+          {
+            "node": "Seq Scan",
+            "relation": "handrail_ai_display_records",
+            "rows": 200,
+            "loops": 1,
+            "sharedHitBlocks": 13,
+            "sharedReadBlocks": 0
+          }
+        ]
+      }
+    },
+    {
+      "events": 100000,
+      "backfill": {
+        "steps": 100,
+        "milliseconds": 4356.737
+      },
+      "list": {
+        "samples": 30,
+        "p50Milliseconds": 1.174,
+        "p95Milliseconds": 1.593,
+        "databaseP95Milliseconds": 1.223,
+        "maximumWireBytes": 1245,
+        "maximumDatabaseBytes": 1161,
+        "maximumQueries": 1,
+        "maximumAuthorizationQueries": 0
+      },
+      "firstPage": {
+        "samples": 30,
+        "p50Milliseconds": 3.739,
+        "p95Milliseconds": 4.141,
+        "databaseP95Milliseconds": 2.879,
+        "maximumWireBytes": 59139,
+        "maximumDatabaseBytes": 60704,
+        "maximumQueries": 3,
+        "maximumAuthorizationQueries": 2
+      },
+      "catalogActivityIndex": {
+        "beforeMilliseconds": 299.108,
+        "afterMilliseconds": 1.633,
+        "beforePlan": {
+          "executionMilliseconds": 320.09,
+          "nodes": [
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_conversations",
+              "rows": 5,
+              "loops": 1,
+              "sharedHitBlocks": 1,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_documents",
+              "rows": 0,
+              "loops": 1,
+              "sharedHitBlocks": 0,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_events",
+              "rows": 20000,
+              "loops": 5,
+              "sharedHitBlocks": 28340,
+              "sharedReadBlocks": 14045
+            },
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_events",
+              "rows": 20000,
+              "loops": 5,
+              "sharedHitBlocks": 28500,
+              "sharedReadBlocks": 13885
+            }
+          ]
+        },
+        "afterPlan": {
+          "executionMilliseconds": 0.201,
+          "nodes": [
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_conversations",
+              "rows": 5,
+              "loops": 1,
+              "sharedHitBlocks": 1,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Seq Scan",
+              "relation": "handrail_ai_documents",
+              "rows": 0,
+              "loops": 1,
+              "sharedHitBlocks": 0,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Index Only Scan",
+              "relation": "handrail_ai_events",
+              "index": "handrail_ai_events_activity",
+              "rows": 0,
+              "loops": 5,
+              "sharedHitBlocks": 16,
+              "sharedReadBlocks": 0
+            },
+            {
+              "node": "Index Only Scan",
+              "relation": "handrail_ai_events",
+              "index": "handrail_ai_events_activity",
+              "rows": 0,
+              "loops": 5,
+              "sharedHitBlocks": 16,
+              "sharedReadBlocks": 0
+            }
+          ]
+        }
+      },
+      "firstPagePlan": {
+        "executionMilliseconds": 0.288,
+        "nodes": [
+          {
+            "node": "Index Only Scan",
+            "relation": "handrail_ai_events",
+            "index": "handrail_ai_events_pkey",
+            "rows": 1,
+            "loops": 1,
+            "sharedHitBlocks": 4,
+            "sharedReadBlocks": 0
+          },
+          {
+            "node": "Seq Scan",
+            "relation": "handrail_ai_documents",
+            "rows": 0,
+            "loops": 1,
+            "sharedHitBlocks": 0,
+            "sharedReadBlocks": 0
+          },
+          {
+            "node": "Seq Scan",
+            "relation": "handrail_ai_display_heads",
+            "rows": 1,
+            "loops": 1,
+            "sharedHitBlocks": 1,
+            "sharedReadBlocks": 0
+          },
+          {
+            "node": "Index Scan",
+            "relation": "handrail_ai_display_records",
+            "index": "handrail_ai_display_messages",
+            "rows": 31,
+            "loops": 1,
+            "sharedHitBlocks": 4,
+            "sharedReadBlocks": 0
+          },
+          {
+            "node": "Index Scan",
+            "relation": "handrail_ai_display_records",
+            "index": "handrail_ai_display_records_pkey",
+            "rows": 1,
+            "loops": 8,
+            "sharedHitBlocks": 24,
+            "sharedReadBlocks": 0
+          }
+        ]
+      }
+    }
+  ],
+  "concurrent": {
+    "tenants": 30,
+    "fullCanonicalEvents": 1800000,
+    "backendConnections": 30,
+    "rounds": 10,
+    "totalMilliseconds": 491.394,
+    "burstP95Milliseconds": 55.373,
+    "list": {
+      "samples": 300,
+      "p50Milliseconds": 6.677,
+      "p95Milliseconds": 13.263,
+      "databaseP95Milliseconds": 12.871,
+      "maximumWireBytes": 1225,
+      "maximumDatabaseBytes": 1141,
+      "maximumQueries": 1,
+      "maximumAuthorizationQueries": 0
+    },
+    "firstPage": {
+      "samples": 300,
+      "p50Milliseconds": 26.413,
+      "p95Milliseconds": 37.767,
+      "databaseP95Milliseconds": 36.905,
+      "maximumWireBytes": 59111,
+      "maximumDatabaseBytes": 60676,
+      "maximumQueries": 3,
+      "maximumAuthorizationQueries": 2
+    }
+  },
+  "nodeMemory": [
+    {
+      "phase": "schema-ready",
+      "rss": 69324800,
+      "heapTotal": 18194432,
+      "heapUsed": 8465296,
+      "external": 2201893,
+      "arrayBuffers": 33027
+    },
+    {
+      "phase": "prepared-20000",
+      "rss": 113766400,
+      "heapTotal": 45719552,
+      "heapUsed": 9302176,
+      "external": 2791196,
+      "arrayBuffers": 33977
+    },
+    {
+      "phase": "prepared-100000",
+      "rss": 120242176,
+      "heapTotal": 51486720,
+      "heapUsed": 8720872,
+      "external": 2780684,
+      "arrayBuffers": 33982
+    },
+    {
+      "phase": "concurrency-ready",
+      "rss": 82022400,
+      "heapTotal": 22126592,
+      "heapUsed": 9110168,
+      "external": 3173288,
+      "arrayBuffers": 82231
+    },
+    {
+      "phase": "concurrency-complete",
+      "rss": 113045504,
+      "heapTotal": 47292416,
+      "heapUsed": 11034088,
+      "external": 7158061,
+      "arrayBuffers": 2738101
+    }
+  ],
+  "postgresMemory": {
+    "sampledProcesses": 31,
+    "proportionalSetKiB": 156295,
+    "privateDirtyKiB": 101504
+  },
+  "budgets": {
+    "metadataWireBytes": 8192,
+    "defaultPageWireBytes": 65536,
+    "listQueries": 1,
+    "pageQueriesIncludingAuthorization": 3,
+    "steadyStateReadP95Milliseconds": 50,
+    "concurrentReadP95Milliseconds": 500,
+    "preparedNodeHeapBytes": 33554432,
+    "retainedConcurrentHeapGrowthBytes": 16777216
+  },
+  "limitations": [
+    "Synthetic local PostgreSQL adapter timing; excludes HTTP, authentication middleware and production network.",
+    "30 real database connections share one host; not a production capacity or 30-server deployment claim.",
+    "PostgreSQL PSS samples cover the postmaster and client backends; background workers and OS cache are excluded.",
+    "Wire bytes are exact serialized SDK envelopes, not captured HTTP bytes. Browser/Flutter render costs are separate.",
+    "Concurrent projection fixtures are copied from the two validated backfills; concurrent writer/recovery correctness is tested separately."
+  ]
+}

@@ -25,6 +25,9 @@ export const postgresDisplayHistorySchema = Object.freeze([
     PRIMARY KEY (tenant_id,conversation_id,kind,record_id))`,
   `ALTER TABLE handrail_ai_display_records ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false`,
   `ALTER TABLE handrail_ai_display_records ADD COLUMN IF NOT EXISTS control_payload text`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_display_pending_approvals ON handrail_ai_display_records
+    (tenant_id,conversation_id,sort_at DESC,first_revision DESC,record_id DESC)
+    WHERE kind='approval' AND NOT deleted AND (payload::jsonb->>'status')='pending'`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_latest_turn ON handrail_ai_display_records
     (tenant_id,conversation_id,first_revision DESC,record_id DESC) WHERE kind='turn' AND NOT deleted`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_missing_control ON handrail_ai_display_records
@@ -255,6 +258,8 @@ type Cursor = { v: 1; scope: string; generation: number; ceiling: number; view: 
   at: string; sequence: number; id: string; kind: string; direction?: "older" | "newer" };
 function viewOf(view: ConversationDisplayView | undefined): ConversationDisplayView {
   if (!view || view.type === "messages") return { type: "messages" };
+  if (view.type === "pending_approvals") return { type: "pending_approvals" };
+  if (view.type === "approval") { identity(view.proposalId); return { type: "approval", proposalId: view.proposalId }; }
   if (view.type === "turn") { identity(view.turnId); return { type: "turn", turnId: view.turnId }; }
   if (view.type === "context") {
     // A display window can retain adjacent pages. The request envelope and
@@ -310,7 +315,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
     await this.authorize(input.conversationId);
     const result = await this.client.query<{ revision: string; generation: string; canonical_revision: string;
       active_turn_id: string | null; latest_turn_id: string | null; deleted: boolean;
-      record_id: string | null; control_payload: string | null }>(`
+      record_id: string | null; control_payload: string | null; has_pending_approvals: boolean }>(`
       WITH head AS (
         SELECT COALESCE(h.revision,0) AS revision,COALESCE(h.generation,0) AS generation,h.active_turn_id,
           COALESCE((SELECT e.revision FROM handrail_ai_events e WHERE e.tenant_id=$1 AND e.conversation_id=$2
@@ -323,6 +328,8 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
           AND kind='turn' AND NOT deleted ORDER BY first_revision DESC,record_id DESC LIMIT 1
       ) SELECT h.revision::text,h.generation::text,h.canonical_revision::text,h.active_turn_id,h.deleted,
         (SELECT record_id FROM latest) AS latest_turn_id,r.record_id,
+        EXISTS(SELECT 1 FROM handrail_ai_display_records p WHERE p.tenant_id=$1 AND p.conversation_id=$2
+          AND p.kind='approval' AND NOT p.deleted AND (p.payload::jsonb->>'status')='pending') AS has_pending_approvals,
         CASE WHEN octet_length(r.control_payload)<=8192 THEN r.control_payload ELSE NULL END AS control_payload
       FROM head h LEFT JOIN handrail_ai_display_records r ON r.tenant_id=$1 AND r.conversation_id=$2
         AND r.kind='turn' AND NOT r.deleted AND h.revision=h.canonical_revision AND NOT h.deleted
@@ -338,6 +345,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
     const response = parseConversationDisplayControl({ schemaVersion: 1, conversationId: input.conversationId,
       status: ready ? "ready" : "preparing", generation: Number(head.generation), revision: Number(head.revision),
       canonicalRevision: Number(head.canonical_revision), activeTurnId: head.active_turn_id,
+      hasPendingApprovals: ready && head.has_pending_approvals,
       activeTurn: ready && head.active_turn_id ? turns.get(head.active_turn_id) : null,
       latestTurn: ready && head.latest_turn_id ? turns.get(head.latest_turn_id) : null,
       requestedTurn: ready && input.turnId ? turns.get(input.turnId) ?? null : null }, input);
@@ -411,6 +419,11 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
           AND record_id=ANY(ARRAY(SELECT jsonb_array_elements_text($9::jsonb->'messageIds')))
         UNION SELECT $9::jsonb->>'turnId'))) AND c.kind IN ('turn','tool','approval','budget','citation')`;
     const filter = view.type === "messages" ? "r.kind='message' AND r.visible AND $9::text IS NULL"
+      : view.type === "pending_approvals" ? "r.kind='approval' AND (r.payload::jsonb->>'status')='pending' AND $9::text IS NULL"
+      : view.type === "approval" ? `(r.kind,r.record_id) IN (
+          SELECT 'approval',$9::text UNION ALL
+          SELECT 'tool',p.payload::jsonb->>'tool_call_id' FROM handrail_ai_display_records p
+            WHERE p.tenant_id=$1 AND p.conversation_id=$2 AND p.kind='approval' AND p.record_id=$9 AND NOT p.deleted)`
       : view.type === "turn" ? "r.turn_id=$9 AND r.kind IN ('turn','tool','approval','budget','citation')"
         : view.type === "context" ? `(r.kind,r.record_id) IN (
           SELECT c.kind,c.record_id FROM handrail_ai_display_records c
@@ -460,7 +473,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
       ORDER BY p.sort_at ${order},p.first_revision ${order},p.record_id ${order},p.kind ${order}`,
     [this.tenantId, input.conversationId, cursor?.ceiling ?? null, Math.min(limits.maximumInlineRecordBytes, maximumBytes - 4096),
       cursor?.at ?? null, cursor?.sequence ?? null, cursor?.id ?? null, cursor?.kind ?? null,
-      view.type === "messages" ? null : view.type === "turn" ? view.turnId : view.type === "context" ? JSON.stringify(view) : view.messageId, limit + 1, maximumBytes - 1024,
+      view.type === "messages" || view.type === "pending_approvals" ? null : view.type === "approval" ? view.proposalId : view.type === "turn" ? view.turnId : view.type === "context" ? JSON.stringify(view) : view.messageId, limit + 1, maximumBytes - 1024,
       input.anchor?.messageId ?? null]);
     await this.authorize(input.conversationId);
     const head = result.rows[0]!;
@@ -551,10 +564,15 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
     const offset = input.offset ?? 0; integer(offset, 0, 2_147_483_646);
     if (offset > 0 && input.revision === undefined) invalid();
     if (!kinds.includes(input.kind)) invalid();
+    if (input.format !== undefined && input.format !== "json-text" && input.format !== "message-text" ||
+        input.format === "message-text" && input.kind !== "message") invalid();
     await this.authorize(input.conversationId);
     const result = await this.client.query<{ generation: string; revision: string | null; content: string | null }>(`
       SELECT h.generation::text,r.revision::text,
-        CASE WHEN h.generation=$5 AND ($6::bigint IS NULL OR r.revision=$6) THEN substring(r.payload FROM $7::integer FOR $8::integer) ELSE NULL END AS content
+        CASE WHEN h.generation=$5 AND ($6::bigint IS NULL OR r.revision=$6) THEN substring(
+          CASE WHEN $9='message-text' THEN COALESCE((SELECT string_agg(part->>'text',chr(10)||chr(10) ORDER BY ordinal)
+            FROM jsonb_array_elements(r.payload::jsonb->'content') WITH ORDINALITY AS parts(part,ordinal)), '')
+            ELSE r.payload END FROM $7::integer FOR $8::integer) ELSE NULL END AS content
       FROM handrail_ai_display_heads h LEFT JOIN handrail_ai_display_records r
         ON r.tenant_id=h.tenant_id AND r.conversation_id=h.conversation_id AND r.kind=$3 AND r.record_id=$4 AND NOT r.deleted
       WHERE h.tenant_id=$1 AND h.conversation_id=$2
@@ -563,14 +581,14 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
         AND h.revision=COALESCE((SELECT e.revision FROM handrail_ai_events e
           WHERE e.tenant_id=$1 AND e.conversation_id=$2 ORDER BY e.revision DESC LIMIT 1),0)`,
     [this.tenantId, input.conversationId, input.kind, input.id, input.generation, input.revision ?? null,
-      offset + 1, limits.contentChunkCharacters + 1]);
+      offset + 1, limits.contentChunkCharacters + 1, input.format ?? "json-text"]);
     await this.authorize(input.conversationId);
     const row = result.rows[0];
     if (!row || row.revision === null) throw new ConversationDisplayHistoryError("not_found", "History record not found");
     if (Number(row.generation) !== input.generation) throw new ConversationDisplayHistoryError("stale_cursor", "History was cleared");
     if (input.revision !== undefined && Number(row.revision) !== input.revision) throw new ConversationDisplayHistoryError("content_changed", "Record changed. Reload before reading more content.");
     const characters = Array.from(row.content ?? "");
-    return { encoding: "json-text" as const, text: characters.slice(0, limits.contentChunkCharacters).join(""),
+    return { encoding: input.format === "message-text" ? "plain-text" as const : "json-text" as const, text: characters.slice(0, limits.contentChunkCharacters).join(""),
       nextOffset: characters.length > limits.contentChunkCharacters ? offset + limits.contentChunkCharacters : null, revision: Number(row.revision) };
   }
 }

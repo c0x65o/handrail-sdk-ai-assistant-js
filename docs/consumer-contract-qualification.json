@@ -1,0 +1,59 @@
+{
+  "qualification": "local public declarations after bounded recovery scheduling and graceful drain; no dependency installation or deployment",
+  "reports": [
+    {
+      "projectRoot": "/opt/handrail/repos/mills/mills-family-erp-v4/mills-family-erp-v4",
+      "config": "tsconfig.json",
+      "sdkVersion": "0.2.55",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/client/assistant/MillsAssistantRuntime.tsx",
+        "src/server/assistant/handrail-ai-gateway.ts"
+      ],
+      "sourceFiles": 1332,
+      "errors": 0,
+      "milliseconds": 8679,
+      "rssBytes": 707448832
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/spartan-cyber-services/spartan-cyber-erp-v3/spartan-cyber-services-spartan-cyber-erp-v3",
+      "config": "tsconfig.json",
+      "sdkVersion": "0.2.55",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/client/features/aegis-assistant/HandrailAiAssistant.tsx",
+        "src/server/aegis/handrail-ai-gateway.ts"
+      ],
+      "sourceFiles": 1857,
+      "errors": 0,
+      "milliseconds": 18511,
+      "rssBytes": 1348689920
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
+      "config": "tsconfig.browser.json",
+      "sdkVersion": "0.2.55",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/browser/features/cents/CentsDrawer.tsx"
+      ],
+      "sourceFiles": 303,
+      "errors": 0,
+      "milliseconds": 1591,
+      "rssBytes": 284286976
+    },
+    {
+      "projectRoot": "/opt/handrail/repos/hitcents/hitcents-erp/hitcents-erp",
+      "config": "tsconfig.server.json",
+      "sdkVersion": "0.2.55",
+      "qualification": "local built declarations; installed Git dependency unchanged",
+      "roots": [
+        "src/server/cents/native-runtime.ts"
+      ],
+      "sourceFiles": 874,
+      "errors": 0,
+      "milliseconds": 9178,
+      "rssBytes": 780779520
+    }
+  ]
+}

@@ -160,6 +160,23 @@ it("requires fresh external authorization and leaves a saved decision recoverabl
   expect(h.effect).toHaveBeenCalledOnce();
 });
 
+it("does not revive a confirmed external action after the conversation was cleared", async () => {
+  const h = await setup(true), signal = new AbortController().signal;
+  await h.runtime.execute(call, signal, location);
+  await h.runtime.awaitApproval({ ...location, call, signal });
+  await h.decide("confirm");
+  const latest = await h.events.getLatestRevision(location.conversationId as never);
+  await h.events.append({ conversationId: location.conversationId as never, expectedRevision: latest,
+    events: [{ version: 1, event_id: "clear-external" as never, conversation_id: location.conversationId as never,
+      revision: ((latest ?? 0) + 1) as never, occurred_at: new Date().toISOString() as never,
+      actor: { type: "system" }, source: { type: "runtime" }, payload: { type: "conversation.cleared" } }] });
+  const runtimeFor = vi.fn(async () => h.create());
+  await resumeExternalToolApprovals({ context, conversationId: location.conversationId,
+    proposals: h.proposals, events: h.events, turns: new InMemoryDurableApplicationTurnStore(), runtimeFor });
+  expect(runtimeFor).not.toHaveBeenCalled(); expect(h.effect).not.toHaveBeenCalled();
+  expect((await h.pendingProposal()).status).toBe("confirmed"); // Receipt is retained for audit.
+});
+
 it("a denied external proposal does not starve a later authorized decision", async () => {
   const h = await setup(true), signal = new AbortController().signal;
   const later = { ...call, tool_call_id: "later-call" };

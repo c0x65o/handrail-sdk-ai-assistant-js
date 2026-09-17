@@ -143,9 +143,10 @@ describe("createHandrailAssistant", () => {
     let closed = false;
     const stopping = assistant.stopUsageWorker().then(() => { closed = true; });
     await Promise.resolve(); expect(closed).toBe(false);
-    expect(stopCleanup).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(stopCleanup).toHaveBeenCalledTimes(1));
     releaseCleanup(); await stopping; expect(closed).toBe(true);
     await assistant.stopBackgroundWorkers();
+    expect(stopCleanup).toHaveBeenCalledTimes(1);
   });
 
   it.each([["confirmed", 0], ["rejected", 0], ["confirmed", 1166], ["rejected", 1166]] as const)(
@@ -343,7 +344,7 @@ describe("createHandrailAssistant", () => {
       event.source.type === "runtime")).toBe(true);
   });
 
-  it("recovers a durable scope when its trusted context is first authenticated", async () => {
+  it("returns capabilities before bounded recovery and coalesces authenticated wake-ups", async () => {
     type Context = HandrailAssistantAuthorizationContext;
     const context: Context = { principalId: "alice", tenantId: "tenant", scopeId: "alice",
       attribution: { organization: { id: "org", source: "server_derived", trust: "authoritative" },
@@ -353,7 +354,10 @@ describe("createHandrailAssistant", () => {
         session: { id: "session", source: "server_derived", trust: "authoritative" },
         automation: { id: null, source: "server_derived", trust: "authoritative" } } };
     const durableTurns = new InMemoryDurableApplicationTurnStore();
-    const recoverable = vi.spyOn(durableTurns, "scanRecoverable");
+    const recoverable = vi.spyOn(durableTurns, "scanRecoveryCandidates");
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    recoverable.mockImplementationOnce(async () => { await held; return { candidates: [], cursor: null }; });
     const bundle = { events: new InMemoryConversationEventStore(),
       approvals: new InMemoryApprovalProposalStore<Context>({ authorize: () => "allow" }),
       catalog: new InMemoryConversationCatalog<Context>({ authorize: () => "allow" }),
@@ -369,10 +373,16 @@ describe("createHandrailAssistant", () => {
 
     expect(recoverable).not.toHaveBeenCalled();
     expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(200);
-    expect(recoverable).toHaveBeenCalledOnce();
+    expect(recoverable).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(recoverable).toHaveBeenCalledOnce());
     expect(recoverable).toHaveBeenCalledWith(25, undefined);
     expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(200);
     expect(recoverable).toHaveBeenCalledOnce();
+    let stopped = false;
+    const stopping = assistant.stopBackgroundWorkers().then(() => { stopped = true; });
+    await Promise.resolve(); expect(stopped).toBe(false);
+    release(); await stopping;
+    expect((await assistant.handle(new Request("https://example.test/capabilities"))).status).toBe(503);
   });
 
   it("drains durable usage on startup and retries failed delivery in the worker", async () => {

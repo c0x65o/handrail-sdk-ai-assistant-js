@@ -66,6 +66,71 @@ describe("indexed display history", () => {
       generation: 6, activeTurn: null, latestTurn: null, requestedTurn: null });
   });
 
+  it("discovers old pending approvals without loading their messages and pages decisions independently", async () => {
+    const proposal = (id: string, status = "pending") => ({ type: "approval.proposal_created", turn_id: "old-turn",
+      tool_call_id: `tool-${id}`, tool_name: "save", proposal_id: id, reviewed_arguments: { type: "redacted_json", value: { id } },
+      status, proposal_version: 1, expires_at: null });
+    await append("pending-inbox", [
+      ...messages(1), { type: "turn.started", turn_id: "old-turn", input_message_ids: ["message-1"] },
+      ...["one", "two", "three"].flatMap(id => [
+        { type: "tool_call.requested", turn_id: "old-turn", tool_call_id: `tool-${id}`, name: "save", arguments: { id } }, proposal(id)]),
+      { type: "turn.completed", turn_id: "old-turn", output_message_ids: [], outcome: "stop" },
+      ...messages(100, 2),
+    ]);
+    expect((await display().page({ conversationId: "pending-inbox" })).records).toHaveLength(30);
+    statements.length = 0;
+    expect(await display().control({ conversationId: "pending-inbox" })).toMatchObject({ hasPendingApprovals: true });
+    expect(statements).toHaveLength(1);
+    expect(JSON.stringify(statements[0]!.rows)).not.toContain("reviewed_arguments");
+    const input = { conversationId: "pending-inbox", view: { type: "pending_approvals" as const }, limit: 2 };
+    statements.length = 0;
+    const first = await display().page(input);
+    expect(first.records.map(record => record.id)).toEqual(["two", "three"]);
+    expect(first.records.every(record => record.kind === "approval")).toBe(true);
+    expect(statements).toHaveLength(1);
+    expect(statements[0]!.sql).not.toMatch(/checkpoint|SELECT payload FROM handrail_ai_events/u);
+    const second = await display().page({ ...input, cursor: first.nextCursor! });
+    expect(second.records.map(record => record.id)).toEqual(["one"]);
+    expect(second.nextCursor).toBeNull();
+    await expect(display("tenant", "other").page({ ...input, cursor: first.nextCursor! })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(display().page({ ...input, view: { type: "messages" }, cursor: first.nextCursor! })).rejects.toMatchObject({ code: "invalid_input" });
+    expect((await display("other").page(input)).records).toEqual([]);
+    const review = await display().page({ conversationId: input.conversationId, view: { type: "approval", proposalId: "one" } });
+    expect(review.records.map(record => [record.kind, record.id])).toEqual([["tool", "tool-one"], ["approval", "one"]]);
+    expect((await display().page({ conversationId: input.conversationId, view: { type: "approval", proposalId: "absent" } })).records).toEqual([]);
+    await append("pending-inbox", ["one", "two", "three"].map(proposal_id => ({ type: "approval.proposal_status_changed",
+      proposal_id, proposal_version: 2, status: "rejected" })), 110);
+    expect((await display().page(input)).records).toEqual([]);
+    expect((await display().control({ conversationId: input.conversationId })).hasPendingApprovals).toBe(false);
+    // Review remains available as an audit record, but reflects the current decision.
+    expect((await display().page({ conversationId: input.conversationId, view: { type: "approval", proposalId: "one" } }))
+      .records.find(record => record.kind === "approval")?.value).toMatchObject({ status: "rejected", proposal_version: 2 });
+    await append("pending-inbox", [{ type: "conversation.cleared" }], 113);
+    await expect(display().page({ ...input, cursor: first.nextCursor! })).rejects.toMatchObject({ code: "stale_cursor" });
+    expect((await display().page({ conversationId: input.conversationId, view: { type: "approval", proposalId: "one" } })).records).toEqual([]);
+  });
+
+  it("defers oversized pending proposals and review tools without sending their bodies", async () => {
+    const arguments_ = Object.fromEntries([1, 2, 3].map(id => [`notes${id}`, "private-review ".repeat(250)]));
+    await append("large-pending", [
+      ...messages(1), { type: "turn.started", turn_id: "old", input_message_ids: ["message-1"] },
+      { type: "tool_call.requested", turn_id: "old", tool_call_id: "tool", name: "save", arguments: arguments_ },
+      { type: "approval.proposal_created", turn_id: "old", tool_call_id: "tool", tool_name: "save", proposal_id: "proposal",
+        reviewed_arguments: { type: "redacted_json", value: arguments_ }, status: "pending", proposal_version: 1, expires_at: null },
+    ]);
+    statements.length = 0;
+    expect((await display().control({ conversationId: "large-pending" })).hasPendingApprovals).toBe(true);
+    const inbox = await display().page({ conversationId: "large-pending", view: { type: "pending_approvals" }, maximumBytes: 8192 });
+    expect(inbox.records).toMatchObject([{ kind: "approval", value: null, deferred: true }]);
+    const review = await display().page({ conversationId: "large-pending", view: { type: "approval", proposalId: "proposal" }, maximumBytes: 8192 });
+    expect(review.records).toHaveLength(2);
+    expect(review.records.every(record => record.deferred && record.value === null)).toBe(true);
+    expect(statements).toHaveLength(3);
+    expect(JSON.stringify(statements.map(statement => statement.rows))).not.toContain("private-review");
+    expect(Buffer.byteLength(JSON.stringify(inbox))).toBeLessThan(8192);
+    expect(Buffer.byteLength(JSON.stringify(review))).toBeLessThan(8192);
+  });
+
   it("prepares legacy controls in durable bounded steps and reports truncated error summaries", async () => {
     const error = { code: "failure", message: "😀".repeat(1000), retryable: true };
     await append("legacy-controls", [
@@ -215,8 +280,22 @@ describe("indexed display history", () => {
       json += chunk.text; offset = chunk.nextOffset;
     } while (offset !== null);
     expect(JSON.parse(json).content).toEqual([{ type: "text", text }]);
+    let textOffset: number | null = 0, displayed = "";
+    do {
+      statements.length = 0;
+      const chunk = await display().content({ ...request, format: "message-text", offset: textOffset });
+      expect(chunk.encoding).toBe("plain-text");
+      expect(Buffer.byteLength(JSON.stringify(chunk))).toBeLessThan(64 * 1024);
+      expect(statements).toHaveLength(1);
+      expect(Buffer.byteLength(JSON.stringify(statements[0]!.rows))).toBeLessThan(64 * 1024);
+      displayed += chunk.text; textOffset = chunk.nextOffset;
+    } while (textOffset !== null);
+    expect(displayed).toBe(text);
+    await expect(display().content({ ...request, format: "message-text", kind: "tool" })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(display("other").content({ ...request, format: "message-text" })).rejects.toMatchObject({ code: "not_found" });
     await append("large", [{ type: "message.text_appended", message_id: "reply", turn_id: "turn", text: "!" }], 2);
     await expect(display().content({ ...request, offset: 8192 })).rejects.toMatchObject({ code: "content_changed" });
+    await expect(display().content({ ...request, format: "message-text", offset: 8192 })).rejects.toMatchObject({ code: "content_changed" });
   });
 
   it("honors byte budgets without skipping a message at page boundaries", async () => {

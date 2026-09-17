@@ -324,3 +324,6 @@ export { ConversationDisplayTranscript, useConversationDisplayWindow, type Conve
 export { useComposerApprovalPreference } from "./composer-approval-preference.js";
 
 export { useBoundApprovalReview, type UseBoundApprovalReviewOptions } from "./use-bound-approval-review.js";
+export { ConversationLargeMessage, type ConversationMessageTextReader } from "./large-message.js";
+
+export { ConversationPendingApprovals } from "./pending-approvals.js";

@@ -11,6 +11,12 @@ export function applicationConversationPresentation(snapshot: ApplicationConvers
   const messages = snapshot.window.records.flatMap(record => record.kind === "message" && record.value
     ? [{ ...record.value, turn_id: record.turnId as ConversationTurnId | null }] : []);
   const related = snapshot.related.filter(record => record.value && !record.deleted);
+  // Page boundaries and cache eviction can separate citations from sources.
+  // Presentation consumers must never receive a dangling source reference.
+  const sources = related.flatMap(record => record.kind === "source" && record.value ? [record.value] : []);
+  const sourceIds = new Set(sources.map(source => source.source_id));
+  const citations = related.flatMap(record => record.kind === "citation" && record.value && sourceIds.has(record.value.source_id) ? [record.value] : []);
+  const unresolvedCitationCount = snapshot.related.filter(record => record.kind === "citation" && !record.deleted).length - citations.length;
   const turns = new Map<string, ConversationPresentationTurn>();
   for (const record of related) if (record.kind === "turn" && record.value) turns.set(record.id, record.value);
   for (const control of [snapshot.control?.latestTurn, snapshot.control?.activeTurn]) {
@@ -29,8 +35,7 @@ export function applicationConversationPresentation(snapshot: ApplicationConvers
     tool_calls: Object.freeze(related.flatMap(record => record.kind === "tool" && record.value ? [record.value] : [])),
     approval_proposals: Object.freeze(related.flatMap(record => record.kind === "approval" && record.value ? [record.value] : [])),
     tool_loop_budget_exhaustions: Object.freeze(related.flatMap(record => record.kind === "budget" && record.value ? [record.value] : [])),
-    citations: Object.freeze(related.flatMap(record => record.kind === "citation" && record.value ? [record.value] : [])),
-    citation_sources: Object.freeze(related.flatMap(record => record.kind === "source" && record.value ? [record.value] : [])),
+    citations: Object.freeze(citations), citation_sources: Object.freeze(sources), unresolvedCitationCount,
     usage_receipt_links: Object.freeze([]), metadata: Object.freeze({}), title: null, replay_error: null });
 }
 function result(control: ConversationDisplayTurnControl): ConversationPresentationTurnResult {

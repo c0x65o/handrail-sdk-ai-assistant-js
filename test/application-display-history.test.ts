@@ -10,6 +10,31 @@ const transport: ConversationTransport<never, never> = {
 };
 const point = () => ({ lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null });
 
+it("negotiates message text separately and validates bounded Unicode sections", async () => {
+  let value = { encoding: "plain-text" as const, text: "😀".repeat(8192), revision: 4, nextOffset: 8192 as number | null };
+  const history: ConversationDisplayHistory = { page: vi.fn(), changes: vi.fn(), content: vi.fn(async () => value) };
+  const resolve = vi.fn(() => transport);
+  const options = { transportFor: resolve, authorize: async () => ({ principalId: "user" }),
+    checkpointForEvent: point, displayHistoryFor: () => history };
+  const gateway = createApplicationGateway({ ...options, displayMessageText: true });
+  const client = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test",
+    fetch: (async (url, init) => gateway.handle(new Request(url, init))) as typeof fetch });
+  const input = { conversationId: "conversation", generation: 0, kind: "message" as const, id: "message", revision: 4, format: "message-text" as const };
+  expect(await client.content(input)).toEqual(value);
+  expect(history.content).toHaveBeenCalledWith(input);
+  expect(resolve).not.toHaveBeenCalled();
+  expect(await (await gateway.handle(new Request("https://app.test/capabilities"))).json())
+    .toMatchObject({ value: { displayHistory: { messageText: true } } });
+  const legacy = createApplicationGateway(options);
+  expect((await (await legacy.handle(new Request("https://app.test/capabilities"))).json()).value.displayHistory)
+    .not.toHaveProperty("messageText");
+  for (const invalid of [{ ...value, text: "short", nextOffset: 5 }, { ...value, nextOffset: 16384 },
+    { ...value, revision: 5 }, { ...value, text: "x".repeat(8193), nextOffset: null }]) {
+    value = invalid;
+    await expect(client.content(input)).rejects.toThrow("Invalid display history content response");
+  }
+});
+
 it("negotiates bounded controls without creating a provider transport and rejects mismatched turn identities", async () => {
   const turn = { turnId: "turn", revision: 12, status: "running" as const, remoteMayStillBeRunning: true, error: null };
   const value = { schemaVersion: 1 as const, status: "ready" as const, conversationId: "conversation", generation: 0,

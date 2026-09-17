@@ -171,6 +171,8 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
   const serverSession = Boolean(capabilities.displayHistory && capabilities.displayHistory.control === true && displayHistory !== null);
   const applicationRuntime = (conversationId: ConversationId, clientId: ConversationClientId) => createApplicationConversationRuntime({
     conversationId, clientId, reader: displayHistory!, resources, transport, pendingStore, localStateStore,
+    messageText: Boolean(capabilities.displayHistory && capabilities.displayHistory.messageText === true),
+    pendingApprovals: Boolean(capabilities.displayHistory && capabilities.displayHistory.pendingApprovals === true),
     onLocalStateFlush: operation => { localFlushes.add(operation); void operation.finally(() => localFlushes.delete(operation)); },
     ...(options.synchronizationPollingMilliseconds === undefined ? {} : { pollMilliseconds: options.synchronizationPollingMilliseconds }),
     ...(options.idleSynchronizationPollingMilliseconds === undefined ? {} : { idlePollMilliseconds: options.idleSynchronizationPollingMilliseconds }),

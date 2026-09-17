@@ -2,6 +2,7 @@ import type { ConversationPresentationRuntime as ConversationRuntime } from "../
 import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
 import { ConversationActivityCard, HANDRAIL_ACTIVITY_CSS } from "./activity.js";
 import { createInitialConversationState } from "../conversation/state.js";
+import { ConversationPendingApprovals } from "../react/pending-approvals.js";
 import { ConversationTranscript } from "../react/conversation-transcript.js";
 import { reviewedToolArguments } from "../conversation/approval-arguments.js";
 import { StructuredDetailsDisclosure, shouldCollapseStructuredDetails, structuredDetailLabel, HANDRAIL_STRUCTURED_DETAILS_CSS } from "../react/structured-details.js";
@@ -256,7 +257,7 @@ export const handrailChatPresetCss = `
 .hr-chat__launcher-trigger{align-items:center;display:inline-flex;gap:.45rem}.hr-chat__launcher-status{font-size:.75rem;font-weight:600}.hr-chat__launcher-trigger[data-busy=true] .hr-chat__launcher-status{color:var(--hr-activity)}.hr-chat__launcher-badge:empty{display:none}.hr-chat__launcher-badge{align-items:center;background:var(--hr-activity);border-radius:999px;color:#fff;display:inline-flex;font-size:.7rem;justify-content:center;min-block-size:1.2rem;min-inline-size:1.2rem;padding-inline:.25rem}
 .hr-chat__voice-activity{display:block;font-size:.75rem;font-weight:400;line-height:1.35;max-inline-size:18rem;overflow-wrap:anywhere}.hr-chat__workspace-picker li .hr-chat__voice-activity{flex-basis:100%;margin-block-start:.25rem}.hr-chat__workspace-picker li button:first-child{flex-wrap:wrap}
 .hr-chat__workspace-picker{align-items:flex-start;display:flex;gap:.4rem;position:relative}.hr-chat__workspace-picker summary{background:var(--hr-panel,#f6f7fb);border:1px solid var(--hr-border,#dfe3eb);border-radius:9px;cursor:pointer;list-style:none;padding:.55rem .7rem}.hr-chat__workspace-picker summary::-webkit-details-marker{display:none}.hr-chat__workspace-picker ul{background:var(--hr-bg,#fff);border:1px solid var(--hr-border,#dfe3eb);border-radius:10px;box-shadow:0 12px 35px #17192724;display:grid;gap:.2rem;inset-block-start:calc(100% + .35rem);inset-inline-end:0;list-style:none;margin:0;max-block-size:20rem;min-inline-size:18rem;overflow:auto;padding:.4rem;position:absolute;z-index:10}.hr-chat__workspace-picker li{align-items:center;display:flex;margin:0;padding:0}.hr-chat__workspace-picker li button:first-child{align-items:center;display:flex;flex:1;inline-size:100%;justify-content:space-between;max-inline-size:none;text-align:start}.hr-chat__workspace-picker small{color:var(--hr-muted,#687083);margin-inline-start:.5rem}.hr-chat__workspace-picker [data-turn-status=running] small{color:var(--hr-activity)}.hr-chat__empty{display:grid;min-block-size:12rem;place-items:center;padding:1rem}
-.hr-chat__approvals{display:grid;gap:.5rem}.hr-chat .hr-chat__approval{background:var(--hr-bg);border:1px solid var(--hr-border);border-radius:var(--hr-radius-control);display:grid;gap:.75rem;padding:1rem;inline-size:auto;white-space:normal}.hr-chat__approval>strong{font-size:1.05em}.hr-chat__approval-status{color:var(--hr-muted);font-size:.9em}.hr-chat__approval details{min-inline-size:0}.hr-chat__approval summary{cursor:pointer;font-weight:600}.hr-chat__approval details[open]>summary{margin-block-end:.75rem}.hr-chat__approval-actions{display:flex;flex-wrap:wrap;gap:.5rem;border-block-start:1px solid var(--hr-border);padding-block-start:.75rem}.hr-chat__approval-error{color:var(--hr-danger)}
+.hr-chat__pending-approvals{max-block-size:50vh;overflow:auto;overflow-wrap:anywhere;padding:.75rem;border-block-start:1px solid var(--hr-border)}.hr-chat__pending-approvals ul{padding-inline-start:1.5rem}.hr-chat__approvals{display:grid;gap:.5rem}.hr-chat .hr-chat__approval{background:var(--hr-bg);border:1px solid var(--hr-border);border-radius:var(--hr-radius-control);display:grid;gap:.75rem;padding:1rem;inline-size:auto;white-space:normal}.hr-chat__approval>strong{font-size:1.05em}.hr-chat__approval-status{color:var(--hr-muted);font-size:.9em}.hr-chat__approval details{min-inline-size:0}.hr-chat__approval summary{cursor:pointer;font-weight:600}.hr-chat__approval details[open]>summary{margin-block-end:.75rem}.hr-chat__approval-actions{display:flex;flex-wrap:wrap;gap:.5rem;border-block-start:1px solid var(--hr-border);padding-block-start:.75rem}.hr-chat__approval-error{color:var(--hr-danger)}
 .hr-chat__message-actions{align-items:center;flex-wrap:wrap;gap:.25rem}
 ` + HANDRAIL_CONVERSATION_HISTORY_CSS + HANDRAIL_STRUCTURED_DETAILS_CSS + HANDRAIL_ACTIVITY_CSS + ATTACHMENT_IMAGE_CSS;
 
@@ -359,6 +360,13 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
               activity={currentActivity} display={props.toolActivity ?? "collapsed"}/>}
           <TypingIndicator/>
         </ConversationTranscript>}
+      {session && resolvedState && <ConversationPendingApprovals key={resolvedState.conversation_id ?? "unselected"} session={session}
+        renderApproval={(proposal, tools) => {
+          const context: StyledApprovalRenderContext = { state: { ...resolvedState, tool_calls: tools }, busy: approvalReview.busy !== null,
+            readOnly: Boolean(props.readOnly || !props.approvalResources || approvalReview.error),
+            decide: async status => { if (!props.readOnly && !approvalReview.error) await approvalReview.decide(proposal, status); } };
+          return props.renderApproval ? props.renderApproval(proposal, context) : <StandardApprovalCard proposal={proposal} context={context}/>;
+        }}/>}
       {approvalReview.error && <p className="hr-chat__approval-error" role="alert">{approvalReview.error === "decision"
         ? "That approval decision could not be saved. Please retry." : "Action approvals could not be refreshed."}
         <button type="button" onClick={approvalReview.refresh}>Retry approvals</button></p>}
@@ -484,7 +492,7 @@ export interface ConversationWorkspaceController<TRequest, TAuthorizationContext
 export interface ConversationCatalogWorkspaceOptions<TAuthorizationContext> {
   readonly catalog: ConversationCatalog<TAuthorizationContext>;
   readonly authorizationContext: TAuthorizationContext;
-  /** Page size used while hydrating every authorized descriptor. Defaults to 50. */
+  /** Metadata records per catalog page; additional pages load on demand. Defaults to 50. */
   readonly pageSize?: number;
 }
 
@@ -612,7 +620,7 @@ export interface HandrailChatWorkspaceProps<TRequest, TAuthorizationContext>
   readonly createConversation?: () => Promise<ConversationWorkspaceOpenInput<TAuthorizationContext>>;
   /** Omit or use true for standard New/Threads controls; false disables them; a node customizes them. */
   readonly conversationPicker?: ReactNode;
-  /** Enables full authorized catalog hydration plus archive/restore UI. */
+  /** Enables paginated authorized metadata plus archive/restore UI. */
   readonly catalogOptions?: ConversationCatalogWorkspaceOptions<TAuthorizationContext>;
   /** The endpoint launcher defaults to the complete sidebar; custom workspace hosts can opt in. */
   readonly historyLayout?: "sidebar" | "compact";

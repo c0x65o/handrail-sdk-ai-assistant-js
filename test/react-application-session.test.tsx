@@ -10,7 +10,7 @@ const capabilities: ApplicationGatewayCapabilities = { protocolVersion: APPLICAT
   authoritativeCancellation: false, attachments: false, presence: false, activity: false, synchronization: false,
   resources: { conversations: true, approvals: true, titleGeneration: false },
   displayHistory: { version: 1, maximumPageSize: 50, maximumPageBytes: 262144, control: true } };
-function gateway() {
+function gateway(options: { large?: boolean; activity?: boolean; citation?: boolean } = {}) {
   const requests: { path: string; operation: string; input: any; bytes: number }[] = [];
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
     const path = new URL(String(url)).pathname, body = JSON.parse(String(init?.body)), input = body.input ?? body;
@@ -23,15 +23,25 @@ function gateway() {
       const header = { schemaVersion: 1, status: "ready", conversationId: input.conversationId, generation: 0,
         revision: 200, canonicalRevision: 200, activeTurnId: null };
       if (body.operation === "control") value = { ...header, activeTurn: null, latestTurn: null, requestedTurn: null };
+      else if (body.operation === "content") value = { encoding: "plain-text", text: "Expanded message text", revision: 200, nextOffset: null };
       else if (body.operation === "changes") value = { ...header, records: [], nextCursor: null, throughRevision: 200 };
-      else if (input.view?.type === "context") value = { ...header, records: [], nextCursor: null };
+      else if (input.view?.type === "context") {
+        const page = Number(input.cursor ?? 0);
+        value = { ...header, records: options.activity ? Array.from({ length: 30 }, (_, i) => ({ kind: "source", id: `source-${page * 30 + i}`,
+          turnId: null, revision: 1, bytes: 200, deferred: false, value: { source_id: `source-${page * 30 + i}`, label: "Source", locator: "/source" } })) : options.citation ? (input.cursor ? [{ kind: "source", id: "source", turnId: null, revision: 200, bytes: 100, deferred: false,
+            value: { source_id: "source", label: "Loaded source", type: "record", locator: "/source" } }] : [{ kind: "citation", id: "citation", turnId: null,
+            revision: 200, bytes: 150, deferred: false, value: { citation_id: "citation", source_id: "source", order: 0,
+              target: { type: "assistant_message", message_id: "m-200" } } }]) : [],
+          nextCursor: options.citation ? (input.cursor ? null : "source") : options.activity && page < 3 ? String(page + 1) : null };
+      }
       else {
         const end = input.anchor ? Number(String(input.anchor.messageId).split("-").at(-1)) - 1 : 200;
         const start = Math.max(1, end - (input.limit ?? 30) + 1);
         const records = Array.from({ length: end - start + 1 }, (_, i) => ({ kind: "message", id: `m-${start + i}`, revision: start + i,
           turnId: null, bytes: 200, deferred: false, value: { message_id: `m-${start + i}`, role: "assistant",
             content: [{ type: "text", text: `${input.conversationId} saved ${start + i}` }], attachments: [], created_at: null, attribution: null } }));
-        value = { ...header, records, nextCursor: start > 1 ? "older" : null };
+        value = { ...header, records: records.map(record => options.large && record.id === "m-200"
+          ? { ...record, value: null, deferred: true, bytes: 80000 } : record), nextCursor: start > 1 ? "older" : null };
       }
     }
     const json = JSON.stringify({ ok: true, value }); requests.push({ path, operation: body.operation, input, bytes: new TextEncoder().encode(json).byteLength });
@@ -39,6 +49,48 @@ function gateway() {
   });
   return { requests, fetcher };
 }
+
+it("uses negotiated large text and bounded activity navigation through the standard preset", async () => {
+  const f = gateway({ large: true, activity: true });
+  const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", fetch: f.fetcher,
+    capabilities: { ...capabilities, displayHistory: { version: 1, maximumPageSize: 50, maximumPageBytes: 262144, control: true, messageText: true } },
+    conversations: { mode: "single", conversationId: "single" as never, clientId: "client" as never } });
+  try {
+    const view = render(<ConversationProvider runtime={client.conversation!}><StyledChatPreset/></ConversationProvider>);
+    await screen.findByRole("button", { name: "Read message" });
+    expect(f.requests.filter(request => request.operation === "content")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Read message" }));
+    await screen.findByText("Expanded message text");
+    expect(f.requests.find(request => request.operation === "content")?.input.format).toBe("message-text");
+    for (let i = 0; i < 3; i++) {
+      fireEvent.click(screen.getByRole("button", { name: "Load more activity" }));
+      await waitFor(() => expect(f.requests.filter(request => request.input.view)).toHaveLength(i + 2));
+    }
+    await screen.findByRole("button", { name: "Show latest activity" });
+    expect(client.conversation!.displaySession!.getSnapshot().related).toHaveLength(90);
+    fireEvent.click(screen.getByRole("button", { name: "Show latest activity" }));
+    await waitFor(() => expect(client.conversation!.displaySession!.getSnapshot().related).toHaveLength(30));
+    expect(screen.queryByRole("button", { name: "Show latest activity" })).toBeNull();
+    view.unmount();
+  } finally { await client.dispose(); }
+});
+
+it("keeps the transcript usable while a source arrives on a later activity page", async () => {
+  const f = gateway({ citation: true });
+  const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", fetch: f.fetcher, capabilities,
+    conversations: { mode: "single", conversationId: "single" as never, clientId: "client" as never } });
+  try {
+    const view = render(<ConversationProvider runtime={client.conversation!}><StyledChatPreset/></ConversationProvider>);
+    await screen.findByText("Some citation sources are not loaded in this activity window.");
+    expect(client.conversation!.getSnapshot().citations).toHaveLength(0);
+    expect(screen.getByText("single saved 200")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more activity" }));
+    await waitFor(() => expect(client.conversation!.getSnapshot().citations).toHaveLength(1));
+    expect(client.conversation!.getSnapshot().citation_sources[0]?.label).toBe("Loaded source");
+    expect(screen.queryByText("Some citation sources are not loaded in this activity window.")).toBeNull();
+    view.unmount();
+  } finally { await client.dispose(); }
+});
 
 it("negotiates bounded history in the standard React preset with no snapshot, saved stream replay, or approval-list hydration", async () => {
   const f = gateway(); const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", fetch: f.fetcher, capabilities,

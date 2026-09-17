@@ -15,6 +15,8 @@ export { enqueuePostgresConversationFileCleanup, drainPostgresConversationFileCl
   startPostgresConversationFileCleanupWorker, type PostgresConversationFileCleanupOptions } from "./conversation-file-cleanup.js";
 import { createHash } from "node:crypto";
 import { postgresDisplayHistorySchema, projectPostgresDisplayEvents } from "./display-history.js";
+import { postgresApprovalRecoverySchema, PostgresApprovalRecoveryQueue } from "./approval-recovery.js";
+export { PostgresApprovalRecoveryQueue, postgresApprovalRecoverySchema } from "./approval-recovery.js";
 export { PostgresConversationDisplayHistory, postgresDisplayHistorySchema } from "./display-history.js";
 import { ConversationEventValidationError, parseConversationEvent, type ConversationEvent, type ConversationId, type ConversationRevision } from "../conversation/events.js";
 import {
@@ -37,6 +39,7 @@ import {
   type DurableApplicationTurnRecord,
   type DurableApplicationTurnStore,
   type DurableApplicationRecoveryCursor,
+  type DurableApplicationRecoveryCandidatePage,
   type DurableApplicationRecoveryPage,
   type DurableApplicationRecoveryPosition,
 } from "../transports/durable.js";
@@ -220,7 +223,37 @@ export const handrailPostgresSchemaV1 = Object.freeze([
   `CREATE TABLE IF NOT EXISTS handrail_ai_events (tenant_id text NOT NULL, conversation_id text NOT NULL, revision bigint NOT NULL, event_id text NOT NULL, payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, conversation_id, revision), UNIQUE (tenant_id, event_id))`,
   `ALTER TABLE handrail_ai_events ADD COLUMN IF NOT EXISTS mutation_id text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS handrail_ai_events_mutation ON handrail_ai_events (tenant_id, mutation_id) WHERE mutation_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_events_activity ON handrail_ai_events (tenant_id, conversation_id, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS handrail_ai_documents (tenant_id text NOT NULL, kind text NOT NULL, scope_id text NOT NULL, record_id text NOT NULL, version bigint NOT NULL, payload jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, kind, scope_id, record_id))`,
+  `ALTER TABLE handrail_ai_documents ADD COLUMN IF NOT EXISTS durable_status text`,
+  `ALTER TABLE handrail_ai_documents ADD COLUMN IF NOT EXISTS durable_lease_owner text`,
+  `ALTER TABLE handrail_ai_documents ADD COLUMN IF NOT EXISTS durable_lease_expires_at text`,
+  // A database trigger also covers old SDK writers during rolling adoption.
+  // Metadata changes are atomic with the original document/version; no second
+  // write can race a lease, approval resume or terminal transition.
+  `CREATE OR REPLACE FUNCTION handrail_ai_durable_metadata() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.kind='durable_turn' THEN
+        NEW.durable_status=COALESCE(NEW.payload->>'status','invalid');
+        NEW.durable_lease_owner=NEW.payload->'lease'->>'ownerId';
+        NEW.durable_lease_expires_at=NEW.payload->'lease'->>'expiresAt';
+      ELSE
+        NEW.durable_status=NULL; NEW.durable_lease_owner=NULL; NEW.durable_lease_expires_at=NULL;
+      END IF;
+      RETURN NEW;
+    END; $$`,
+  `DO $$ BEGIN
+    IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='handrail_ai_durable_metadata_trigger'
+      AND tgrelid='handrail_ai_documents'::regclass) THEN
+      CREATE TRIGGER handrail_ai_durable_metadata_trigger BEFORE INSERT OR UPDATE OF payload,kind ON handrail_ai_documents
+        FOR EACH ROW WHEN (NEW.kind='durable_turn') EXECUTE FUNCTION handrail_ai_durable_metadata();
+    END IF;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END; $$`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_durable_recovery ON handrail_ai_documents (tenant_id,scope_id,record_id)
+    WHERE kind='durable_turn' AND (durable_status IS NULL OR durable_status IN ('pending','running'))`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_durable_metadata_missing ON handrail_ai_documents (tenant_id,scope_id,record_id)
+    WHERE kind='durable_turn' AND durable_status IS NULL`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_documents_scope ON handrail_ai_documents (tenant_id, kind, scope_id, updated_at DESC, record_id)`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_conversation_file_cleanup_pending ON handrail_ai_documents (scope_id, updated_at, tenant_id, record_id) WHERE kind='conversation_file_cleanup' AND payload->>'status'='pending'`,
   `CREATE TABLE IF NOT EXISTS handrail_ai_tool_ledger (tenant_id text NOT NULL, tool_call_id text NOT NULL, status text NOT NULL CHECK (status IN ('completed')), result jsonb NOT NULL, completed_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, tool_call_id))`,
@@ -229,6 +262,7 @@ export const handrailPostgresSchemaV1 = Object.freeze([
   `CREATE INDEX IF NOT EXISTS handrail_ai_conversations_updated ON handrail_ai_conversations (tenant_id, scope_id, lifecycle, updated_at DESC, conversation_id)`,
   `CREATE TABLE IF NOT EXISTS handrail_ai_approvals (tenant_id text NOT NULL, scope_id text NOT NULL, proposal_id text NOT NULL, group_id text, version bigint NOT NULL, payload jsonb NOT NULL, updated_at timestamptz NOT NULL, PRIMARY KEY (tenant_id, scope_id, proposal_id))`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_approvals_group ON handrail_ai_approvals (tenant_id, scope_id, group_id, updated_at, proposal_id)`,
+  ...postgresApprovalRecoverySchema,
   `CREATE TABLE IF NOT EXISTS handrail_ai_attachment_blobs (tenant_id text NOT NULL, blob_key text NOT NULL, payload bytea NOT NULL, media_type text NOT NULL, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, blob_key))`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_attachment_blobs_expiry ON handrail_ai_attachment_blobs (tenant_id, expires_at)`,
 ] as const);
@@ -634,6 +668,54 @@ implements DurableApplicationTurnStore<TStoredRequest, TEvent> {
       if (!(error instanceof PostgresPersistenceConflictError)) throw error;
       return { status: "conflict" as const, document: await this.load(input.conversationId, input.turnId) };
     }
+  }
+
+  /** Incremental migration only. No retained body crosses the SQL boundary.
+   * Row locks coordinate with old and new writers; deletion cannot be resurrected.
+   * Missing scalar status is the durable restart watermark. */
+  async backfillRecoveryMetadata(limit = 10): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError("limit is invalid");
+    const result = await this.persistence.client.query(`WITH batch AS (
+      SELECT tenant_id,kind,scope_id,record_id FROM handrail_ai_documents
+      WHERE tenant_id=$1 AND kind='durable_turn' AND durable_status IS NULL
+      ORDER BY scope_id,record_id LIMIT $2 FOR UPDATE SKIP LOCKED
+    ) UPDATE handrail_ai_documents d SET durable_status=COALESCE(d.payload->>'status','invalid'),
+      durable_lease_owner=d.payload->'lease'->>'ownerId',durable_lease_expires_at=d.payload->'lease'->>'expiresAt'
+      FROM batch b WHERE d.tenant_id=b.tenant_id AND d.kind=b.kind AND d.scope_id=b.scope_id AND d.record_id=b.record_id`,
+    [this.tenantId, limit]);
+    return result.rowCount;
+  }
+
+  async scanRecoveryCandidates(limit: number, cursor?: DurableApplicationRecoveryCursor): Promise<DurableApplicationRecoveryCandidatePage> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("limit is invalid");
+    const position = (value: DurableApplicationRecoveryPosition) => ({
+      conversationId: id(value.conversationId, "conversationId"), turnId: id(value.turnId, "turnId"),
+    });
+    const after = cursor ? position(cursor.after) : null;
+    const cursorThrough = cursor ? position(cursor.through) : null;
+    // Preparation is bounded separately from candidate discovery and leaves
+    // remaining legacy identities visible. Only authorized candidates may load
+    // a legacy body; terminal ones disappear as metadata preparation progresses.
+    await this.backfillRecoveryMetadata();
+    const predicate = "tenant_id=$1 AND kind='durable_turn' AND (durable_status IS NULL OR durable_status IN ('pending','running'))";
+    const upper = cursor ? null : await this.persistence.client.query<{ scope_id: string; record_id: string }>(
+      `SELECT scope_id,record_id FROM handrail_ai_documents WHERE ${predicate} ORDER BY scope_id DESC,record_id DESC LIMIT 1`, [this.tenantId]);
+    const highest = upper?.rows[0];
+    const through = cursorThrough ?? (highest ? { conversationId: highest.scope_id, turnId: highest.record_id } : null);
+    if (!through) return Object.freeze({ candidates: Object.freeze([]), cursor: null });
+    const result = await this.persistence.client.query<{ scope_id: string; record_id: string;
+      durable_lease_owner: string | null; durable_lease_expires_at: string | null }>(
+      `SELECT scope_id,record_id,durable_lease_owner,durable_lease_expires_at FROM handrail_ai_documents WHERE ${predicate}
+        AND ($3::text IS NULL OR (scope_id,record_id)>($3,$4)) AND (scope_id,record_id)<=($5,$6)
+        ORDER BY scope_id,record_id LIMIT $2`,
+    [this.tenantId, limit, after?.conversationId ?? null, after?.turnId ?? null, through.conversationId, through.turnId]);
+    const last = result.rows.at(-1);
+    return Object.freeze({ candidates: Object.freeze(result.rows.map(row => Object.freeze({
+      conversationId: row.scope_id, turnId: row.record_id,
+      lease: row.durable_lease_owner && row.durable_lease_expires_at
+        ? Object.freeze({ ownerId: row.durable_lease_owner, expiresAt: row.durable_lease_expires_at }) : null,
+    }))), cursor: last && result.rows.length === limit && (last.scope_id !== through.conversationId || last.record_id !== through.turnId)
+      ? { after: { conversationId: last.scope_id, turnId: last.record_id }, through } : null });
   }
 
   async listRecoverable(limit: number): Promise<readonly DurableApplicationTurnDocument<TStoredRequest, TEvent>[]> {
@@ -1956,6 +2038,7 @@ export interface PostgresAssistantPersistenceBundle<TAuthorizationContext> {
   readonly continuation: PostgresOpenAIResponsesContinuationStore;
   readonly managedTurns: PostgresManagedRuntimeTurnStateStore;
   readonly durableTurns: PostgresDurableApplicationTurnStore;
+  readonly approvalRecovery: PostgresApprovalRecoveryQueue;
   readonly activity: PostgresConversationActivityStore;
   readonly attachmentBlobs: PostgresAttachmentBlobStore;
   readonly attachmentMetadata: PostgresAttachmentStagingMetadataStore;
@@ -2056,6 +2139,7 @@ export function postgresFromClient(
         continuation: new PostgresOpenAIResponsesContinuationStore({ persistence, tenantId, scopeId }),
         managedTurns: new PostgresManagedRuntimeTurnStateStore(persistence, tenantId),
         durableTurns: new PostgresDurableApplicationTurnStore(persistence, tenantId),
+        approvalRecovery: new PostgresApprovalRecoveryQueue(persistence.client, tenantId),
         activity: new PostgresConversationActivityStore(persistence, tenantId, scopeId),
         attachmentBlobs,
         attachmentMetadata,

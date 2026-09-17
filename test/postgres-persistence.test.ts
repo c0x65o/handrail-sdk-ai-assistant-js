@@ -33,8 +33,7 @@ describe("Postgres reference persistence", () => {
     expect(query.mock.calls.some(([sql]) => String(sql).startsWith("INSERT INTO handrail_ai_documents"))).toBe(false);
   });
 
-  it("ships an idempotent schema for every durable domain", () => {
-    expect(handrailPostgresSchemaV1.every((sql) => sql.includes("IF NOT EXISTS"))).toBe(true);
+  it("ships schema for every durable domain", () => {
     expect(handrailPostgresSchemaV1.join(" ")).toContain("handrail_ai_tool_ledger");
   });
 

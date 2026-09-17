@@ -2,6 +2,7 @@ import type { ApprovalProposalStore } from "../conversation/approval-proposal-st
 import { ApprovalProposalStoreError } from "../conversation/approval-proposal-store.js";
 import type { ConversationEventStore } from "../conversation/event-store.js";
 import { findConversationEvent } from "../conversation/find-event.js";
+import { replayConversation } from "../conversation/replay.js";
 import type { DurableApplicationTurnStore } from "../transports/durable.js";
 import { assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
 
@@ -29,19 +30,28 @@ export async function resumeExternalToolApprovals<TContext>(options: {
   readonly events: ConversationEventStore;
   readonly turns: Pick<DurableApplicationTurnStore, "load">;
   readonly runtimeFor: ExternalApprovalRuntimeFactory<TContext>;
+  readonly signal?: AbortSignal;
 }): Promise<void> {
+  options.signal?.throwIfAborted();
   const proposals = await options.proposals.listGroup({ permissionContext: options.context,
     groupId: options.conversationId as never });
+  const replay = await replayConversation({ conversationId: options.conversationId as never, eventStore: options.events });
+  const current = replay.state; replay.store.destroy();
+  options.signal?.throwIfAborted();
+  if (current.replay_error) throw new Error("External approval recovery requires valid canonical history");
+  const activeProposals = new Set(current.approval_proposals.map(proposal => proposal.proposal_id));
   let firstFailure: unknown;
   for (const proposal of proposals) {
+    options.signal?.throwIfAborted();
     try {
-      if (proposal.status === "pending" || proposal.group_id !== options.conversationId) continue;
+      if (proposal.status === "pending" || proposal.group_id !== options.conversationId || !activeProposals.has(proposal.proposal_id)) continue;
       // Ordinary provider turns retain their own durable resumption machinery.
       if (await options.turns.load(options.conversationId, proposal.turn_id)) continue;
       // A retained result still passes through the idempotent runtime so the host
       // can repair a display receipt after a crash between execution and delivery.
       const location = { conversationId: options.conversationId, turnId: proposal.turn_id };
       const runtime = await options.runtimeFor({ ...location, context: options.context });
+      options.signal?.throwIfAborted();
       if (!runtime) continue;
       const requested = await findConversationEvent(options.events, options.conversationId as never,
         event => event.payload.type === "tool_call.requested" &&
@@ -53,7 +63,8 @@ export async function resumeExternalToolApprovals<TContext>(options: {
         assistantToolArgumentReference(payload.arguments) !== proposal.reviewed_arguments.argument_ref) {
         throw new ApprovalProposalStoreError("idempotency_conflict", "transition");
       }
-      await runtime.awaitApproval({ ...location, signal: new AbortController().signal,
+      options.signal?.throwIfAborted();
+      await runtime.awaitApproval({ ...location, signal: options.signal ?? new AbortController().signal,
         call: { tool_call_id: proposal.tool_call_id, name: payload.name, arguments: payload.arguments } });
     } catch (error) { firstFailure ??= error; }
   }

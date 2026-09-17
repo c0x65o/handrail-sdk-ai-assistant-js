@@ -1,16 +1,18 @@
 import type { ConversationClientId, ConversationId, ConversationTurnCancellationReason } from "../conversation/events.js";
 import type { ConversationDisplayControl, ConversationDisplayControlInput, ConversationDisplayTurnControl } from "../conversation/display-control.js";
-import type { ConversationDisplayRecord } from "../conversation/display-history.js";
+import type { ConversationDisplayRecord, ConversationDisplayContentInput, ConversationDisplayContentChunk } from "../conversation/display-history.js";
 import type { ConversationRuntimeSendMessageInput } from "../runtime.js";
 import type { ApplicationGatewayResourceClient } from "../transports/application-gateway.js";
 import type { ConversationTransport, TurnObservation } from "../transports/types.js";
 import { ConversationDisplayWindow, type ConversationDisplayReader, type ConversationDisplayWindowSnapshot } from "./display-window.js";
 import { ConversationDraftController, parseSavedPosition, type ConversationLocalStateStore, type ConversationSavedPosition } from "./local-state.js";
+import { mergeRelatedRecords, relatedViews } from "./related-records.js";
 import { captureApplicationConversationInput, parseApplicationConversationSubmission, prepareApplicationConversationSubmission,
   type ApplicationConversationPendingStore, type ApplicationConversationSubmission } from "./session-submission.js";
 
 export interface ApplicationConversationReader extends ConversationDisplayReader {
   control(input: ConversationDisplayControlInput, signal?: AbortSignal): Promise<ConversationDisplayControl>;
+  content?(input: ConversationDisplayContentInput, signal?: AbortSignal): Promise<ConversationDisplayContentChunk>;
 }
 /** A partial presentation, intentionally not assignable to ConversationState. */
 export interface ApplicationConversationSessionSnapshot {
@@ -20,6 +22,7 @@ export interface ApplicationConversationSessionSnapshot {
   readonly window: ConversationDisplayWindowSnapshot;
   readonly related: readonly ConversationDisplayRecord[];
   readonly hasMoreRelated: boolean;
+  readonly relatedTruncated: boolean;
   readonly loading: boolean;
   readonly submitting: boolean;
   readonly hasPendingSubmission: boolean;
@@ -33,6 +36,8 @@ export interface ApplicationConversationSessionOptions<TRequest> {
   readonly transport: ConversationTransport<unknown, TRequest>;
   readonly pendingStore: ApplicationConversationPendingStore<TRequest>;
   readonly localStateStore?: ConversationLocalStateStore;
+  readonly messageText?: boolean;
+  readonly pendingApprovals?: boolean;
   /** Bootstrap waits for account-owned local flushes before completing disposal. */
   readonly onLocalStateFlush?: (operation: Promise<void>) => void;
   readonly pollMilliseconds?: number;
@@ -56,7 +61,8 @@ const denied = (cause: unknown) => ["forbidden", "permission_denied", "unauthent
 function normalize(cause: unknown): ApplicationConversationSessionError {
   return cause instanceof ApplicationConversationSessionError ? cause
     : new ApplicationConversationSessionError(errorCode(cause), denied(cause)
-      ? "Conversation access is unavailable." : "Conversation could not be refreshed. Try again.", !denied(cause));
+      ? "Conversation access is unavailable." : "Conversation could not be refreshed. Try again.", !denied(cause) &&
+        !(cause && typeof cause === "object" && "retryable" in cause && cause.retryable === false));
 }
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -93,6 +99,11 @@ export class ApplicationConversationSession<TRequest = unknown> {
   private related: readonly ConversationDisplayRecord[] = Object.freeze([]);
   private relatedCursor: string | null = null;
   private relatedKey = "";
+  private relatedViewKey = "";
+  private relatedTruncated = false;
+  private relatedInitialized = false;
+  private relatedGroup = 0;
+  private relatedGroups: ReturnType<typeof relatedViews> = [];
   private relatedPending: Promise<void> | null = null;
   private observation: TurnObservation<unknown> | null = null;
   private observationTurnId: string | null = null;
@@ -103,15 +114,18 @@ export class ApplicationConversationSession<TRequest = unknown> {
   private callbacks: NonNullable<ConversationRuntimeSendMessageInput<TRequest>["onAccepted"]>[] = [];
 
   constructor(private readonly options: ApplicationConversationSessionOptions<TRequest>) {
-    this.draft = options.localStateStore ? new ConversationDraftController(options.conversationId, options.localStateStore) : null;
     this.pollMilliseconds = options.pollMilliseconds ?? 1000;
     this.idlePollMilliseconds = options.idlePollMilliseconds ?? 15000;
     if (![this.pollMilliseconds, this.idlePollMilliseconds].every(value => Number.isSafeInteger(value) && value >= 100 && value <= 300000)) {
       throw new TypeError("Invalid conversation polling interval");
     }
-    this.window = new ConversationDisplayWindow({ reader: options.reader });
+    this.draft = options.localStateStore ? new ConversationDraftController(options.conversationId, options.localStateStore) : null;
+    this.window = new ConversationDisplayWindow({ reader: options.reader, onChanges: page => {
+      const result = mergeRelatedRecords(this.related, page.records, "changes");
+      this.related = result.records; this.relatedTruncated ||= result.trimmed;
+    } });
     this.state = Object.freeze({ kind: "display", conversationId: options.conversationId, control: null,
-      window: this.window.getSnapshot(), related: this.related, hasMoreRelated: false, loading: false, submitting: false, hasPendingSubmission: false, error: null });
+      window: this.window.getSnapshot(), related: this.related, hasMoreRelated: false, relatedTruncated: false, loading: false, submitting: false, hasPendingSubmission: false, error: null });
     this.unsubscribeWindow = this.window.subscribe(() => {
       const next = this.window.getSnapshot();
       if (next.version !== this.state.window.version && next.change === "older") this.followingLatest = false;
@@ -130,7 +144,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   private publish(patch: Partial<ApplicationConversationSessionSnapshot> = {}) {
     if (this.lifetime.signal.aborted) return;
     this.state = Object.freeze({ ...this.state, control: this.control, window: this.window.getSnapshot(),
-      related: this.related, hasMoreRelated: this.relatedCursor !== null, ...patch });
+      related: this.related, hasMoreRelated: this.relatedCursor !== null || this.relatedGroup + 1 < this.relatedGroups.length,
+      relatedTruncated: this.relatedTruncated, ...patch });
     for (const listener of this.listeners) { try { listener(); } catch { /* Observers do not own admission or reads. */ } }
   }
   async initialize(): Promise<void> {
@@ -152,7 +167,35 @@ export class ApplicationConversationSession<TRequest = unknown> {
     this.wake = setTimeout(() => { this.wake = undefined; void this.refresh().catch(() => undefined); }, 100);
   }
   setFollowingLatest(value: boolean): void { this.followingLatest = value; }
-  getPosition = (): ConversationSavedPosition | undefined => this.position ?? undefined;
+  get supportsPendingApprovals(): boolean { return this.options.pendingApprovals === true; }
+  /** Explicit inbox/review reads share account and selection cancellation. They
+   * never hydrate the message window or become provider context. */
+  async readApprovals(input: { readonly proposalId?: string; readonly cursor?: string }, signal: AbortSignal) {
+    this.assertOpen();
+    if (!this.supportsPendingApprovals || !this.active || this.control?.status !== "ready") {
+      throw new ApplicationConversationSessionError("approval_inbox_unavailable", "Pending approvals are unavailable.", true);
+    }
+    const generation = this.control.generation;
+    const combined = AbortSignal.any([signal, this.displayLifetime.signal, this.lifetime.signal]);
+    const page = await this.options.reader.page({ conversationId: this.options.conversationId,
+      view: input.proposalId ? { type: "approval", proposalId: input.proposalId } : { type: "pending_approvals" },
+      ...(input.proposalId ? { limit: 2, maximumBytes: 128 * 1024 } : {}),
+      ...(input.cursor ? { cursor: input.cursor } : {}) }, combined);
+    if (combined.aborted) throw new DOMException("Approval read cancelled", "AbortError");
+    if (page.status !== "ready" || page.generation !== generation || this.control?.generation !== generation ||
+        page.revision < Math.max(this.control?.revision ?? 0, this.window.getSnapshot().revision)) {
+      throw new ApplicationConversationSessionError("stale_approvals", "Approval details changed. Try again.", true);
+    }
+    return page;
+  }
+  get supportsMessageText(): boolean { return this.options.messageText === true && !!this.options.reader.content; }
+  readMessageText = (input: ConversationDisplayContentInput, signal: AbortSignal): Promise<ConversationDisplayContentChunk> => {
+    this.assertOpen();
+    if (!this.supportsMessageText || input.conversationId !== this.options.conversationId ||
+        input.kind !== "message" || input.format !== "message-text") throw new TypeError("Message text reader is unavailable");
+    return this.options.reader.content!(input, AbortSignal.any([signal, this.displayLifetime.signal, this.lifetime.signal]));
+  };
+  getPosition = (): ConversationSavedPosition | undefined => this.lifetime.signal.aborted ? undefined : this.position ?? undefined;
   savePosition = (position: ConversationSavedPosition): void => {
     if (this.lifetime.signal.aborted) return;
     this.position = parseSavedPosition(position); this.positionLoaded = true; this.positionDirty = true;
@@ -161,12 +204,17 @@ export class ApplicationConversationSession<TRequest = unknown> {
   };
   private async restorePosition(signal: AbortSignal) {
     if (this.positionLoaded) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const value = await this.options.localStateStore?.readPosition(this.options.conversationId);
+      // A local preference must never hold authorized history behind blocked
+      // device storage. Late restoration is ignored once display has opened.
+      const value = await Promise.race([this.options.localStateStore?.readPosition(this.options.conversationId),
+        new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 100); })]);
       if (signal.aborted || this.positionLoaded) return;
       this.position = value ? parseSavedPosition(value) : null;
       this.followingLatest = this.position?.following ?? true;
     } catch { /* Local position failure must not hide an authorized conversation. */ }
+    finally { clearTimeout(timer); }
     if (!signal.aborted) this.positionLoaded = true;
   }
   private flushPosition(): Promise<void> {
@@ -186,7 +234,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
     if (this.active === active) return;
     this.active = active;
     this.displayLifetime.abort(); this.displayLifetime = new AbortController();
-    this.related = Object.freeze([]); this.relatedCursor = null; this.relatedKey = "";
+    this.clearRelated();
     if (!active) { await this.window.select(null); this.publish(); }
     else { await this.pending?.catch(() => undefined); await this.refresh(); }
     this.schedulePoll();
@@ -201,13 +249,13 @@ export class ApplicationConversationSession<TRequest = unknown> {
         const control = await this.options.reader.control({ conversationId: this.options.conversationId }, signal);
         if (signal.aborted) return;
         if (control.status === "preparing") {
-          this.control = control; this.related = Object.freeze([]); this.relatedKey = ""; this.relatedCursor = null;
+          this.control = control; this.clearRelated();
           await this.window.select(null);
           throw new ApplicationConversationSessionError("history_preparing", "Preparing saved conversation…", true);
         }
         if (this.control && control.revision < this.control.revision) throw new ApplicationConversationSessionError("stale_control", "Conversation controls are temporarily behind.", true);
         const previous = this.control; this.control = control;
-        if (previous?.generation !== control.generation) { this.related = Object.freeze([]); this.relatedKey = ""; this.relatedCursor = null; }
+        if (previous?.generation !== control.generation) { this.clearRelated(); }
         if (this.active) {
           await this.restorePosition(signal); if (signal.aborted) return;
           if (this.window.getSnapshot().conversationId !== this.options.conversationId || previous?.generation !== control.generation) {
@@ -225,8 +273,15 @@ export class ApplicationConversationSession<TRequest = unknown> {
           if (window.error) throw window.error.cause;
           if (window.status !== "ready" || window.generation !== control.generation) throw new ApplicationConversationSessionError("history_preparing", "Preparing saved conversation…", true);
           if (this.relatedKey !== this.contextKey()) {
-            this.relatedKey = this.contextKey(); this.related = Object.freeze([]); this.relatedCursor = null;
-            try { await this.readRelated(signal); } catch (cause) { this.relatedKey = ""; throw cause; }
+            const viewKey = this.contextViewKey();
+            if (this.relatedViewKey !== viewKey) {
+              this.related = Object.freeze([]); this.relatedCursor = null; this.relatedTruncated = false;
+              this.relatedGroups = relatedViews(window.records.map(record => record.id), (control.activeTurn ?? control.latestTurn)?.turnId);
+              this.relatedGroup = 0;
+              this.relatedInitialized = false;
+            }
+            this.relatedViewKey = viewKey; this.relatedKey = this.contextKey();
+            try { await this.readRelated(signal, true); } catch (cause) { this.relatedKey = ""; throw cause; }
           }
         }
         if (!signal.aborted) this.publish({ error: null });
@@ -235,7 +290,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
         if (denied(cause)) {
           this.observation?.disconnect(); this.observation = null;
           clearTimeout(this.wake); this.wake = undefined;
-          this.control = null; this.related = Object.freeze([]); this.relatedCursor = null; this.relatedKey = "";
+          this.control = null; this.clearRelated();
           await this.window.select(null);
         }
         const error = normalize(cause); this.publish({ error }); throw error;
@@ -243,24 +298,55 @@ export class ApplicationConversationSession<TRequest = unknown> {
     }).finally(() => { if (this.pending === work) this.pending = null; });
     this.pending = work; return work;
   }
-  private contextKey() { return `${this.control?.generation}/${this.control?.revision}/${this.window.getSnapshot().version}`; }
-  private async readRelated(signal: AbortSignal) {
-    const key = this.relatedKey, turn = this.control?.activeTurn ?? this.control?.latestTurn;
-    const messageIds = this.window.getSnapshot().records.map(record => record.id);
-    if (!turn && !messageIds.length) return;
+  private clearRelated() {
+    this.related = Object.freeze([]); this.relatedCursor = null;
+    this.relatedKey = ""; this.relatedViewKey = "";
+    this.relatedTruncated = false; this.relatedInitialized = false;
+    this.relatedGroups = []; this.relatedGroup = 0;
+  }
+  private contextKey() {
+    const window = this.window.getSnapshot();
+    return `${this.control?.generation}/${this.control?.revision}/${window.revision}/${window.version}`;
+  }
+  private contextViewKey() { return JSON.stringify([this.control?.generation,
+    this.control?.activeTurn?.turnId ?? this.control?.latestTurn?.turnId, this.window.getSnapshot().records.map(record => record.id)]); }
+  private async readRelated(signal: AbortSignal, latest = false) {
+    const key = this.relatedKey;
+    const group = latest ? 0 : this.relatedCursor ? this.relatedGroup : this.relatedGroup + 1;
+    const view = this.relatedGroups[group];
+    if (!view) return;
     const page = await this.options.reader.page({ conversationId: this.options.conversationId,
-      view: { type: "context", messageIds, ...(turn ? { turnId: turn.turnId } : {}) },
-      ...(this.relatedCursor ? { cursor: this.relatedCursor } : {}) }, signal);
+      view,
+      ...(!latest && this.relatedCursor ? { cursor: this.relatedCursor } : {}) }, signal);
     if (signal.aborted || this.relatedKey !== key || key !== this.contextKey()) return;
+    if (page.revision < this.window.getSnapshot().revision) throw new ApplicationConversationSessionError("stale_activity", "Saved activity is temporarily behind. Try again.", true);
     if (page.status !== "ready" || page.generation !== this.control?.generation) throw new ApplicationConversationSessionError("history_preparing", "Preparing saved activity…", true);
-    this.related = page.records; this.relatedCursor = page.nextCursor;
+    const initial = !this.relatedInitialized;
+    const result = mergeRelatedRecords(this.related, page.records, latest ? "latest" : "older");
+    this.related = result.records; this.relatedTruncated ||= result.trimmed;
+    this.relatedInitialized = true;
+    if (!latest || initial) { this.relatedCursor = page.nextCursor; this.relatedGroup = group; }
   }
   loadMoreRelated(): Promise<void> {
     this.assertOpen();
     if (this.relatedPending) return this.relatedPending;
-    if (!this.relatedCursor) return Promise.resolve();
+    if (!this.state.hasMoreRelated) return Promise.resolve();
     const signal = AbortSignal.any([this.lifetime.signal, this.displayLifetime.signal]);
-    return this.relatedPending = this.readRelated(signal).then(() => this.publish()).finally(() => { this.relatedPending = null; });
+    return this.relatedPending = this.readRelated(signal).then(() => this.publish({ error: null })).catch(async cause => {
+      if (signal.aborted) return;
+      if (denied(cause)) {
+        this.control = null; this.clearRelated();
+        this.observation?.disconnect(); this.observation = null;
+        await this.window.select(null);
+      }
+      const error = normalize(cause); this.publish({ error }); throw error;
+    }).finally(() => { this.relatedPending = null; });
+  }
+  async showLatestRelated(): Promise<void> {
+    this.assertOpen();
+    await this.pending; this.assertOpen();
+    this.relatedKey = ""; this.relatedViewKey = "";
+    await this.refresh();
   }
   async prepare(input: ConversationRuntimeSendMessageInput<TRequest>): Promise<ApplicationConversationSubmission<TRequest>> {
     const captured = captureApplicationConversationInput(input);
@@ -384,13 +470,13 @@ export class ApplicationConversationSession<TRequest = unknown> {
   dispose(): void {
     if (this.lifetime.signal.aborted) return;
     this.lifetime.abort(); this.displayLifetime.abort(); clearTimeout(this.poll); clearTimeout(this.wake);
-    const flushed = Promise.allSettled([this.draft?.dispose(), this.flushPosition()]).then(() => undefined);
+    const flushed = Promise.allSettled([this.draft?.dispose(), this.flushPosition()]).then(() => { this.position = null; });
     this.options.onLocalStateFlush?.(flushed);
     this.observation?.disconnect(); this.observation = null; this.observationTurnId = null; this.unsubscribeWindow(); this.window.dispose();
-    this.control = null; this.related = Object.freeze([]); this.relatedCursor = null; this.relatedKey = "";
+    this.control = null; this.clearRelated();
     this.admitted = null; this.submission = null; this.callbacks = []; this.cancellationIds.clear();
     this.state = Object.freeze({ kind: "display", conversationId: this.options.conversationId, control: null,
-      window: this.window.getSnapshot(), related: this.related, hasMoreRelated: false, loading: false, submitting: false, hasPendingSubmission: false, error: null });
+      window: this.window.getSnapshot(), related: this.related, hasMoreRelated: false, relatedTruncated: false, loading: false, submitting: false, hasPendingSubmission: false, error: null });
     this.listeners.clear();
   }
 }

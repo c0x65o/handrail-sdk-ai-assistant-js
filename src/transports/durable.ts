@@ -64,6 +64,14 @@ export interface DurableApplicationRecoveryPage<TStoredRequest = unknown, TEvent
   readonly documents: readonly DurableApplicationTurnDocument<TStoredRequest, TEvent>[];
   readonly cursor: DurableApplicationRecoveryCursor | null;
 }
+/** Discovery never includes retained requests, frames or provider state. */
+export interface DurableApplicationRecoveryCandidate extends DurableApplicationRecoveryPosition {
+  readonly lease: DurableApplicationTurnLease | null;
+}
+export interface DurableApplicationRecoveryCandidatePage {
+  readonly candidates: readonly DurableApplicationRecoveryCandidate[];
+  readonly cursor: DurableApplicationRecoveryCursor | null;
+}
 export type DurableApplicationTurnCreateResult<TStoredRequest, TEvent> =
   | { readonly status: "created" | "idempotent"; readonly document: DurableApplicationTurnDocument<TStoredRequest, TEvent> }
   | { readonly status: "conflict"; readonly document: DurableApplicationTurnDocument<TStoredRequest, TEvent> | null };
@@ -76,7 +84,9 @@ export interface DurableApplicationTurnStore<TStoredRequest = unknown, TEvent = 
   create(record: DurableApplicationTurnRecord<TStoredRequest, TEvent>): Promise<DurableApplicationTurnCreateResult<TStoredRequest, TEvent>>;
   compareAndSet(input: { readonly conversationId: string; readonly turnId: string; readonly expectedVersion: number;
     readonly record: DurableApplicationTurnRecord<TStoredRequest, TEvent> }): Promise<DurableApplicationTurnWriteResult<TStoredRequest, TEvent>>;
-  /** Bounded recovery scan. Production stores must never return terminal rows. */
+  /** Preferred discovery path: authorization precedes loading any retained body. */
+  scanRecoveryCandidates?(limit: number, cursor?: DurableApplicationRecoveryCursor): Promise<DurableApplicationRecoveryCandidatePage>;
+  /** Legacy recovery scan. Prefer metadata-only scanRecoveryCandidates. */
   listRecoverable?(limit: number): Promise<readonly DurableApplicationTurnDocument<TStoredRequest, TEvent>[]>;
   /** Page past denied or already leased rows without changing them. Each page is bounded;
    * the cursor must advance on immutable keys and retain the initial upper bound. */
@@ -101,6 +111,9 @@ export interface DurableApplicationTransportOptions<TEvent, TRequest, TStoredReq
   readonly authorizeRecovery?: (input: { readonly conversationId: string; readonly turnId: string }) => boolean | Promise<boolean>;
   readonly maximumAttempts?: number;
   readonly maximumCasAttempts?: number;
+  /** Share one pool across authorization contexts to bound recovered provider
+   * executions (including retained request loading), independently of discovery. */
+  readonly recoveryWorkers?: DurableRecoveryWorkerPool;
   readonly now?: () => number;
   readonly diagnostics?: AiDiagnosticSink;
   /** Published by the durable writer, even when no browser is observing the turn. */
@@ -120,13 +133,40 @@ export interface DurableApplicationTurnStatusUpdate {
   readonly version: number;
 }
 export interface DurableApplicationTransport<TEvent, TRequest> extends ConversationTransport<TEvent, TRequest> {
+  /** Local executions, including provider/observer settlement. Used by owners
+   * to retire an idle transport without surrendering a live lease. */
+  readonly activeWorkerCount: number;
   /** Trusted caller must first verify this turn was canonically admitted and authorized. */
   cancelTurnBeforeStart(input: CancelTurnInput): Promise<TransportResult<AuthoritativeCancelTurnResult>>;
   /** Trusted caller must authorize the decision and canonically admit this resumption. */
-  resumeApprovalTurn(conversationId: string, turnId: string): Promise<TransportResult<{ readonly status: "started" | "already_running" | "terminal" }>>;
-  recoverTurn(conversationId: string, turnId: string): Promise<TransportResult<{ readonly status: "started" | "already_running" | "terminal" }>>;
-  /** Starts at most limit turns. Paged stores scan past denied/leased rows to reach eligible work. */
+  resumeApprovalTurn(conversationId: string, turnId: string, options?: { readonly recovery?: boolean; readonly signal?: AbortSignal }):
+    Promise<TransportResult<{ readonly status: "started" | "already_running" | "terminal" | "deferred" }>>;
+  recoverTurn(conversationId: string, turnId: string): Promise<TransportResult<{ readonly status: "started" | "already_running" | "terminal" | "deferred" }>>;
+  /** One bounded discovery batch. A scheduler can yield between pages and
+   * reauthenticate before continuing; stopping discovery never cancels a turn. */
+  recoverPendingPage(input?: { readonly limit?: number; readonly cursor?: DurableApplicationRecoveryCursor;
+    readonly signal?: AbortSignal }): Promise<{ readonly started: readonly DurableApplicationRecoveryPosition[];
+      readonly cursor: DurableApplicationRecoveryCursor | null; readonly deferred?: true }>;
+  /** Starts at most limit turns. Explicit callers scan past denied/leased rows;
+   * background schedulers should use recoverPendingPage to bound each job. */
   recoverPending(limit?: number): Promise<readonly { readonly conversationId: string; readonly turnId: string }[]>;
+  /** Stop new local dispatch and wait for admitted workers and their observers.
+   * Draining does not cancel user intent or surrender a live provider lease. */
+  stopWorkers(): Promise<void>;
+}
+
+/** No retained waiting queue: unavailable capacity stays in durable storage. */
+export class DurableRecoveryWorkerPool {
+  #active = 0;
+  constructor(readonly maximum = 4) {
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 1_000) throw new TypeError("Recovery worker limit is invalid");
+  }
+  get available(): boolean { return this.#active < this.maximum; }
+  tryAcquire(): (() => void) | null {
+    if (!this.available) return null;
+    this.#active++; let released = false;
+    return () => { if (!released) { released = true; this.#active--; } };
+  }
 }
 
 const EMPTY_CHECKPOINT: TurnResumePoint = Object.freeze({ lastAppliedEventId: null, lastAppliedCursor: null,
@@ -199,6 +239,24 @@ implements DurableApplicationTurnStore<TStoredRequest, TEvent> {
   async listRecoverable(limit: number) {
     return [...this.#documents.values()].filter((item) => !terminalStatus(item.record.status)).slice(0, limit).map(clone);
   }
+  async scanRecoveryCandidates(limit: number, cursor?: DurableApplicationRecoveryCursor): Promise<DurableApplicationRecoveryCandidatePage> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("limit is invalid");
+    const compare = (a: DurableApplicationRecoveryPosition, b: DurableApplicationRecoveryPosition) =>
+      a.conversationId === b.conversationId ? (a.turnId < b.turnId ? -1 : a.turnId > b.turnId ? 1 : 0)
+        : a.conversationId < b.conversationId ? -1 : 1;
+    const pending = [...this.#documents.values()].filter(item => !terminalStatus(item.record.status))
+      .sort((a, b) => compare(a.record, b.record));
+    const last = pending.at(-1)?.record;
+    const through = cursor?.through ?? (last ? { conversationId: last.conversationId, turnId: last.turnId } : null);
+    if (!through) return { candidates: [], cursor: null };
+    const candidates = pending.filter(item => (!cursor || compare(item.record, cursor.after) > 0) &&
+      compare(item.record, through) <= 0).slice(0, limit).map(({ record }) => Object.freeze({
+        conversationId: record.conversationId, turnId: record.turnId, lease: record.lease ? Object.freeze({ ...record.lease }) : null,
+      }));
+    const tail = candidates.at(-1);
+    return Object.freeze({ candidates: Object.freeze(candidates), cursor: tail && candidates.length === limit && compare(tail, through) < 0
+      ? { after: { conversationId: tail.conversationId, turnId: tail.turnId }, through: clone(through) } : null });
+  }
   async scanRecoverable(limit: number, cursor?: DurableApplicationRecoveryCursor): Promise<DurableApplicationRecoveryPage<TStoredRequest, TEvent>> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("limit is invalid");
     const compare = (a: DurableApplicationRecoveryPosition, b: DurableApplicationRecoveryPosition) =>
@@ -234,6 +292,7 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
     throw new TypeError("Durable application transport limits are invalid");
   }
   const running = new Map<string, Promise<void>>();
+  let workersStopped = false;
   const publishStatus = async (document: DurableApplicationTurnDocument<TStoredRequest, TEvent>) => {
     if (!options.onTurnStatusChanged) return;
     const { conversationId, turnId, status, updatedAt } = document.record;
@@ -316,7 +375,7 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
       if (timer !== undefined) clearTimeout(timer);
       wake?.();
       controller.abort();
-      void monitor;
+      await monitor;
     }
   };
 
@@ -371,11 +430,12 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         if (record.lease?.ownerId !== workerId) throw new LeaseLostError();
         return { ...record, delegateTurnId: started.value.turnId, updatedAt: timestamp(now()) };
       });
-      let stopped = false;
+      let stopped = false, monitorTimer: ReturnType<typeof setTimeout> | undefined, wakeMonitor: (() => void) | undefined;
       const monitor = async () => {
         while (!stopped) {
-          await new Promise<void>((resolve) => setTimeout(resolve, pollMilliseconds)); if (stopped) return;
+          await new Promise<void>((resolve) => { wakeMonitor = resolve; monitorTimer = setTimeout(resolve, pollMilliseconds); }); if (stopped) return;
           const current = await options.store.load(conversationId, turnId);
+          if (stopped) return;
           if (!current || terminalStatus(current.record.status) || current.record.lease?.ownerId !== workerId) {
             started.value.observation.disconnect(); return;
           }
@@ -398,6 +458,9 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         }
       };
       const monitoring = monitor();
+      // Attach the rejection handler immediately, including while a provider
+      // is quiet. The finally block still joins the actual monitor promise.
+      void monitoring.catch(() => undefined);
       try {
         for await (const event of started.value.observation.events) {
           const eventCheckpoint = normalizeCheckpoint(options.checkpointForEvent(event));
@@ -419,7 +482,10 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
           phase: result.status === "completed" || result.status === "waiting_for_approval" ? "succeeded" : result.status === "cancelled" ? "cancelled" : "failed",
           conversationId, turnId, attempt: claimed.record.attempt,
           ...(result.status === "failed" ? { code: result.error.code, retryable: result.error.retryable } : {}) });
-      } finally { stopped = true; void monitoring.catch(() => undefined); }
+      } finally {
+        stopped = true; if (monitorTimer !== undefined) clearTimeout(monitorTimer); wakeMonitor?.();
+        await monitoring.catch(() => undefined);
+      }
     } catch (cause) {
       if (cause instanceof PreparationCancelledError) {
         try { await settle(conversationId, turnId, { status: "cancelled", checkpoint: EMPTY_CHECKPOINT }); }
@@ -434,13 +500,14 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
       }
     }
   };
-  const kick = (conversationId: string, turnId: string): boolean => {
-    const operationKey = key(conversationId, turnId); if (running.has(operationKey)) return false;
+  const kick = (conversationId: string, turnId: string, release?: () => void): boolean => {
+    const operationKey = key(conversationId, turnId);
+    if (workersStopped || running.has(operationKey)) { release?.(); return false; }
     const operation = run(conversationId, turnId).finally(async () => {
       try { await options.onWorkerStopped?.({ conversationId, turnId }); }
       catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "live_conversation_projection",
         phase: "failed", conversationId, turnId, code: "projection_cleanup_failed", retryable: true, cause }); }
-      finally { running.delete(operationKey); }
+      finally { running.delete(operationKey); release?.(); }
     }); running.set(operationKey, operation);
     void operation.catch(() => undefined); return true;
   };
@@ -462,21 +529,33 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
     })();
     return { events, result, disconnect() { disconnected = true; } };
   };
-  const recoverTurn: DurableApplicationTransport<TEvent, TRequest>["recoverTurn"] = async (conversationId, turnId) => {
+  const recoverTurn = async (conversationId: string, turnId: string, signal?: AbortSignal): ReturnType<DurableApplicationTransport<TEvent, TRequest>["recoverTurn"]> => {
+    let release: (() => void) | undefined;
     try {
+      if (workersStopped) return safeFailure("unavailable", "The durable worker is draining.", true);
       identifier(conversationId, "conversationId"); identifier(turnId, "turnId");
+      if (running.has(key(conversationId, turnId))) return { ok: true, value: { status: "already_running" } };
       if (options.authorizeRecovery && !await options.authorizeRecovery({ conversationId, turnId })) {
         return safeFailure("not_found", "The durable turn was not found.", false);
       }
+      signal?.throwIfAborted();
+      if (options.recoveryWorkers) {
+        release = options.recoveryWorkers.tryAcquire() ?? undefined;
+        if (!release) return { ok: true, value: { status: "deferred" } };
+      }
       const current = await options.store.load(conversationId, turnId);
+      signal?.throwIfAborted();
       if (!current) return safeFailure("not_found", "The durable turn was not found.", false);
       if (terminalStatus(current.record.status)) return { ok: true, value: { status: "terminal" } };
       const liveLease = current.record.lease && Date.parse(current.record.lease.expiresAt) > now();
       if (liveLease && current.record.lease!.ownerId !== workerId) return { ok: true, value: { status: "already_running" } };
-      return { ok: true, value: { status: kick(conversationId, turnId) ? "started" : "already_running" } };
+      const started = kick(conversationId, turnId, release); release = undefined;
+      return { ok: true, value: { status: started ? "started" : "already_running" } };
     } catch { return safeFailure("unavailable", "The durable turn could not be recovered.", true); }
+    finally { release?.(); }
   };
   const transport: DurableApplicationTransport<TEvent, TRequest> = {
+    get activeWorkerCount() { return running.size; },
     async cancelTurnBeforeStart(input) {
       try {
         const conversationId = identifier(input.conversationId, "conversationId");
@@ -522,6 +601,7 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
     } } },
     async startTurn(input: StartTurnInput<TRequest>): Promise<TransportResult<TurnHandle<TEvent>>> {
       try {
+        if (workersStopped) return safeFailure("unavailable", "The durable worker is draining.", true);
         const conversationId = identifier(input.conversationId, "conversationId");
         const turnId = identifier(input.conversationTurnId, "conversationTurnId");
         const storedRequest = await options.requestCodec.encode(input.request);
@@ -558,48 +638,90 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
       } catch (cause) { return safeFailure(cause instanceof TypeError ? "invalid_request" : "unavailable",
         cause instanceof TypeError ? cause.message : "The durable turn could not be resumed.", !(cause instanceof TypeError)); }
     },
-    async resumeApprovalTurn(conversationId, turnId) {
+    async resumeApprovalTurn(conversationId, turnId, recovery) {
+      let release: (() => void) | undefined;
       try {
+        if (workersStopped) return safeFailure("unavailable", "The durable worker is draining.", true);
         identifier(conversationId, "conversationId"); identifier(turnId, "turnId");
         if (options.authorizeRecovery && !await options.authorizeRecovery({ conversationId, turnId })) {
           return safeFailure("not_found", "The durable turn was not found.", false);
         }
+        recovery?.signal?.throwIfAborted();
+        if (recovery?.recovery && options.recoveryWorkers) {
+          release = options.recoveryWorkers.tryAcquire() ?? undefined;
+          if (!release) return { ok: true, value: { status: "deferred" } };
+        }
         const resumed = await update(conversationId, turnId, record => {
+          recovery?.signal?.throwIfAborted();
           if (record.status !== "waiting_for_approval" || record.cancellation !== null) return null;
           return { ...record, status: "pending", terminal: null, lease: null,
             approvalResumes: (record.approvalResumes ?? 0) + 1, updatedAt: timestamp(now()) };
         });
         if (!resumed) return safeFailure("not_found", "The durable turn was not found.", false);
+        recovery?.signal?.throwIfAborted();
         if (terminalStatus(resumed.record.status)) return { ok: true, value: { status: "terminal" } };
         // A decision can arrive during the worker's settlement callback. Let
         // that claim finish before starting the next monotonically fenced claim.
         const previous = running.get(key(conversationId, turnId));
-        if (previous) void previous.then(() => kick(conversationId, turnId));
-        else kick(conversationId, turnId);
+        const permit = release; release = undefined;
+        if (previous) void previous.then(() => kick(conversationId, turnId, permit)).catch(() => permit?.());
+        else kick(conversationId, turnId, permit);
         return { ok: true, value: { status: "started" } };
       } catch { return safeFailure("unavailable", "Approved work could not be resumed.", true); }
+      finally { release?.(); }
     },
     recoverTurn,
+    async recoverPendingPage(input = {}) {
+      const limit = input.limit ?? 25, cursor = input.cursor, signal = input.signal;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("Recovery limit is invalid");
+      signal?.throwIfAborted();
+      if (workersStopped) throw new Error("The durable worker is draining");
+      if (options.recoveryWorkers && !options.recoveryWorkers.available) {
+        return { started: [], cursor: cursor ?? null, deferred: true };
+      }
+      const page: DurableApplicationRecoveryCandidatePage = options.store.scanRecoveryCandidates
+        ? await options.store.scanRecoveryCandidates(limit, cursor)
+        : await (async () => {
+          const legacy = options.store.scanRecoverable ? await options.store.scanRecoverable(limit, cursor)
+            : { documents: await options.store.listRecoverable?.(limit) ?? [], cursor: null };
+          return { candidates: legacy.documents.map(({ record }) => ({ conversationId: record.conversationId,
+            turnId: record.turnId, lease: record.lease })), cursor: legacy.cursor };
+        })();
+      signal?.throwIfAborted();
+      if (page.candidates.length > limit || page.cursor && (page.candidates.length === 0 || JSON.stringify(page.cursor) === JSON.stringify(cursor))) {
+        throw new TypeError("Recovery scan exceeded its bound or did not advance");
+      }
+      const started: DurableApplicationRecoveryPosition[] = [];
+      for (const candidate of page.candidates) {
+        signal?.throwIfAborted();
+        // A metadata hint can skip a known live worker, but never grants a claim.
+        // recoverTurn reauthorizes and rereads before the durable claim CAS.
+        if (candidate.lease && candidate.lease.ownerId !== workerId && Date.parse(candidate.lease.expiresAt) > now()) continue;
+        const result = await recoverTurn(candidate.conversationId, candidate.turnId, signal);
+        signal?.throwIfAborted();
+        if (result.ok && result.value.status === "deferred") {
+          // Repeat the input page, never skip an unclaimed identity. Already
+          // running/terminal rows are cheap to skip on the next attempt.
+          return { started: Object.freeze(started), cursor: cursor ?? null, deferred: true };
+        }
+        if (result.ok && result.value.status === "started") started.push({ conversationId: candidate.conversationId, turnId: candidate.turnId });
+      }
+      return Object.freeze({ started: Object.freeze(started), cursor: page.cursor });
+    },
     async recoverPending(limit = 100) {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new TypeError("Recovery limit is invalid");
-      const started: { conversationId: string; turnId: string }[] = [];
+      const started: DurableApplicationRecoveryPosition[] = [];
       let cursor: DurableApplicationRecoveryCursor | undefined;
       do {
-        const page: DurableApplicationRecoveryPage<TStoredRequest, TEvent> = options.store.scanRecoverable
-          ? await options.store.scanRecoverable(limit, cursor)
-          : { documents: await options.store.listRecoverable?.(limit) ?? [], cursor: null };
-        for (const document of page.documents) {
-          const result = await recoverTurn(document.record.conversationId, document.record.turnId);
-          if (result.ok && result.value.status === "started") started.push({ conversationId: document.record.conversationId,
-            turnId: document.record.turnId });
-          if (started.length === limit) break;
-        }
-        if (page.cursor && (page.documents.length === 0 || JSON.stringify(page.cursor) === JSON.stringify(cursor))) {
-          throw new TypeError("Recovery scan cursor did not advance");
-        }
-        cursor = page.cursor ?? undefined;
+        const page = await transport.recoverPendingPage({ limit: limit - started.length, ...(cursor ? { cursor } : {}) });
+        started.push(...page.started); cursor = page.cursor ?? undefined;
+        if (page.deferred) break;
       } while (cursor !== undefined && started.length < limit);
       return Object.freeze(started);
+    },
+    async stopWorkers() {
+      workersStopped = true;
+      await Promise.all(running.values());
     },
   };
   return Object.freeze(transport);

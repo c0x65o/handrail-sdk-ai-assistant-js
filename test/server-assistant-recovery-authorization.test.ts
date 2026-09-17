@@ -19,7 +19,9 @@ const contextFor = (owner: string): HandrailAssistantAuthorizationContext => ({
 });
 const checkpoint = { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null };
 
-it.each(["persistence", "host"] as const)("checks the %s catalog before recovering another user's pending work", async source => {
+it.each([{ source: "persistence", boot: false, paged: false }, { source: "host", boot: false, paged: false },
+  { source: "persistence", boot: true, paged: false }, { source: "persistence", boot: true, paged: true }] as const)(
+  "checks the $source catalog before recovery (trusted startup: $boot, paged: $paged)", async ({ source, boot, paged }) => {
   const events = new InMemoryConversationEventStore();
   const durableTurns = new InMemoryDurableApplicationTurnStore<ChatRequest, StreamEvent>();
   const catalog = new InMemoryConversationCatalog<HandrailAssistantAuthorizationContext>({
@@ -55,12 +57,25 @@ it.each(["persistence", "host"] as const)("checks the %s catalog before recoveri
     return { status: "completed" as const, checkpoint };
   });
   let context = contextFor("bob");
+  let cancellationAdmissions = 0;
+  const authorize = vi.fn(async (request: Request, action: string) => {
+    if (action === "cancel") { cancellationAdmissions++; await request.clone().json(); }
+    return context;
+  });
   const bundle = { events, durableTurns,
     catalog: source === "persistence" ? catalog : new InMemoryConversationCatalog({ authorize: () => "allow" }),
     approvals: new InMemoryApprovalProposalStore({ authorize: () => "allow" }),
     toolLedger: new InMemoryToolExecutionLedger(), activity: {}, usageReceiptSink: null, usageAdmissions: null,
   } as unknown as PostgresAssistantPersistenceBundle<HandrailAssistantAuthorizationContext>;
-  const assistant = await createHandrailAssistant({ id: "recovery-authorization", authorize: () => context,
+  const assistant = await createHandrailAssistant({ id: "recovery-authorization", authorize,
+    ...(boot ? { recoveryContexts: () => [context], recoverPendingOnContext: false } : {}),
+    ...(paged ? { recoveryContextSource: {
+      async page({ cursor, limit }: { cursor: string | null; limit: number }) {
+        const offset = Number(cursor ?? 0), next = Math.min(161, offset + limit);
+        return { keys: Array.from({ length: next - offset }, (_, index) => String(offset + index)),
+          cursor: next < 161 ? String(next) : null };
+      }, async resolve(key: string) { return key === "160" ? context : null; },
+    } } : {}),
     ...(source === "host" ? { conversationCatalogFor: () => catalog } : {}),
     persistence: { attachmentLimits: { maximumBytes: 1000, acceptedMediaTypes: ["text/plain"], ttlMilliseconds: 60000 },
       persistence: {}, forScope: () => bundle } as unknown as PostgresAssistantPersistence,
@@ -73,9 +88,19 @@ it.each(["persistence", "host"] as const)("checks the %s catalog before recoveri
     }) },
   });
   try {
-    expect((await assistant.handle(new Request("https://assistant.test/capabilities"))).status).toBe(200);
+    if (!boot) expect((await assistant.handle(new Request("https://assistant.test/capabilities"))).status).toBe(200);
+    if (paged) for (let page = 0; page < 6; page++) await assistant.recoverPending();
     await vi.waitFor(async () => expect((await durableTurns.load("bob-conversation", "bob-turn"))?.record.status).toBe("completed"));
+    if (!boot) {
+      expect((await assistant.handle(new Request("https://assistant.test/turns/cancel", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: "bob-conversation",
+          turnId: "bob-turn", mutationId: "cancel", idempotencyKey: "cancel", reason: "user" }) }))).status).toBe(200);
+    }
     await assistant.recoverPending();
+    if (!boot) {
+      expect(cancellationAdmissions).toBe(1);
+      expect(authorize.mock.calls.at(-1)?.[1]).toBe("capabilities");
+    }
     expect(await durableTurns.load("alice-conversation", "alice-turn")).toEqual(aliceBefore);
     expect(await events.read({ conversationId: "alice-conversation" as ConversationId, limit: 100 })).toEqual(aliceEventsBefore);
     expect(execute.mock.calls).toEqual([["bob", "bob-conversation"]]);
@@ -87,6 +112,7 @@ it.each(["persistence", "host"] as const)("checks the %s catalog before recoveri
     });
     context = contextFor("alice");
     expect((await assistant.handle(new Request("https://assistant.test/capabilities"))).status).toBe(200);
+    if (paged) for (let page = 0; page < 6; page++) await assistant.recoverPending();
     await assistant.recoverPending();
     expect(await durableTurns.load("alice-conversation", "alice-turn")).toEqual(aliceBefore);
     expect(execute.mock.calls).toEqual([["bob", "bob-conversation"]]);
@@ -95,5 +121,5 @@ it.each(["persistence", "host"] as const)("checks the %s catalog before recoveri
     await vi.waitFor(async () => expect((await durableTurns.load("alice-conversation", "alice-turn"))?.record.status).toBe("completed"));
     expect(execute.mock.calls).toEqual([["bob", "bob-conversation"], ["alice", "alice-conversation"]]);
     expect(await Promise.all(otherOwners.map(owner => durableTurns.load(`${owner}-conversation`, `${owner}-turn`)))).toEqual(othersBefore);
-  } finally { assistant.stopUsageWorker(); }
+  } finally { await assistant.stopBackgroundWorkers(); }
 });

@@ -56,6 +56,20 @@ try {
   assert.ok(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth));
   await page.getByRole("log", { name: "Conversation transcript" }).focus();
   assert.equal(await page.evaluate(() => globalThis.document.activeElement.id), "transcript");
+  await page.getByRole("button", { name: "Large chat" }).click();
+  await page.getByRole("button", { name: "Read message", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => globalThis.fixture.contentRequests.length), 0);
+  await page.getByRole("button", { name: "Read message", exact: true }).click();
+  await page.waitForFunction(() => Array.from(document.querySelector('[aria-label="Message text part"]')?.textContent ?? '').length === 8192);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.getByRole("button", { name: "Next part", exact: true }).click();
+  await page.getByText("Last part of the large message.", { exact: true }).waitFor();
+  assert.equal(await page.locator('[aria-label="Message text part"]').count(), 1);
+  await page.getByRole("button", { name: "Previous part", exact: true }).click();
+  await page.waitForFunction(() => Array.from(document.querySelector('[aria-label="Message text part"]')?.textContent ?? '').length === 8192);
+  assert.deepEqual(await page.evaluate(() => globalThis.fixture.contentRequests.map(input => input.offset)), [0, 8192, 0]);
+  await page.getByRole("button", { name: "Close message", exact: true }).click();
+  assert.equal(await page.locator('[aria-label="Message text part"]').count(), 0);
   // Separate frontend metrics: synthetic page reads, no production HTTP or database timing.
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Performance.enable");
@@ -95,7 +109,8 @@ try {
   const report = { browser: "Chromium", viewport: 390, initialRequests: 1, initialMessages: 20,
     maximumRenderedMessages: 60, prependAnchorDriftPixels: Math.abs(after.offset - before.offset),
     delayedLayoutAnchorDriftPixels: Math.abs(resized.offset - after.offset),
-    switchCancellation: "passed", keyboardFocus: "passed", responsiveWidth: "passed", frontend,
+    switchCancellation: "passed", keyboardFocus: "passed", responsiveWidth: "passed",
+    largeMessageText: { automaticReads: 0, maximumRetainedCharacters: 8192, navigation: "passed", responsiveWidth: "passed" }, frontend,
     limitation: "Synthetic SDK component with direct page fixtures; React development build. Browser heap includes Vite/React. Does not measure HTTP, production data, model streaming or Flutter rendering." };
   console.log(JSON.stringify(report, null, 2));
   if (process.env.HANDRAIL_DISPLAY_BROWSER_REPORT) await writeFile(process.env.HANDRAIL_DISPLAY_BROWSER_REPORT, JSON.stringify(report, null, 2) + "\n");

@@ -23,6 +23,8 @@ export interface ConversationDisplayControl {
   readonly generation: number;
   readonly revision: number;
   readonly canonicalRevision: number;
+  /** Absent on older servers. Canonical status, not a timestamp, determines whether a decision is pending. */
+  readonly hasPendingApprovals?: boolean;
   readonly activeTurnId: string | null;
   readonly activeTurn: ConversationDisplayTurnControl | null;
   readonly latestTurn: ConversationDisplayTurnControl | null;
@@ -65,11 +67,14 @@ export function parseConversationDisplayControl(value: unknown, input: Conversat
     return { turnId: item.turnId, revision: item.revision as number,
       status: item.status as ConversationDisplayTurnControl["status"], remoteMayStillBeRunning: item.remoteMayStillBeRunning, error };
   };
+  if (v.hasPendingApprovals !== undefined && typeof v.hasPendingApprovals !== "boolean" ||
+      header.status === "preparing" && v.hasPendingApprovals === true) return fail();
   const activeTurn = parse(v.activeTurn), latestTurn = parse(v.latestTurn), requestedTurn = parse(v.requestedTurn);
   if (header.status === "preparing" ? activeTurn || latestTurn || requestedTurn
       : header.activeTurnId !== (activeTurn?.turnId ?? null) || activeTurn && !activeTurn.remoteMayStillBeRunning ||
         requestedTurn && requestedTurn.turnId !== input.turnId || !input.turnId && requestedTurn) return fail();
   return { schemaVersion: 1, conversationId: header.conversationId, status: header.status, generation: header.generation,
     revision: header.revision, canonicalRevision: header.canonicalRevision, activeTurnId: header.activeTurnId,
-    activeTurn, latestTurn, requestedTurn };
+    activeTurn, latestTurn, requestedTurn,
+    ...(v.hasPendingApprovals === undefined ? {} : { hasPendingApprovals: v.hasPendingApprovals as boolean }) };
 }

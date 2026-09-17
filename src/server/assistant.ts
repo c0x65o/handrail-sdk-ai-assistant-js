@@ -25,6 +25,11 @@ export { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { createToolActivityObserver, type HandrailAssistantToolObserver } from "./tool-observer.js";
 import { createHash } from "node:crypto";
 import { ConversationMaintenanceQueue } from "./conversation-maintenance.js";
+import { ContextRecoveryScheduler } from "./context-recovery.js";
+import { IdleContextRegistry } from "./idle-contexts.js";
+import { RecoveryContextSourceScanner, type AssistantRecoveryContextSource } from "./recovery-context-source.js";
+export type { AssistantRecoveryContextSource } from "./recovery-context-source.js";
+import { repairApprovalDecisionPage, runApprovalRecoveryClaim } from "./approval-recovery.js";
 import { createLiveConversationProjection, type LiveConversationProjection } from "./live-conversation-projection.js";
 import { PostgresConversationDisplayHistory } from "../postgres/display-history.js";
 import type { ConversationDisplayHistory, ConversationDisplayPage } from "../conversation/display-history.js";
@@ -57,7 +62,7 @@ import { createApplicationGateway, createConversationActivityHttpHandler,
   type ApplicationGatewayAuthorizationContext } from "../transports/application-gateway.js";
 import { createApplicationGatewayExpressMiddleware, type ExpressLikeNext,
   type ExpressLikeRequest, type ExpressLikeResponse } from "./application-gateway.js";
-import { createDurableApplicationTransport, type DurableApplicationTransport } from "../transports/durable.js";
+import { createDurableApplicationTransport, DurableRecoveryWorkerPool, type DurableApplicationTransport } from "../transports/durable.js";
 import { ConversationCatalogError, type ConversationCatalog } from "../conversation/catalog.js";
 import { createInMemoryLiveConversationActivityDelivery,
   createConversationActivityReporter,
@@ -199,12 +204,19 @@ export interface CreateHandrailAssistantOptions<TContext extends HandrailAssista
   /** Enumerates server-trusted scopes at worker startup so pending turns and usage can recover after restart. */
   readonly recoveryContexts?: () => Iterable<TContext> | AsyncIterable<TContext> |
     Promise<Iterable<TContext> | AsyncIterable<TContext>>;
+  /** Paged alternative for installations with many trusted recovery identities.
+   * One metadata page (up to 32 keys) per tick; freshly resolves each identity
+   * before work. Takes precedence over the legacy recoveryContexts iterable. */
+  readonly recoveryContextSource?: AssistantRecoveryContextSource<TContext>;
   /**
    * Recover pending work when a trusted context is first authenticated after a
    * restart. Defaults to true. This is the safe recovery path for hosts that
    * cannot reconstruct (and must not persist) opaque user credentials at boot.
    */
   readonly recoverPendingOnContext?: boolean;
+  /** Assistant-wide cap on recovered executions, independent of foreground
+   * admission and the two metadata discovery workers. Defaults to four. */
+  readonly recoveryConcurrency?: number;
   /** Trusted external transports (for example live voice) can resume exact saved
    * decisions with fresh authorization, independently of expired media leases. */
   readonly externalApprovalRuntimeFor?: ExternalApprovalRuntimeFactory<TContext>;
@@ -235,7 +247,8 @@ export interface HandrailAssistant {
   ) => Promise<void>;
   recoverPending(limit?: number): Promise<number>;
   flushUsage(limit?: number): Promise<{ readonly delivered: number; readonly pending: number }>;
-  /** Stops and joins SDK background maintenance before host-owned persistence closes. */
+  /** Stop accepting requests, abort discovery and join admitted workers and
+   * maintenance before closing persistence. Does not cancel user intent. */
   stopBackgroundWorkers(): Promise<void>;
   /** @deprecated Use stopBackgroundWorkers. This compatible alias now also
    * joins file maintenance when awaited; it does not cancel admitted turns. */
@@ -270,10 +283,22 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     ? [options.instructions] : [...(options.instructions ?? [])]);
   const limits = Object.freeze({ ...DEFAULT_TOOL_LOOP_LIMITS, ...options.toolLoopLimits });
   const workerId = identifier(options.workerId ?? `${assistantId}-${process.pid}`, "workerId");
+  // PIDs and configured worker names repeat across pods and rolling restarts.
+  // Lease ownership must identify this live instance, not just its logical name.
+  const workerInstanceId = globalThis.crypto.randomUUID();
   const bundles = new Map<string, PostgresAssistantPersistenceBundle<TContext>>();
   const applications = new Map<string, Promise<AiApplication<TContext, TContext, unknown>>>();
   const transports = new Map<string, Promise<ConversationTransport<StreamEvent, ChatRequest>>>();
   const durableTransports = new Map<string, DurableApplicationTransport<StreamEvent, ChatRequest>>();
+  const constructingTransports = new Set<string>();
+  const executionContexts = new IdleContextRegistry({
+    canRetire: key => !constructingTransports.has(key) && (durableTransports.get(key)?.activeWorkerCount ?? 0) === 0,
+    retire: key => {
+      // No admitted worker or pending SDK operation still needs this transport.
+      void durableTransports.get(key)?.stopWorkers();
+      durableTransports.delete(key); transports.delete(key); applications.delete(key); toolSupports.delete(key);
+    },
+  });
   const liveProjectionClosers = new Set<() => Promise<void>>();
   let liveProjectionStopped = false;
   const activityDeliveries = new Map<string, LiveConversationActivityDelivery>();
@@ -286,6 +311,10 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   // Provider transports and installed plugins may close over roles, actor data,
   // attribution, or session identity. Never reuse them for a different trusted context.
   const executionKeyFor = (context: TContext) => `${scopeKeyFor(context)}\0${digest(JSON.stringify(context))}`;
+  const withExecutionContext = async <T>(context: TContext, work: () => Promise<T>): Promise<T> => {
+    const release = executionContexts.retain(executionKeyFor(context));
+    try { return await work(); } finally { release(); }
+  };
   const bundleFor = (context: TContext) => {
     const key = scopeKeyFor(context);
     let bundle = bundles.get(key);
@@ -298,6 +327,10 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       });
       bundles.set(key, bundle);
     }
+    // Scope adapters own no pooled connection. Saved usage is rediscovered by
+    // later authenticated traffic or the trusted recovery source.
+    bundles.delete(key); bundles.set(key, bundle);
+    while (bundles.size > 128) bundles.delete(bundles.keys().next().value!);
     return bundle;
   };
   const activityDeliveryFor = (context: TContext) => {
@@ -454,17 +487,22 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "conversation_reconciliation",
       phase: "failed", conversationId, ...(turnId ? { turnId } : {}), code: "reconciliation_failed", retryable: true, cause }); }
   };
-  const continueApprovedTurns = async (context: TContext, conversationId: string): Promise<void> => {
+  const continueApprovedTurns = async (context: TContext, conversationId: string, signal?: AbortSignal): Promise<{
+    settled: boolean; started?: { conversationId: string; turnId: string };
+  }> => withExecutionContext(context, async () => {
     // Decisions are durable. If another message is running, its settlement (or
     // the next authorized read after a restart) will dispatch the saved action.
     await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
+    signal?.throwIfAborted();
     const bundle = bundleFor(context);
+    let settled = true;
     if (options.externalApprovalRuntimeFor) {
       try {
         await resumeExternalToolApprovals({ context, conversationId, events: bundle.events,
           proposals: approvalStoreFor(context), turns: bundle.durableTurns,
-          runtimeFor: options.externalApprovalRuntimeFor });
+          runtimeFor: options.externalApprovalRuntimeFor, ...(signal ? { signal } : {}) });
       } catch (cause) {
+        settled = false;
         emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "external_approval_resumption",
           phase: "failed", conversationId, code: "approval_resumption_failed", retryable: true, cause });
       }
@@ -473,12 +511,19 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       const replay = await replayConversation({ conversationId: conversationId as never, eventStore: bundle.events });
       const state = replay.state;
       replay.store.destroy();
+      signal?.throwIfAborted();
+      if (state.replay_error) throw new Error("Approval resumption requires valid canonical history");
       const proposals = await approvalStoreFor(context).listGroup({ permissionContext: context, groupId: conversationId as never });
+      signal?.throwIfAborted();
       let conflicted = false;
       for (const turn of state.turns) {
-        if (state.active_turn_id !== null && state.active_turn_id !== turn.turn_id) continue;
+        if (state.active_turn_id !== null && state.active_turn_id !== turn.turn_id) {
+          if (turn.status === "waiting_for_approval" && proposals.some(proposal => proposal.turn_id === turn.turn_id && proposal.status !== "pending")) settled = false;
+          continue;
+        }
         if (turn.status !== "waiting_for_approval" && state.active_turn_id !== turn.turn_id) continue;
         const saved = await bundle.durableTurns.load(conversationId, turn.turn_id);
+        signal?.throwIfAborted();
         if (saved?.record.status !== "waiting_for_approval" || saved.record.terminal?.status !== "waiting_for_approval" || saved.record.cancellation) continue;
         const pending = saved.record.terminal.pendingToolCallIds;
         if (!proposals.some(proposal => proposal.turn_id === turn.turn_id && pending.includes(proposal.tool_call_id) &&
@@ -500,14 +545,16 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         // durable wake-up as well as an ordinary new approval decision.
         const key = executionKeyFor(context);
         if (!durableTransports.has(key)) await transportFor(context);
-        const outcome = await durableTransports.get(key)!.resumeApprovalTurn(conversationId, turn.turn_id);
+        signal?.throwIfAborted();
+        const outcome = await durableTransports.get(key)!.resumeApprovalTurn(conversationId, turn.turn_id,
+          signal ? { recovery: true, signal } : undefined);
         if (!outcome.ok) throw new Error(outcome.error.message);
-        return;
+        return { settled: false, ...(outcome.value.status === "started" ? { started: { conversationId, turnId: turn.turn_id } } : {}) };
       }
-      if (!conflicted) return;
+      if (!conflicted) return { settled };
     }
     throw new Error("Approval resumption conflicted repeatedly");
-  };
+  });
   const continueApprovalsSafely = async (context: TContext, conversationId: string) => {
     try { await continueApprovedTurns(context, conversationId); }
     catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "approval_resumption",
@@ -515,8 +562,10 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   };
   const transportFor = (context: TContext) => {
     const key = executionKeyFor(context);
+    executionContexts.touch(key);
     let transport = transports.get(key);
     if (!transport) {
+      constructingTransports.add(key);
       transport = applicationFor(context).then((application) => {
         const bundle = bundleFor(context);
         const activityReporter = createConversationActivityReporter({
@@ -563,6 +612,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             phase: "failed", conversationId, turnId, code: "projection_failed", retryable: true, cause });
         };
         const durable = createDurableApplicationTransport<StreamEvent, ChatRequest, ChatRequest>({
+          recoveryWorkers,
           delegate: qualifyDurableApplicationTurnStarts(delegate, bundleFor(context).events),
           store: bundleFor(context).durableTurns as never,
           async authorizeRecovery({ conversationId }) {
@@ -584,7 +634,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           // or role must not claim another transport's live lease merely because
           // both belong to this assistant host. Its cancellation still reaches
           // the original worker through the shared durable turn record.
-          workerId: `context-${digest(JSON.stringify([workerId, key]))}`,
+          workerId: `context-${digest(JSON.stringify([workerId, workerInstanceId, key, globalThis.crypto.randomUUID()]))}`,
           async onEventPersisted(document) {
             if (liveProjectionStopped) return;
             const { conversationId, turnId } = document.record, id = projectionKey(conversationId, turnId);
@@ -645,14 +695,6 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
         });
         durableTransports.set(key, durable);
-        if (options.recoverPendingOnContext !== false) {
-          try {
-            await durable.recoverPending(25);
-          } catch (cause) {
-            emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "context_recovery_scan",
-              phase: "failed", code: "recovery_scan_failed", retryable: true, cause });
-          }
-        }
         const cancellationAware: ConversationTransport<StreamEvent, ChatRequest> = {
           ...durable,
           capabilities: { ...durable.capabilities, authoritativeCancellation: { supported: true, capability: {
@@ -687,6 +729,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             : event.type === "response.text.delta" ? "responding" : null,
           ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }) });
       });
+      transport = transport.finally(() => { constructingTransports.delete(key); });
       transports.set(key, transport);
     }
     return transport;
@@ -897,25 +940,98 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
   const maintenanceIdentity = (context: TContext) => JSON.stringify([
     context.tenantId, context.scopeId, context.principalId, context.attribution.session?.id ?? null,
   ]);
+  let shuttingDown = false;
+  const recoveryWorkers = new DurableRecoveryWorkerPool(options.recoveryConcurrency ?? 4);
+  const recovery = new ContextRecoveryScheduler({ capacity: 256, onError: cause => emitAiDiagnostic(options.diagnostics, {
+    domain: "gateway", operation: "context_recovery_scan", phase: "failed",
+    code: "recovery_scan_failed", retryable: true, cause,
+  }) });
+  const enqueueRecovery = (identity: string, resolve: (signal: AbortSignal) => Promise<TContext | null>) => {
+    const turnQueued = recovery.enqueue(`turn:${identity}`, async (cursor, signal, limit) => {
+      signal.throwIfAborted();
+      const fresh = await resolve(signal);
+      signal.throwIfAborted();
+      if (!fresh || maintenanceIdentity(fresh) !== identity) return null;
+      return withExecutionContext(fresh, async () => {
+        await transportFor(fresh);
+        signal.throwIfAborted();
+        return durableTransports.get(executionKeyFor(fresh))!.recoverPendingPage({ limit, signal, ...(cursor ? { cursor } : {}) });
+      });
+    });
+    const approvalQueued = recovery.enqueue(`approval:${identity}`, async (cursor, signal, limit) => {
+      signal.throwIfAborted();
+      const fresh = await resolve(signal); signal.throwIfAborted();
+      if (!fresh || maintenanceIdentity(fresh) !== identity) return null;
+      const bundle = bundleFor(fresh), queue = bundle.approvalRecovery;
+      if (!queue) return null; // Custom legacy bundles keep their explicit recovery contract.
+      const page = await queue.scan(limit, cursor); signal.throwIfAborted();
+      const started: { conversationId: string; turnId: string }[] = [];
+      for (const candidate of page.candidates) {
+        try { await ownsConversation(fresh, candidate.conversationId); }
+        catch (error) {
+          if (error instanceof ConversationCatalogError && (error.code === "not_found" || error.code === "forbidden")) continue;
+          throw error;
+        }
+        signal.throwIfAborted();
+        const claim = await queue.claim(candidate);
+        if (!claim) continue;
+        try {
+          await runApprovalRecoveryClaim({ queue, claim, signal, run: async currentSignal => {
+            const repaired = await repairApprovalDecisionPage({ queue, claim, context: fresh, events: bundle.events,
+              proposals: approvalStoreFor(fresh), signal: currentSignal,
+              authorize: async () => { await ownsConversation(fresh, candidate.conversationId); } });
+            if (repaired.hasMore) return { complete: false, afterProposal: repaired.afterProposal };
+            const outcome = await continueApprovedTurns(fresh, candidate.conversationId, currentSignal);
+            if (outcome.started) started.push(outcome.started);
+            return { complete: outcome.settled };
+          } });
+        } catch (cause) {
+          signal.throwIfAborted();
+          emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "approval_resumption", phase: "failed",
+            conversationId: candidate.conversationId, code: "approval_resumption_failed", retryable: true, cause });
+        }
+      }
+      return { started, cursor: page.cursor };
+    });
+    return turnQueued && approvalQueued;
+  };
   const gateway: ApplicationGateway = {
-    handle(request) {
+    async handle(request) {
+      if (shuttingDown) return Promise.resolve(new Response(null, { status: 503, headers: { "Retry-After": "1" } }));
       // The gateway authenticates before reading capabilities. Keep that context
       // local to this request, including when transport resolution overlaps.
       let context: TContext;
+      let releaseContext: (() => void) | undefined;
+      try {
       // Retain only list requests, before the gateway consumes their bodies.
       // The bounded queue releases these credentials on completion/shutdown.
       const maintenanceRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/list")
         ? request.clone() : null;
       const historyRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/history")
         ? request.clone() : null;
-      return createApplicationGateway({
+      return await createApplicationGateway({
         authorize: async (request, action) => {
           context = await options.authorize(request, action);
+          releaseContext?.(); releaseContext = executionContexts.retain(executionKeyFor(context));
+          if (options.recoverPendingOnContext !== false) {
+            // Reauthenticate identity using the read-only capability policy,
+            // then authorize each saved conversation. Repeating start/cancel
+            // admission would require discarded bodies and spend rate limits.
+            const credentials = new Request(request.url, { method: "GET", headers: request.headers });
+            let bytes = new TextEncoder().encode(request.url).length;
+            request.headers.forEach((value, name) => { bytes += new TextEncoder().encode(name + value).length; });
+            if (bytes <= 32_768) enqueueRecovery(maintenanceIdentity(context), async () => {
+              try { return await options.authorize(credentials.clone(), "capabilities"); }
+              catch { return null; } // Expired/revoked credentials require another authenticated request.
+            });
+          }
           return context;
         },
         transportFor,
         checkpointForEvent,
         displayControl: true,
+        displayMessageText: true,
+        displayPendingApprovals: true,
         displayHistoryFor(current): ConversationDisplayHistory {
           const identity = maintenanceIdentity(current);
           const authorize = async (conversationId: string) => {
@@ -994,17 +1110,41 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             provider: options.provider.metadata, toolLoopLimits: limits } },
         ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
       }).handle(request);
+      } finally { releaseContext?.(); }
     },
   };
+  const recoveryContextScanner = options.recoveryContextSource ? new RecoveryContextSourceScanner(
+    options.recoveryContextSource, (context, resolve) => {
+      if (shuttingDown) return false;
+      bundleFor(context);
+      return enqueueRecovery(maintenanceIdentity(context), resolve);
+    }) : undefined;
   const primeRecoveryContexts = async () => {
+    if (shuttingDown) return;
+    if (recoveryContextScanner) return recoveryContextScanner.scan();
     const source = await options.recoveryContexts?.();
     if (source === undefined) return;
-    for await (const context of source) await transportFor(context);
+    let count = 0;
+    for await (const context of source) {
+      if (shuttingDown || count++ >= 128) break;
+      bundleFor(context); // Usage discovery does not need a provider or retained transcript.
+      const identity = maintenanceIdentity(context);
+      enqueueRecovery(identity, async () => {
+        const current = await options.recoveryContexts?.();
+        if (!current) return null;
+        let inspected = 0;
+        for await (const candidate of current) {
+          if (shuttingDown || inspected++ >= 128) return null;
+          if (maintenanceIdentity(candidate) === identity) return candidate;
+        }
+        return null;
+      });
+    }
   };
   const flushUsage = async (limit?: number) => {
     await primeRecoveryContexts();
     let delivered = 0, pending = 0;
-    for (const bundle of bundles.values()) {
+    for (const bundle of [...bundles.values()]) {
       if (!bundle.usageReceiptSink) continue;
       const result = await bundle.usageReceiptSink.flush(limit);
       delivered += result.delivered; pending += result.pending;
@@ -1026,6 +1166,23 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       phase: "failed", code: "usage_delivery_failed", retryable: true, cause }),
   });
   await usageDelivery.ready;
+  // Recovery works even when usage reporting is disabled. Hosts reconstruct
+  // trusted scopes on every tick; no opaque user credentials are saved at rest.
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let recoveryPriming: Promise<void> | undefined;
+  const scheduleRecoveryContexts = (delay: number) => {
+    if (shuttingDown || !options.recoveryContexts && !recoveryContextScanner) return;
+    recoveryTimer = setTimeout(() => {
+      recoveryPriming = primeRecoveryContexts().catch(cause => emitAiDiagnostic(options.diagnostics, {
+        domain: "gateway", operation: "context_recovery_scan", phase: "failed",
+        code: "recovery_contexts_failed", retryable: true, cause,
+      })).finally(() => { recoveryPriming = undefined; scheduleRecoveryContexts(15_000); });
+    }, delay);
+    recoveryTimer.unref?.();
+  };
+  scheduleRecoveryContexts(0);
+  const contextRetirementTimer = setInterval(() => executionContexts.sweep(), 60_000);
+  contextRetirementTimer.unref?.();
   let attachmentCleanup: ReturnType<NonNullable<PostgresAssistantPersistence["startAttachmentCleanupWorker"]>> | undefined;
   let retainedDraftCleanup: ReturnType<typeof startPostgresConversationFileStagingCleanupWorker> | undefined;
   try {
@@ -1039,13 +1196,30 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         onResult: () => {}, onError: () => emitAiDiagnostic(options.diagnostics, { domain: "attachment", operation: "retained_draft_cleanup",
           phase: "failed", code: "unavailable", retryable: true }) });
     }
-  } catch (error) { usageDelivery.stop(); await attachmentCleanup?.stop(); throw error; }
-  const stopBackgroundWorkers = async () => {
-    usageDelivery.stop();
+  } catch (error) {
+    shuttingDown = true; if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
+    clearInterval(contextRetirementTimer);
+    await recoveryContextScanner?.stop();
+    await usageDelivery.stop(); await recoveryPriming; await recovery.stop(); await attachmentCleanup?.stop(); throw error;
+  }
+  let stopping: Promise<void> | undefined;
+  const stopBackgroundWorkers = (): Promise<void> => stopping ??= (async () => {
+    shuttingDown = true;
+    clearInterval(contextRetirementTimer);
+    if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
+    await recoveryContextScanner?.stop();
+    await usageDelivery.stop();
+    await recoveryPriming;
+    await recovery.stop();
+    await maintenance.stop();
+    // Resolve in-flight construction before taking the worker snapshot. Keep
+    // projections alive through terminal settlement and observer cleanup.
+    await Promise.allSettled(transports.values());
+    await Promise.all([...durableTransports.values()].map(transport => transport.stopWorkers()));
     liveProjectionStopped = true;
     await Promise.all([...liveProjectionClosers].map(close => close()));
-    await Promise.all([maintenance.stop(), attachmentCleanup?.stop(), retainedDraftCleanup?.stop()]);
-  };
+    await Promise.all([attachmentCleanup?.stop(), retainedDraftCleanup?.stop()]);
+  })();
   return Object.freeze({
     version: HANDRAIL_ASSISTANT_VERSION,
     id: assistantId,
@@ -1055,9 +1229,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       createApplicationGatewayExpressMiddleware(gateway, expressOptions),
     async recoverPending(limit = 100) {
       await primeRecoveryContexts();
-      let recovered = 0;
-      for (const transport of durableTransports.values()) recovered += (await transport.recoverPending(limit)).length;
-      return recovered;
+      return recovery.recoverNow(limit);
     },
     flushUsage,
     stopBackgroundWorkers,

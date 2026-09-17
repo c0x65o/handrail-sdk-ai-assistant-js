@@ -69,7 +69,7 @@ export interface ApplicationGatewayCapabilities {
   readonly presence: boolean;
   readonly synchronization: boolean;
   /** Complete message records, separate from canonical audit synchronization. */
-  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true };
+  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true; readonly messageText?: true; readonly pendingApprovals?: true };
   readonly activity?: boolean;
   /** Omitted by older gateways; never assume saved files have public URLs. */
   readonly attachmentDownloads?: false | AttachmentDownloadCapability;
@@ -139,6 +139,9 @@ export interface ApplicationGatewayOptions<TEvent, TRequest, TContext extends Ap
   readonly displayHistoryFor?: (context: TContext) => ConversationDisplayHistory;
   /** Advertise only when every scoped display store supplies control(). */
   readonly displayControl?: true;
+  readonly displayMessageText?: true;
+  /** Scoped store supports pending_approvals and approval display views. */
+  readonly displayPendingApprovals?: true;
   readonly approvals?: ApprovalProposalStore<TContext>;
   readonly titleGeneration?: ApplicationGatewayTitleGeneration<TContext>;
   readonly handlers?: ApplicationGatewayResourceHandlers<TContext>;
@@ -387,7 +390,9 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
     synchronization: options.capabilities?.synchronization ?? false,
     ...(options.displayHistoryFor ? { displayHistory: { version: 1 as const,
       maximumPageSize: CONVERSATION_DISPLAY_LIMITS.maximumPageSize, maximumPageBytes: CONVERSATION_DISPLAY_LIMITS.maximumPageBytes,
-      ...(options.displayControl ? { control: true as const } : {}) } } : {}),
+      ...(options.displayControl ? { control: true as const } : {}),
+      ...(options.displayPendingApprovals ? { pendingApprovals: true as const } : {}),
+      ...(options.displayMessageText ? { messageText: true as const } : {}) } } : {}),
     ...(options.capabilities?.documentInput === undefined ? {} : { documentInput: options.capabilities.documentInput }),
     ...(options.capabilities?.assistant === undefined ? {} : { assistant: options.capabilities.assistant }),
     resources: Object.freeze({ conversations: options.conversations?.capabilities ?? false,
@@ -943,9 +948,11 @@ export function createApplicationGatewayDisplayHistory(
       parseConversationDisplayPage(await invoke("page", input, pageBudget(input), signal), input) as Awaited<ReturnType<ConversationDisplayHistory["page"]>>,
     content: async (input: ConversationDisplayContentInput, signal?: AbortSignal) => {
       const chunk = await invoke<Awaited<ReturnType<ConversationDisplayHistory["content"]>>>("content", input, 65536, signal);
-      if (!chunk || chunk.encoding !== "json-text" || typeof chunk.text !== "string" || Array.from(chunk.text).length > 8192 ||
+      if (!chunk || chunk.encoding !== (input.format === "message-text" ? "plain-text" : "json-text") || typeof chunk.text !== "string" || Array.from(chunk.text).length > 8192 ||
         !Number.isSafeInteger(chunk.revision) || chunk.revision < 1 || input.revision !== undefined && chunk.revision !== input.revision ||
-        chunk.nextOffset !== null && chunk.nextOffset !== (input.offset ?? 0) + Array.from(chunk.text).length) {
+        chunk.nextOffset !== null && (chunk.text.length === 0 ||
+          input.format === "message-text" && Array.from(chunk.text).length !== 8192 ||
+          chunk.nextOffset !== (input.offset ?? 0) + Array.from(chunk.text).length)) {
         throw new TypeError("Invalid display history content response");
       }
       return chunk;

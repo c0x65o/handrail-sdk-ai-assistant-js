@@ -1,4 +1,5 @@
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { Ajv } from "ajv";
 
 import {
   normalizeCitationRecords,
@@ -310,6 +311,13 @@ const JSON_SCHEMA_VALIDATOR = new Ajv2020({
   strict: false,
   validateFormats: false,
 });
+// MCP SDK tool discovery can explicitly emit draft-07. Use its validator
+// rather than stripping $schema and silently changing tuple/keyword semantics.
+const DRAFT_07_SCHEMA_VALIDATOR = new Ajv({
+  allErrors: false,
+  strict: false,
+  validateFormats: false,
+});
 const COMPILED_SCHEMAS = new WeakMap<object, ValidateFunction>();
 const UTF8_ENCODER = new TextEncoder();
 
@@ -564,7 +572,9 @@ function validateArguments(definition: ToolDefinition, arguments_: JsonObject): 
   if (validate === undefined) {
     let compiled: ValidateFunction;
     try {
-      compiled = JSON_SCHEMA_VALIDATOR.compile(definition.input_schema);
+      const validator = definition.input_schema.$schema === "http://json-schema.org/draft-07/schema#"
+        ? DRAFT_07_SCHEMA_VALIDATOR : JSON_SCHEMA_VALIDATOR;
+      compiled = validator.compile(definition.input_schema);
     } catch {
       throw new InvalidArguments();
     }

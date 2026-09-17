@@ -623,9 +623,10 @@ const JSON_SCHEMA_TYPES = [
   "string",
 ] as const;
 
-function validateJsonSchemaNode(value: unknown, path: string, root = false): void {
+function validateJsonSchemaNode(value: unknown, path: string, root = false, draft07 = false): void {
   if (typeof value === "boolean" && !root) return;
   const schema = record(value, path);
+  if (root) draft07 = schema.$schema === "http://json-schema.org/draft-07/schema#";
 
   if (root && schema.type !== "object") fail(`${path}.type`, 'must equal "object"');
   if (Object.hasOwn(schema, "type")) {
@@ -646,7 +647,7 @@ function validateJsonSchemaNode(value: unknown, path: string, root = false): voi
     if (!Object.hasOwn(schema, keyword)) continue;
     const schemas = record(schema[keyword], `${path}.${keyword}`);
     for (const [name, child] of Object.entries(schemas)) {
-      validateJsonSchemaNode(child, `${path}.${keyword}.${name}`);
+      validateJsonSchemaNode(child, `${path}.${keyword}.${name}`, false, draft07);
     }
   }
 
@@ -662,7 +663,13 @@ function validateJsonSchemaNode(value: unknown, path: string, root = false): voi
 
   for (const keyword of ["additionalProperties", "unevaluatedProperties", "items", "contains", "not", "if", "then", "else", "propertyNames"] as const) {
     if (Object.hasOwn(schema, keyword)) {
-      validateJsonSchemaNode(schema[keyword], `${path}.${keyword}`);
+      const child = schema[keyword];
+      if (keyword === "items" && draft07 && Array.isArray(child)) {
+        if (child.length === 0) fail(`${path}.items`, "must be a non-empty array of JSON Schemas");
+        child.forEach((item, index) => validateJsonSchemaNode(item, `${path}.items[${index}]`, false, draft07));
+      } else {
+        validateJsonSchemaNode(child, `${path}.${keyword}`, false, draft07);
+      }
     }
   }
 
@@ -672,7 +679,7 @@ function validateJsonSchemaNode(value: unknown, path: string, root = false): voi
     if (!Array.isArray(schemas) || schemas.length === 0) {
       fail(`${path}.${keyword}`, "must be a non-empty array of JSON Schemas");
     }
-    schemas.forEach((child, index) => validateJsonSchemaNode(child, `${path}.${keyword}[${index}]`));
+    schemas.forEach((child, index) => validateJsonSchemaNode(child, `${path}.${keyword}[${index}]`, false, draft07));
   }
 
   if (Object.hasOwn(schema, "enum") && (!Array.isArray(schema.enum) || schema.enum.length === 0)) {

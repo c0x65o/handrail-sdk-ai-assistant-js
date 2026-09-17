@@ -84,6 +84,29 @@ describe("MCP connector adapter", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it("does not connect if cancellation arrives during discovery authorization", async () => {
+    const controller = new AbortController();
+    const connect = vi.fn(async () => ({ listTools: async () => ({ tools: [] }), callTool: async () => null }));
+    await expect(createRequestScopedMcpSession({ connectorId: "cancelled-discovery", connect,
+      authorize: async () => { controller.abort(); return "allow" as const; },
+    }, {}, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("closes a late connection without listing tools after cancellation", async () => {
+    const controller = new AbortController();
+    const close = vi.fn(), listTools = vi.fn(async () => ({ tools: [] }));
+    await expect(createRequestScopedMcpSession({ connectorId: "cancelled-connect",
+      authorize: async () => "allow" as const,
+      connect: async () => {
+        controller.abort();
+        return { close, listTools, callTool: async () => null };
+      },
+    }, {}, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(listTools).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the session usable after discovery's deadline and bounds each subsequent call", async () => {
     vi.useFakeTimers();
     const callTool = vi.fn((_input: { readonly signal: AbortSignal }) =>

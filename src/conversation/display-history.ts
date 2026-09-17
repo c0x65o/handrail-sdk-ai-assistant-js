@@ -31,6 +31,10 @@ export type ConversationDisplayRecord = {
 
 export type ConversationDisplayView =
   | { readonly type: "messages" }
+  /** Current pending decisions, independent of the loaded message window. */
+  | { readonly type: "pending_approvals" }
+  /** One proposal and its bound tool record; never an entire turn. */
+  | { readonly type: "approval"; readonly proposalId: string }
   | { readonly type: "turn"; readonly turnId: string }
   /** Bounded related state for the currently displayed complete messages. */
   | { readonly type: "context"; readonly messageIds: readonly string[]; readonly turnId?: string }
@@ -69,12 +73,14 @@ export interface ConversationDisplayContentInput {
   readonly id: string;
   /** May be omitted on the first chunk of a referenced record. Later chunks pin it. */
   readonly revision?: number;
+  /** Negotiated text reader for large messages; omits record JSON and attachments. */
+  readonly format?: "json-text" | "message-text";
   /** Unicode code-point offset into a serialized JSON record, not an event log. */
   readonly offset?: number;
 }
 
 export interface ConversationDisplayContentChunk {
-  readonly encoding: "json-text";
+  readonly encoding: "json-text" | "plain-text";
   readonly text: string;
   readonly nextOffset: number | null;
   readonly revision: number;

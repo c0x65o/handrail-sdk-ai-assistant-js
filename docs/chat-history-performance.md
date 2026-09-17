@@ -127,7 +127,7 @@ attachment-download tests passed. This is scoped validation, not full completion
 | Deliverable | Current state | Required before completion |
 | --- | --- | --- |
 | 1. Cheap list and bounded recovery | Local list and queue implementation; regression coverage | Real phase timings, byte limits on metadata, overload/fairness, durable recovery/restart coverage, runtime cache bounds |
-| 2. Partial transcript loading | Indexed projection, paged gateway/changes/controls, JS/Dart bounded controllers, standard React/Flutter session/transcript adoption, Flutter durable positions | Complete related-state/oversized-content presentation, custom Flutter aggregate formatting, durable draft and React position integration, bounded live resume metadata |
+| 2. Partial transcript loading | Indexed projection, paged gateway/changes/controls, JS/Dart bounded controllers, standard React/Flutter sessions/transcripts, durable text drafts and positions | Complete related-state/oversized-content presentation, custom Flutter aggregate formatting, attachment draft recovery, bounded live resume metadata |
 | 3. Complete chatbot experience | Existing components identified; list controls improved | Explicit feature matrix and end-to-end verification of streaming, stop/retry/reconnect, drafts, lifecycle, unread state, Markdown/code/citations, attachments, tools/approvals, voice, accessibility |
 | 4. Correctness | Existing authorization/recovery tests retained and session-revocation test added | Clear/delete generation invalidation, concurrency and idempotency with partial history; prove provider context and canonical history remain independent |
 | 5. Validation and scaling | 128 scoped server tests; typecheck/build; first 20k/100k storage and 30-scope benchmark | Incremental/live correctness, browser traces/render budgets, full Flutter tests, real concurrent database throughput, three consumer contracts |
@@ -159,18 +159,19 @@ An ignored conflicting `message.created` event no longer incorrectly deletes
 citations in the display projection; citation reuse in an atomic batch matches
 canonical replay.
 
-Bounded authoritative transport resume metadata remains outstanding. It still
-comes from whole-log `hydrateRuntimeMetadata` on web. Server-owned live canonical
+Bounded authoritative transport resume metadata remains outstanding for legacy
+canonical runtimes, which still use whole-log `hydrateRuntimeMetadata`. Standard
+negotiated display sessions do not fetch this metadata just to open a chat. Server-owned live canonical
 projection now supplies running text to the display changes feed; see the live
 projection and standard Flutter integration sections below. Its execution runtime
 still hydrates canonical history once per worker and requires a separate audit.
 
 Indexed message anchors now restore older saved positions and support navigation
 back toward newer messages after eviction. Both controllers enforce independent
-row/byte budgets. Standard React runtime adoption remains outstanding.
+row/byte budgets. Standard React now uses the negotiated partial presentation described below.
 
-Flutter now negotiates bounded display; web's initial full replay still needs
-replacement with the negotiated display-history capability.
+Standard Flutter and React now negotiate bounded display. Older/custom gateways
+retain their explicit canonical synchronization path.
 Keep old gateway compatibility explicit; do not silently represent a partial
 snapshot as a complete audit projection. Preserve in-flight turns while evicting
 idle cached views, with drafts and scroll anchors stored separately from runtimes.
@@ -197,8 +198,8 @@ Separate frontend measurements, 12 selections each in a React development build:
 
 | Synthetic source messages | Selection-to-paint p95 | Mean script time | Mean layout time | Browser heap after GC | Retained records / bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 200 | 33.60 ms | 1.554 ms | 0.631 ms | 3,573,052 | 20 / 7,100 |
-| 1,000 | 31.70 ms | 1.483 ms | 0.619 ms | 3,611,048 | 20 / 7,124 |
+| 200 | 31.90 ms | 1.639 ms | 0.582 ms | 3,658,496 | 20 / 7,100 |
+| 1,000 | 31.90 ms | 1.576 ms | 0.645 ms | 3,700,772 | 20 / 7,124 |
 
 Each selection made one synthetic page read. Heap includes React/Vite; the
 fixture does not load canonical events, measure HTTP or exercise model streaming.
@@ -319,7 +320,7 @@ sequentially with one test worker. Neither SDK dependency pins nor lockfiles wer
 changed, and no release action was taken.
 
 This is not complete Flutter feature qualification. Aggregate `contentBuilder`
-formatting still uses the old scroll surface; oversized-record expansion and the
+formatting still uses the old scroll surface; full deferred-record metadata and the
 full related-state/approval paging experience need work. Actual device memory,
 frame timing, consumer builds and all remaining goal evidence are still required.
 
@@ -362,12 +363,124 @@ All three server-live gateway scenarios passed, including the new PostgreSQL
 session test. TypeScript typecheck, SDK build, and the Vite public-consumer check
 passed after integration. Checks ran sequentially with one test worker.
 
-Outstanding in this path: complete related-state/approval pagination, explicit
-oversized content UI, durable draft/position integration, richer reconnect/retry
+Outstanding in this path: full related-state/approval qualification, oversized
+attachment/tool/approval metadata, attachment draft recovery, richer reconnect/retry
 qualification, actual browser memory/paint profiling of the standard workspace,
 and all three consumer contract builds. The new presentation types require
 consumer compilation before adoption. No performance or completion claim is based
 solely on mocked UI timing.
+
+### Durable text drafts and position integration (local)
+
+Standard React sessions now restore/save text drafts and scroll anchors through
+an account/API-scoped local store. The browser IndexedDB adapter upgrades its
+pending journal and implements both services; without an explicit durable store,
+bootstrap uses bounded account-lifetime memory. Flutter's encrypted key-value
+pending adapter exposes the same draft behavior through its standard UI binding.
+Both stores bound text to 32 drafts, 64 KiB each and 512 KiB total. Revision checks
+prevent one writer from silently replacing another. Draft and position reads are
+separate from transcript/provider history.
+
+Tests cover late restoration versus typing, account transitions, exact-edit
+admission clearing, conflicting writers, quota failures, flushes at teardown,
+schema upgrade and saved-position selection with one indexed page. React never
+renders the previous account's draft while effects update bindings. Flutter
+discard/reopen waits for the previous clear and evicts safely saved idle editors.
+Standard surfaces show restore/error/retry states and flush when hidden.
+
+Validation: 111 scoped JS/React tests passed, including standard presets and
+composer regressions; TypeScript typecheck/build and public Vite consumer check
+passed. Chromium retained the 60-row fixture cap and zero-pixel prepend/delayed
+layout drift; the browser artifact above records this rerun. All 179 Flutter
+widget tests passed. The full Dart run against the local JS build passed 185 of
+186 tests; the attachment fixture's incomplete persistence mock and four-byte
+PDF prefix were corrected, and that scenario passed against real PostgreSQL
+adapters afterward. These source-qualification fixtures do not change dependency
+declarations or establish consumer adoption.
+
+This does not establish durable unsent file selections, a strict aggregate bound
+for exceptional in-progress Flutter draft/upload work, browser deletion cleanup,
+or process-crash guarantees for an unfinished local write. Those remain explicit
+qualification items; neither app dependency pins nor production behavior changed.
+
+### Oversized message text (local)
+
+The high-level gateway now separately advertises `displayHistory.messageText`.
+An explicit text reader uses the existing authorized content operation with
+`format: "message-text"`, returning one revision-pinned section of at most 8,192
+Unicode code points. Standard React and Flutter transcripts offer Read message,
+previous/next, close, retry and changed-version reload. Only one message reader
+is expanded and one section is retained; opening a transcript does not fetch it.
+Chat/account changes, closure and deletion cancel or invalidate old reads.
+
+The database extracts text only for the explicitly requested message. This
+selected-record JSON parsing/aggregation can scale with that message's size;
+it is separate from the bounded list/initial-page path. The plaintext reader
+does not assemble canonical record JSON or inject attachment bytes. Normal
+messages retain Markdown, citations and attachment presentation. Complete
+oversized attachment/citation metadata and oversized tool/approval presentation
+remain outstanding; the text reader alone is not the entire deferred-record UX.
+
+Local evidence: PostgreSQL integration checks exact Unicode text, scoped access,
+revision conflicts and bounded content replies. React component tests cover
+single-reader retention, aborts, safe text, errors and navigation. Chromium
+records zero automatic content reads, 8,192 retained characters and narrow-screen
+navigation in the browser artifact. Flutter widget tests cover the same reader
+lifecycle; Dart HTTP qualification uses the real high-level gateway/PostgreSQL
+stores, verifies no full snapshot read, and rejects old content after permanent
+deletion. The fixture's catalog does not enable Clear; generation invalidation is
+covered separately by PostgreSQL integration tests. None of these are device
+memory measurements or production latency claims.
+
+### Bounded related activity and cancellation (local)
+
+Both standard sessions retain an activity window independently of message pages:
+at most 90 tool/approval/citation/source/turn records and 256 KiB serialized data.
+Loading earlier activity merges by kind/ID and revision instead of replacing the
+previous page. The changes feed updates/removes already retained activity. A live
+refresh merges the latest page without resetting an unchanged message/turn view.
+If navigation or updates evict records, the UI explicitly offers Show latest
+activity. Context changes, permission loss, clear and account disposal discard
+old activity. Transient page failures are visible and retryable.
+
+Long context identifiers now split into <=2 KiB reference groups with the active
+turn first. Later groups and pages load only through the activity action, leaving
+room for the maximum opaque cursor and chat identity in the 8 KiB request. Group
+cursors stay bound to their exact view. No endpoint or dependency change is needed.
+Flutter completes per-read cancellation handles and removes them after polling;
+completed history reads no longer retain listeners on account/selection futures.
+
+Validation: 31 focused JS protocol/session/window cases passed; the standard
+React preset plus reader/session run passed 24 cases. Dart history/window/session
+checks passed 24 cases; both Flutter transcript suites passed 24 cases. All 18
+HTTP submission scenarios passed against the local JS build and real PostgreSQL
+adapters. These include lifecycle, exact admission/retry, cancellation, saved
+intent and large content. Tests run sequentially with one worker. Full pending
+approval discovery beyond loaded activity, deferred metadata and device memory
+profiling remain separate qualification work.
+
+### Consumer contract qualification (local)
+
+Real Hitcents, Mills and Spartan web/server integration entrypoints compile against
+the local SDK's public declarations. All three mobile SDK adapter/screen pairs
+compile against local Flutter source without changing pubspecs, pins or locks.
+Spartan web needed narrow display-only type contracts. Mills and Spartan mobile
+now format loaded state without requiring a canonical document class, and observe
+a separate display presentation version so paging refreshes domain cards.
+Spartan's partial mobile projection no longer hydrates the entire approval group.
+
+Spartan web's 11 affected formatting/notification cases pass with its installed
+pin. Its 25 scoped mobile cases pass with local SDK source, including negotiated
+paging with no full snapshot or approval-group read. Mills' 10 existing
+history/review/repository cases plus both projection cases pass; the new case
+keeps single-chat mode and follows older messages without a canonical replay.
+The SDK's 25 history/window/session cases and Dart analysis pass after adding the
+presentation version. These do not establish device builds or production timing.
+
+See [the adoption plan](chatbot-foundation-adoption.md) for reproducible source
+checks, qualification gaps and the later authorized public-SHA release procedure.
+The goal remains active; source compatibility does not resolve the listed
+background notification, recovery, provider-context, deferred-state or scale work.
 
 ### Release boundaries
 
@@ -382,3 +495,140 @@ Validate unpublished changes through SDK-local tests and consumer contract
 fixtures, then record the separate commit/adoption/deployment steps needed to
 make the result live. The current objective explicitly excludes those release
 actions and production database writes.
+
+### Real PostgreSQL concurrency and activity ordering
+
+`node --expose-gc scripts/benchmark-display-postgres.mjs /absolute/path/to/pg/lib/index.js /absolute/path/to/postgres/bin`
+uses an already installed test driver and creates its own disposable private Unix
+socket cluster. It accepts no database URL and changes no dependency pins. The
+cluster is stopped and removed after the benchmark. Build the SDK first.
+
+The recorded PostgreSQL 15.19 run uses default durable commits, 64 MiB shared
+buffers and 30 distinct backend connections. Fifteen 20k-event and fifteen
+100k-event histories share record/owner IDs across isolated tenant partitions
+(1.8M events). Ten concurrent bursts produce 300 list and 300 initial-page reads:
+list p95 13.263 ms / at most 1,225 serialized envelope bytes; page p95 37.767 ms /
+at most 59,111 bytes. Pages include two authorization queries plus one bounded
+projection query; lists use one metadata query. The driver does not read canonical
+payloads on either path. Scope markers, foreign-owner rejection and cross-tenant
+cursor rejection are checked. Full results and query plans are in
+`display-history-postgres-benchmark.json`.
+
+Separate 20k/100k steady-state p95 values are 1.115/1.593 ms for lists and
+3.474/4.141 ms for pages. At 100k events, the old unindexed activity-timestamp list
+read takes 299.108 ms, versus 1.633 ms with the added activity index (individual
+before/after reads, not p95). EXPLAIN shows event scans replaced by bounded index
+lookups. PostgreSQL may choose a small sequential display-table scan for the 200
+message fixture; the 1,000 message fixture uses the ordered message index and
+primary-key lookups. No forced planner flags are used.
+
+Retained Node heap is 9.30/8.72 MB after preparing the two sizes, and 9.11/11.03 MB
+before/after concurrency; maximum process RSS is about 118 MiB. A separate sample
+of the postmaster and 30 client backends has 156,295 KiB proportional set size;
+that excludes background workers and OS cache. Local regression ceilings are
+50 ms steady-state p95, 500 ms concurrent p95, 32 MiB prepared Node heap and 16 MiB
+retained heap growth across concurrent rounds. Timing excludes HTTP middleware,
+production networking and client rendering. Concurrent projection fixtures are
+copied from the two real backfills; this is not a concurrent-writer/recovery test.
+
+The partial presentation now also prevents orphan citations across activity page
+boundaries and source deletion, while exposing an unresolved count and a visible
+notice. Delayed activity reads cannot resurrect records removed by a newer changes
+page, including when scalar turn controls have not advanced. JS and Dart regression
+cases cover both paths. Hitcents' recovered 29 mobile SDK/sheet tests all passed;
+its pending-intent assertions now distinguish legitimate persisted drafts from
+unacknowledged submissions. Dependency pins and lockfiles remain unchanged.
+
+### Standard React workspace: production bundle and HTTP
+
+`node scripts/check-paged-workspace-browser.mjs` builds the public SDK exports in
+production mode and drives `HandrailChatWorkspace` in Chromium against a local
+synthetic HTTP server. `HANDRAIL_TEST_CHROMIUM` selects an existing browser;
+`HANDRAIL_WORKSPACE_BROWSER_REPORT` optionally saves its JSON report. No app login,
+provider or production route is used. The fixture contains Markdown, code blocks
+and varying message heights, and exposes only bounded protocol pages.
+
+For 200/1,000 messages (the display sizes of the 20k/100k event fixtures), twelve
+chat switches have selection-to-paint p95 52.2/46.8 ms. Mean scripting is
+30.47/29.20 ms and layout 3.29/2.79 ms per selection. Collected browser heap is
+5.87/5.88 MB, including the production React/SDK assembly. Opening loads one
+five-item catalog page and one thirty-message page, plus small control/context
+requests. Switching and scrolling do not eagerly fetch remaining catalog pages;
+only the selected chat retains messages, with four idle sessions and ninety DOM
+messages as hard bounds. Scroll prepend drift is 0.15625 pixels in both runs.
+
+Browser Resource Timing verifies actual completed response body sizes: maximum
+14,207/14,244 bytes, versus transfer sizes including headers 14,507/14,544 bytes.
+Cancelled reads with no completed body are counted separately, not called zero
+payload successes. The singleton workspace also passes width/focus checks at
+320 and 390 pixels with thread navigation suppressed. At both widths the pending
+approval inbox also opens, pages and reviews an old action with zero additional
+message-page requests. Full results are in
+`paged-workspace-browser-benchmark.json`. Regression ceilings are 1s per selection,
+32 MiB collected browser heap and 64 KiB per HTTP body. These synthetic HTTP and
+render measurements are separate from PostgreSQL timings; do not add them to
+claim a measured production latency. Streaming, voice, uploads and Flutter frame
+behavior are not exercised by this browser benchmark.
+
+### Flutter viewport body retention
+
+The sibling Flutter SDK now mounts only viewport-adjacent message bodies and
+keeps measured placeholders for offscreen rows. The prior bounded ninety-record
+Column still retained expensive Markdown and semantics for every row and failed
+a local warm-RSS limit. VM allocation profiles confirmed that this was retained
+isolate memory as well as process RSS, not simply the canonical history size.
+
+The final offscreen benchmark uses the actual account controller, session and
+standard widgets with mocked HTTP. It retains ninety complete records, mounts
+eight message widgets and caches four sessions. For 200/1,000 source messages,
+selection-plus-pump p95 is 222.3/115.8 ms and warm isolate-heap growth is
+74.0/66.0 MB; this includes debug VM/framework/test overhead. Warm RSS grows
+106.1/99.4 MB. See the Flutter SDK's `docs/display-history.md` and
+`docs/display-render-benchmark.json` for commands, exact samples and bounds.
+These are host offscreen render measurements, not native-device frame timing.
+All 25 transcript tests pass after virtualization, including actual overscan-row
+height changes above the visible anchor; assertions now distinguish retained
+records from mounted message bodies. Width-change anchoring and jump-to-latest
+remounting are covered, including a fix that explicitly resumes following after
+the user presses Jump to latest.
+
+### Recovery discovery and background lifecycle
+
+Recovery metadata now has indexed scalar status/lease columns with an atomic
+trigger that also covers older payload-only writers. Legacy preparation is
+bounded and resumes from null metadata; discovery does not serialize saved
+requests or retained frames. The local native PostgreSQL measurements in
+`recovery-postgres-benchmark.json` show 90-byte discovery at 20k and 100k retained
+frames, with p95 2.31/2.13 ms. The legacy single-read baselines serialized
+3.30/16.74 MB and took 89.63/449.37 ms. These are adapter measurements, not browser
+wire or production timings. Actual PG concurrency verifies one execution from
+two competing recovery workers and rechecks a terminal writer after discovery.
+
+The assistant no longer awaits recovery while constructing its transport.
+Authenticated wake-ups run at a later task boundary, in two discovery tasks with
+25-candidate pages. Authorization refreshes between pages; a shared pool admits
+at most four recovered executions across contexts before loading saved requests.
+No-slot work stays durable and is retried without skipping its identity. The
+queue retains at most 128 credential envelopes for 60 seconds without fresh
+traffic, coalesces updates, yields across scopes and rejects expired lookups.
+Startup recovery now runs independently of usage reporting. See
+`recovery-discovery.md` for exact host-source limits and graceful-drain semantics.
+
+Shutdown rejects new SDK requests, stops timers, joins recovery/usage/maintenance,
+drains admitted workers with projections alive, and joins observer/lease monitors
+before persistence can close. It preserves user intent and does not promise to
+force-stop an unresponsive provider. Repeated shutdown calls share one promise.
+
+Lease owners also include a random assistant-instance identity. Previously,
+identical worker names/PIDs and authorization contexts could collide across
+replicas. A two-instance fixture now proves the peer cannot reclaim a live turn,
+and can still cancel the original worker through the durable cancellation record.
+
+This continuation passed 70 unique scoped regression cases across recovery,
+worker identity, assistant authorization/catalog, usage and persistence contract
+suites. TypeScript compilation and the package build pass. All three consumers'
+web/server entrypoints compile against the built public declarations; the fresh
+results are in `consumer-contract-qualification.json`. No dependency pin, lockfile,
+release or production database change was made for this continuation. Approval
+wake-ups after a crash, old context-cache retirement, provider memory, and the
+remaining adoption matrix still need work; this does not complete the goal.

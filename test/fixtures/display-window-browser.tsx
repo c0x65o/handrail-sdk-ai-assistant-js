@@ -2,9 +2,15 @@ import { createRoot } from "react-dom/client";
 import { useState } from "react";
 import { ConversationDisplayWindow } from "../../src/client/display-window.js";
 import { ConversationDisplayTranscript } from "../../src/react/display-transcript.js";
-import type { ConversationDisplayPageInput, ConversationDisplayRecord } from "../../src/conversation/display-history.js";
+import type { ConversationDisplayContentInput, ConversationDisplayContentChunk, ConversationDisplayPageInput, ConversationDisplayRecord } from "../../src/conversation/display-history.js";
 
 const requests: ConversationDisplayPageInput[] = [];
+const contentRequests: ConversationDisplayContentInput[] = [];
+const readMessageText = async (input: ConversationDisplayContentInput): Promise<ConversationDisplayContentChunk> => {
+  contentRequests.push(input);
+  return { encoding: "plain-text", revision: input.revision!, text: input.offset === 0 ? "😀".repeat(8192) : "Last part of the large message.",
+    nextOffset: input.offset === 0 ? 8192 : null };
+};
 const record = (index: number, conversation: string): ConversationDisplayRecord => ({ kind: "message", id: `message-${index}`,
   turnId: null, revision: index, bytes: 300, deferred: false, value: { message_id: `message-${index}` as never, role: "assistant",
     attachments: [], created_at: null, attribution: null,
@@ -21,7 +27,8 @@ const controller = new ConversationDisplayWindow({ pageSize: 20, maximumMessages
     const end = anchor?.direction === "newer" ? Math.min(total, start + input.limit! - 1) : edge - 1;
     return { schemaVersion: 1, status: "ready", conversationId: input.conversationId, generation: 0,
       revision: total, canonicalRevision: total, activeTurnId: null,
-      records: Array.from({ length: Math.max(0, end - start + 1) }, (_, index) => record(start + index, input.conversationId)),
+      records: Array.from({ length: Math.max(0, end - start + 1) }, (_, index) => input.conversationId === "large" && start + index === total
+        ? { ...record(start + index, input.conversationId), value: null, deferred: true, bytes: 80000 } : record(start + index, input.conversationId)),
       nextCursor: (anchor?.direction === "newer" ? end < total : start > 1) ? "more" : null };
   },
   async changes(input) { return { schemaVersion: 1, status: "ready", conversationId: input.conversationId, generation: 0,
@@ -29,10 +36,11 @@ const controller = new ConversationDisplayWindow({ pageSize: 20, maximumMessages
 } });
 function App() {
   const [conversation, setConversation] = useState("chat");
-  Object.assign(globalThis, { fixture: { controller, requests, setConversation, setTotal: (value: number) => { total = value; },
+  Object.assign(globalThis, { fixture: { controller, requests, contentRequests, setConversation, setTotal: (value: number) => { total = value; },
     setDelay: (value: number) => { delay = value; } } });
   return <><button onClick={() => setConversation("slow")}>Slow chat</button><button onClick={() => setConversation("fast")}>Fast chat</button>
+    <button onClick={() => setConversation("large")}>Large chat</button>
     <ConversationDisplayTranscript controller={controller} conversationId={conversation} pollingMilliseconds={0} id="transcript"
-      renderMessage={record => <p>{record.value?.content.map(part => part.type === "text" ? part.text : "").join("")}</p>}/></>;
+      readMessageText={readMessageText} renderMessage={record => <p>{record.value?.content.map(part => part.type === "text" ? part.text : "").join("")}</p>}/></>;
 }
 createRoot(document.getElementById("root")!).render(<App/>);

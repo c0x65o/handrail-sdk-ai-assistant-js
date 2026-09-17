@@ -1,0 +1,147 @@
+{
+  "browser": "153.0.8010.12",
+  "reactBuild": "production, public dist exports",
+  "desktopWidth": 1280,
+  "pendingApprovalWidths": [
+    320,
+    390
+  ],
+  "pendingApprovalExtraMessagePages": 0,
+  "singleConversationWidths": [
+    320,
+    390
+  ],
+  "maximumRenderedMessages": 90,
+  "maximumIdleSessions": 4,
+  "budgets": {
+    "selectionToPaintMaximumMs": 1000,
+    "browserHeapAfterGcBytes": 33554432,
+    "maximumHttpBodyBytes": 65536
+  },
+  "metrics": [
+    {
+      "sourceMessages": 200,
+      "equivalentStreamingEvents": 20000,
+      "samples": 12,
+      "selectionToPaintP50Ms": 43.69999980926514,
+      "selectionToPaintP95Ms": 52.19999980926514,
+      "scriptMeanMs": 30.469666666666665,
+      "layoutMeanMs": 3.289,
+      "browserHeapAfterGcBytes": 5874548,
+      "retained": {
+        "selected": "chat-200-12",
+        "threads": 4,
+        "loadedThreads": 1,
+        "records": 30,
+        "bytes": 13980,
+        "relatedBytes": 2
+      },
+      "prependAnchorDriftPixels": 0.15625,
+      "initialHttp": [
+        {
+          "path": "/api/200/capabilities",
+          "bytes": 642
+        },
+        {
+          "path": "/api/200/conversations/list",
+          "bytes": 1147
+        },
+        {
+          "path": "/api/200/conversations/get",
+          "bytes": 261
+        },
+        {
+          "path": "/api/200/conversations/history",
+          "operation": "control",
+          "bytes": 221
+        },
+        {
+          "path": "/api/200/conversations/history",
+          "operation": "control",
+          "bytes": 221
+        },
+        {
+          "path": "/api/200/conversations/history",
+          "operation": "page",
+          "bytes": 14176
+        },
+        {
+          "path": "/api/200/conversations/history",
+          "operation": "page",
+          "bytes": 195
+        }
+      ],
+      "catalogPagesFetched": 1,
+      "messagePagesFetchedIncludingNavigation": 18,
+      "browserResourcesWithoutCompletedBody": 1,
+      "maximumHttpBodyBytes": 14207,
+      "maximumBrowserMeasuredBodyBytes": 14207,
+      "maximumBrowserTransferBytes": 14507
+    },
+    {
+      "sourceMessages": 1000,
+      "equivalentStreamingEvents": 100000,
+      "samples": 12,
+      "selectionToPaintP50Ms": 41.90000009536743,
+      "selectionToPaintP95Ms": 46.80000019073486,
+      "scriptMeanMs": 29.195666666666657,
+      "layoutMeanMs": 2.7891666666666666,
+      "browserHeapAfterGcBytes": 5876592,
+      "retained": {
+        "selected": "chat-1000-12",
+        "threads": 4,
+        "loadedThreads": 1,
+        "records": 30,
+        "bytes": 14014,
+        "relatedBytes": 2
+      },
+      "prependAnchorDriftPixels": 0.15625,
+      "initialHttp": [
+        {
+          "path": "/api/1000/capabilities",
+          "bytes": 642
+        },
+        {
+          "path": "/api/1000/conversations/list",
+          "bytes": 1153
+        },
+        {
+          "path": "/api/1000/conversations/get",
+          "bytes": 262
+        },
+        {
+          "path": "/api/1000/conversations/history",
+          "operation": "control",
+          "bytes": 224
+        },
+        {
+          "path": "/api/1000/conversations/history",
+          "operation": "control",
+          "bytes": 224
+        },
+        {
+          "path": "/api/1000/conversations/history",
+          "operation": "page",
+          "bytes": 14213
+        },
+        {
+          "path": "/api/1000/conversations/history",
+          "operation": "page",
+          "bytes": 198
+        }
+      ],
+      "catalogPagesFetched": 1,
+      "messagePagesFetchedIncludingNavigation": 18,
+      "browserResourcesWithoutCompletedBody": 1,
+      "maximumHttpBodyBytes": 14244,
+      "maximumBrowserMeasuredBodyBytes": 14244,
+      "maximumBrowserTransferBytes": 14544
+    }
+  ],
+  "limitations": [
+    "Local synthetic HTTP server; no production network, database, provider or business payloads.",
+    "200/1000 complete-message fixtures represent 20k/100k streaming events; the browser never receives event logs.",
+    "Real PostgreSQL adapter/concurrency timing is measured separately; these results are not summed into a production estimate.",
+    "No file upload, voice session or concurrent writer is exercised by this render benchmark."
+  ]
+}

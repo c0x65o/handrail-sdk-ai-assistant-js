@@ -45,6 +45,7 @@ function PagedConversationTranscript({ session, state, proposals, includeToolRes
   }
   return <ConversationDisplayTranscript {...props} controller={session.window} conversationId={snapshot.conversationId}
     manageSelection={false} positions={positions} pollingMilliseconds={0} onFollowingLatestChange={value => session.setFollowingLatest(value)}
+    {...(session.supportsMessageText ? { readMessageText: session.readMessageText } : {})}
     emptyState={emptyState} renderMessage={record => {
       const message = state.messages.find(message => message.message_id === record.id) ?? record.value;
       return <>{before.get(record.id)}{message ? renderMessage?.(message) ?? <Message message={message}/> : null}</>;
@@ -52,7 +53,10 @@ function PagedConversationTranscript({ session, state, proposals, includeToolRes
     {pending}{snapshot.loading && snapshot.window.status === "empty" && <p role="status">Loading conversation…</p>}
     {snapshot.error && <div role="alert"><p>{snapshot.error.message}</p>
       {snapshot.error.retryable && <button type="button" onClick={() => { void session.refresh().catch(() => undefined); }}>Retry conversation</button>}</div>}
+    {(state.unresolvedCitationCount ?? 0) > 0 && <p role="status">Some citation sources are not loaded in this activity window.</p>}
     {snapshot.hasMoreRelated && <button type="button" onClick={() => { void session.loadMoreRelated().catch(() => undefined); }}>Load more activity</button>}
+    {snapshot.relatedTruncated && <p>Showing part of this chat’s activity. <button type="button"
+      onClick={() => { void session.showLatestRelated().catch(() => undefined); }}>Show latest activity</button></p>}
     {snapshot.hasPendingSubmission && <button type="button" disabled={snapshot.submitting}
       onClick={() => { void session.retryPending().catch(() => undefined); }}>Retry saved message</button>}
     {children}

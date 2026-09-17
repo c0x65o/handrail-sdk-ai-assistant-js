@@ -104,10 +104,46 @@ returned revision for subsequent chunks. A changed record returns
 `content_changed`, requiring a fresh read rather than concatenating versions.
 Clients must not automatically reconstruct every oversized record in memory.
 
+For a text-only large-message reader, separately negotiate
+`displayHistory.messageText === true` and send `format: "message-text"` with
+`kind: "message"`. The reply uses `encoding: "plain-text"`; text parts are joined
+with blank lines, with no attachment bytes or serialized record metadata. The
+high-level assistant enables this capability. Custom gateways must explicitly
+set `displayMessageText: true` only when their scoped store supports the format.
+The legacy default remains `json-text`; clients must not assume support from
+`displayHistory.version` alone.
+
+Plaintext chunks use the same pinned revision and Unicode offsets. Nonterminal
+chunks contain exactly 8,192 code points, so readers can navigate backward
+without retaining previous sections. React's standard transcript and Flutter's
+standard display widget retain a single section for one expanded message, with
+explicit navigation, close, error/retry and changed-version reload. They cancel
+obsolete reads and never auto-download oversized content. The PostgreSQL text
+extraction parses/aggregates the explicitly selected record inside the database;
+its server work may grow with that one message. It is not performed for list or
+initial-history requests. This text reader does not yet supply deferred
+attachment/citation metadata or expand oversized tool/approval records.
+
 Display errors use `resourceError.domain: "display_history"`, with
 `invalid_input` (400), `not_found` (404), `stale_cursor` (409), or
 `content_changed` (409). Requests are capped at 8 KiB. Responses are private and
 noncacheable. Never accept a tenant or ownership scope from the request body.
+
+## Related activity retention
+
+Standard JS and Flutter sessions merge explicit related-page reads into a separate
+90-record / 256 KiB serialized activity window. Record kind/ID and revision prevent
+duplicates and stale replacements. The changes feed updates or removes retained
+records. Live first-page refreshes preserve older loaded activity for an unchanged
+message/turn view. Exceeding the bound exposes a Show latest activity action;
+changing the retained message set or active/latest turn starts a new related view.
+This does not promise that every historical approval or citation is initially loaded.
+
+To remain inside the 8 KiB gateway request limit, sessions group long message IDs
+into context views of at most 2 KiB each, including the active/latest turn in the
+first group. Additional groups, like additional pages, load only on demand. Each
+cursor belongs to one exact group; it cannot be reused with another set of IDs.
+The combined activity window still has one count/byte budget across all groups.
 
 ## Message anchors
 
@@ -277,8 +313,33 @@ whether logout erases it via `eraseAccount()` before close. `close()` alone reta
 uncertain sends for later authenticated recovery. Transactions arbitrate tabs,
 compare exact acknowledgement content, and enforce 32 pending conversations / a
 4 MiB scope budget without evicting ambiguous sends. An omitted adapter uses
-bounded account-lifetime memory and does **not** survive reload. Browser drafts
-and durable standard-transcript positions remain separate follow-up work.
+bounded account-lifetime memory and does **not** survive reload.
+
+### Drafts and saved positions
+
+That same IndexedDB adapter implements `ConversationLocalStateStore`. Standard
+negotiated sessions use it automatically for unsent text and message/generation/
+pixel anchors; a custom account-owned `localStateStore` can be passed separately.
+The database upgrades its existing pending-send journal without replacing saved
+intents. It stores at most 32 nonempty drafts, 64 KiB UTF-8 per draft and 512 KiB
+of total draft text per account/API scope. Filling the journal reports an error;
+it never evicts unsent text. Positions have a separate 32-chat bound.
+
+The standard composer restores text asynchronously, preserves typing that starts
+before restoration finishes, and clears only the edit actually admitted by Send.
+Writes coalesce with a 250 ms debounce and flush on view teardown/page hiding.
+Cross-tab writes compare opaque revisions atomically. A conflict preserves the
+editor and offers retry or explicit replacement with the saved draft. Storage
+errors are visible and do not silently replace text. `client.dispose()` waits for
+captured local flushes; close the adapter afterward. Abrupt process termination
+before an asynchronous write completes cannot be guaranteed durable.
+
+Scroll restoration requests one indexed page around the saved message; it does
+not fetch every preceding page. A changed clear-generation falls back to the
+latest page. Draft storage contains text only, not attachment bytes or transcripts.
+Selected files remain account-owned in memory; admitted attachment references
+are part of the separate durable submission journal. Attachment-selection reload
+recovery and browser deletion cleanup still require qualification.
 
 Run the synthetic component browser fixture with
 `TMPDIR=/tmp node scripts/check-display-window-browser.mjs`; set
@@ -294,3 +355,63 @@ isolated tenant partitions verify equal conversation/message IDs do not cross
 scopes. PGlite uses one local connection; this is not evidence of production
 PostgreSQL concurrency, production HTTP latency, browser rendering or Flutter
 memory. Those checks remain separate deliverables.
+
+## Activity timestamp index and partial citation presentation
+
+The additive schema also includes `handrail_ai_events_activity` on
+`(tenant_id, conversation_id, created_at DESC)`. Host catalogs using
+`includeEventActivity: true` require this index: without it, computing each row's
+latest database write time can scan its whole event history, even though only
+small metadata is returned. The local PostgreSQL benchmark records before/after
+plans and 30 concurrent scopes in `display-history-postgres-benchmark.json`.
+Creating an index on an existing large table is a migration cost, not a read cost.
+Plan the migration in the later authorized release; ordinary `migrate()` index
+creation may lock concurrent writes. A host-managed concurrent index build can
+install the same named index before normal SDK migration. No live migration has
+been performed for this work.
+
+Related records can land on separate pages or be evicted by the bounded window.
+JS `ConversationPresentationState.unresolvedCitationCount` and Flutter
+`document.state['display_history']['unresolvedCitationCount']` report loaded
+citations whose sources are not loaded/inline. Presentation exposes only citations
+with a retained source; loading another activity page makes newly paired citations
+visible, and removing/evicting a source withdraws the reference. The raw bounded
+related cache still retains the pending citation. Standard transcripts explain
+that some sources are not loaded. This does not fetch every activity page or
+change canonical citation history. Deferred source expansion remains separate.
+
+## Pending approvals outside the loaded transcript
+
+Servers advertising `displayHistory.pendingApprovals: true` support two additional
+page views: `{ type: "pending_approvals" }` and
+`{ type: "approval", proposalId }`. The first uses the indexed current `pending`
+status, independent of message-window references. It retains the existing page,
+byte, owner-scope, generation and keyset cursor rules. Expiration is represented
+by canonical status; a timestamp alone never silently removes a pending action.
+The second returns only that proposal and its referenced tool, subject to the
+same deferred-record rules. It does not load the proposal's entire turn.
+
+The scalar control response adds optional `hasPendingApprovals`. Absence means
+an older server; clients must negotiate the capability before requesting these
+views. The indicator is false while projection preparation is incomplete and
+uses an indexed existence lookup rather than a count or transcript scan.
+
+The standard React preset exposes a pending-approval entry point even while
+reading older messages. Opening retains one 30-record/64 KiB inbox page; opening
+a selected review allows at most two records and 128 KiB. Navigation replaces
+pages. Closing or switching cancels reads. Headless callers can use
+`ApplicationConversationSession.readApprovals()` and the exported
+`ConversationPendingApprovals` primitive. Existing approval decisions still use
+canonical expected-version and idempotency validation; display pages never grant
+execution permission. Opaque argument references must match the fetched tool's
+identity and argument hash before confirmation is enabled.
+
+Additive migration `handrail_ai_display_pending_approvals` is a partial index on
+approval records with canonical pending status. It requires no transcript replay
+or new per-record backfill column. As with other schema indexes, a future large
+production installation can prebuild the same index concurrently under its
+normal authorized migration procedure. No production migration was run here.
+
+Oversized proposal/tool records remain explicitly deferred. The UI explains
+unavailable/incomplete review and disables confirmation; full deferred structured
+review remains follow-up work, not an implicit full-history download.

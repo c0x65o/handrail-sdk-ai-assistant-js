@@ -24,6 +24,8 @@ export interface ConversationDisplayWindowSnapshot {
 }
 export interface ConversationDisplayWindowOptions {
   readonly reader: ConversationDisplayReader;
+  /** Validated, current-generation changes for a separate bounded activity view. */
+  readonly onChanges?: (page: ConversationDisplayChanges) => void;
   readonly pageSize?: number;
   readonly pageBytes?: number;
   readonly maximumMessages?: number;
@@ -119,6 +121,7 @@ export class ConversationDisplayWindow {
           const changed = records.length !== this.state.records.length || records.some((record, index) => record !== this.state.records[index]);
           const outside = [...byId.values()].some(record => !record.deleted && !ids.has(record.id));
           const trimmed = this.trim(records, "older");
+          this.options.onChanges?.(page);
           this.changesCursor = page.nextCursor;
           if (page.nextCursor === null) this.changesAfter = page.throughRevision;
           this.publish({ records: trimmed.records, retainedBytes: trimmed.bytes, revision: page.revision,

@@ -14,6 +14,8 @@ export interface ConversationPresentationState extends Omit<ConversationState,
   readonly turns: readonly ConversationPresentationTurn[];
   /** True means arrays contain only the loaded display window. */
   readonly partial?: true;
+  /** Loaded citation records whose source is outside the retained/inline window. */
+  readonly unresolvedCitationCount?: number;
 }
 export type ConversationPresentationSelector<T> = (snapshot: ConversationPresentationState) => T;
 export interface ConversationPresentationStore {
