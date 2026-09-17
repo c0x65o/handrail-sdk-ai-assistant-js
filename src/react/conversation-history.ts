@@ -1,10 +1,10 @@
+import type { ConversationPresentationRuntime as ConversationRuntime } from "../conversation/presentation.js";
 import { flushSync } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConversationCatalog, ConversationCatalogCursor, ConversationCatalogDescriptor, ConversationCatalogIdempotencyKey } from "../conversation/catalog.js";
 import { ConversationCatalogError } from "../conversation/catalog.js";
 import type { ConversationId } from "../conversation/events.js";
 import type { ConversationWorkspaceOpenInput } from "../conversation/workspace.js";
-import type { ConversationRuntime } from "../runtime.js";
 import { conversationMessageText } from "./message-actions.js";
 import { useConversationActivitySnapshot, useConversationWorkspaceSnapshot,
   type ConversationActivityReadable, type ConversationActivityRecord, type ConversationWorkspaceReadable } from "./workspace.js";

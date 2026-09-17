@@ -19,7 +19,7 @@ const client: PostgresSqlClient = { query: adapt(database).query,
 const persistence = new PostgresAiPersistence(client);
 beforeAll(async () => { await persistence.migrate(); });
 afterAll(async () => { await database.close(); });
-const authorized = vi.fn(async (_conversation: string) => {});
+const authorized = vi.fn(async (conversation: string) => { void conversation; });
 const display = (tenant = "tenant", scope = "scope") => new PostgresConversationDisplayHistory(client, tenant, scope, authorized);
 function events(conversation: string, payloads: readonly Record<string, unknown>[], start = 1): ConversationEvent[] {
   return payloads.map((payload, index) => parseConversationEvent({ version: 1, event_id: `${conversation}-${start + index}`,
@@ -38,6 +38,68 @@ async function append(conversation: string, payloads: readonly Record<string, un
 }
 
 describe("indexed display history", () => {
+  it("loads bounded active/latest/requested controls without reading turn bodies or canonical history", async () => {
+    await append("controls", [messages(1)[0]!,
+      { type: "turn.started", turn_id: "old", input_message_ids: ["message-1"] },
+      { type: "turn.completed", turn_id: "old", output_message_ids: [], outcome: "stop" },
+      ...messages(1, 2),
+      { type: "turn.started", turn_id: "active", input_message_ids: ["message-2"] },
+    ]);
+    // A very large complete turn record must not make controls hydrate it.
+    const huge = JSON.stringify({ retry_history: Array.from({ length: 100_000 }, (_, attempt) => ({ attempt })) });
+    await client.query(`UPDATE handrail_ai_display_records SET payload=$3,payload_bytes=$4
+      WHERE tenant_id='tenant' AND conversation_id=$1 AND kind='turn' AND record_id=$2`,
+    ["controls", "active", huge, Buffer.byteLength(huge)]);
+    statements.length = 0;
+    const control = await display().control({ conversationId: "controls", turnId: "old" });
+    expect(control).toMatchObject({ status: "ready", activeTurnId: "active",
+      activeTurn: { turnId: "active", status: "queued" }, latestTurn: { turnId: "active" },
+      requestedTurn: { turnId: "old", status: "completed", remoteMayStillBeRunning: false } });
+    expect(statements).toHaveLength(1);
+    expect(statements[0]!.sql).not.toMatch(/\br\.payload\b|checkpoint|SELECT payload/u);
+    expect(Buffer.byteLength(JSON.stringify(statements[0]!.rows))).toBeLessThan(3000);
+    expect(Buffer.byteLength(JSON.stringify(control))).toBeLessThan(2048);
+    expect((await display().control({ conversationId: "controls", turnId: "missing" })).requestedTurn).toBeNull();
+    expect((await display("different").control({ conversationId: "controls" })).latestTurn).toBeNull();
+    await append("controls", [{ type: "conversation.cleared" }], 6);
+    expect(await display().control({ conversationId: "controls", turnId: "old" })).toMatchObject({
+      generation: 6, activeTurn: null, latestTurn: null, requestedTurn: null });
+  });
+
+  it("prepares legacy controls in durable bounded steps and reports truncated error summaries", async () => {
+    const error = { code: "failure", message: "😀".repeat(1000), retryable: true };
+    await append("legacy-controls", [
+      ...messages(1),
+      { type: "turn.started", turn_id: "first", input_message_ids: ["message-1"] },
+      { type: "turn.failed", turn_id: "first", error },
+      ...messages(1, 2),
+      { type: "turn.started", turn_id: "last", input_message_ids: ["message-2"] },
+      { type: "turn.failed", turn_id: "last", error },
+    ]);
+    const current = await display().control({ conversationId: "legacy-controls", turnId: "first" });
+    expect(Array.from(current.latestTurn!.error!.message)).toHaveLength(256);
+    expect(current.latestTurn!.error?.messageTruncated).toBe(true);
+    await client.query(`UPDATE handrail_ai_display_records SET control_payload=NULL WHERE tenant_id='tenant'
+      AND conversation_id='legacy-controls' AND kind='turn'`);
+    expect(await display().control({ conversationId: "legacy-controls" })).toMatchObject({ status: "preparing", latestTurn: null });
+    expect(await display().backfillControls("legacy-controls", 1)).toEqual({ processed: 1, hasMore: true });
+    expect((await display().control({ conversationId: "legacy-controls" })).latestTurn).toEqual(current.latestTurn);
+    expect(await display().backfillControls("legacy-controls", 1)).toEqual({ processed: 1, hasMore: false });
+    expect(await display().control({ conversationId: "legacy-controls", turnId: "first" })).toEqual(current);
+  });
+
+  it("authorizes controls after reads and prevents preparation after deletion", async () => {
+    const check = vi.fn(async () => {});
+    const scoped = new PostgresConversationDisplayHistory(client, "tenant", "scope", check);
+    check.mockImplementationOnce(async () => {}).mockImplementationOnce(async () => { throw new Error("revoked"); });
+    await expect(scoped.control({ conversationId: "revoked-controls" })).rejects.toThrow("revoked");
+    expect(check).toHaveBeenCalledTimes(2);
+    await client.query(`INSERT INTO handrail_ai_documents (tenant_id,kind,scope_id,record_id,version,payload)
+      VALUES ('tenant','conversation_deleted','deleted-controls','deleted',1,'{}')`);
+    await expect(display().control({ conversationId: "deleted-controls" })).rejects.toMatchObject({ code: "not_found" });
+    await expect(display().backfillControls("deleted-controls")).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("restores an indexed message anchor and pages both directions without gaps or full hydration", async () => {
     await append("anchors", messages(20));
     const anchor = { messageId: "message-8", generation: 0, direction: "newer" as const, inclusive: true };
@@ -113,6 +175,24 @@ describe("indexed display history", () => {
       .toEqual(canonical.citations[0]);
     const source = await display().content({ conversationId: "facts", generation: 0, kind: "source", id: "source" });
     expect(JSON.parse(source.text)).toEqual(canonical.citation_sources[0]);
+    statements.length = 0;
+    const contextView = { type: "context" as const, messageIds: ["reply"] };
+    const context = await display().page({ conversationId: "facts", view: contextView });
+    expect(statements).toHaveLength(1);
+    expect(context.records.map(row => row.kind).sort()).toEqual(["approval", "citation", "source", "tool", "turn"]);
+    expect(context.records.find(row => row.kind === "source")?.value).toEqual(canonical.citation_sources[0]);
+    expect(context.records.find(row => row.kind === "citation")?.value).toEqual(canonical.citations[0]);
+    const firstContext = await display().page({ conversationId: "facts", view: contextView, limit: 2 });
+    const contextRows = [...firstContext.records];
+    let cursor = firstContext.nextCursor;
+    while (cursor) {
+      const next = await display().page({ conversationId: "facts", view: contextView, limit: 2, cursor });
+      contextRows.unshift(...next.records); cursor = next.nextCursor;
+    }
+    expect(contextRows).toEqual(context.records);
+    expect((await display().page({ conversationId: "facts", view: { type: "context", messageIds: ["missing"] } })).records).toEqual([]);
+    await expect(display().page({ conversationId: "facts", view: { type: "context", messageIds: Array(101).fill("reply") } }))
+      .rejects.toMatchObject({ code: "invalid_input" });
     // An idempotent append cannot append text twice to the materialized record.
     await new PostgresConversationEventStore(persistence, "tenant").append({ conversationId: "facts" as never,
       expectedRevision: null, events: batch });

@@ -1,10 +1,13 @@
+import type { ConversationPresentationTurnResult as ConversationRuntimeTurnResult } from "../conversation/presentation.js";
 import {
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ChangeEvent,
   type ClipboardEvent,
   type CompositionEvent,
@@ -12,6 +15,11 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
+import { ConversationContext } from "./context.js";
+import type { ConversationDraftController, ConversationDraftSnapshot } from "../client/local-state.js";
+const EMPTY_DRAFT: ConversationDraftSnapshot = Object.freeze({ text: "", edit: 0, status: "saved", error: null });
+const noDraftSubscribe = () => () => undefined;
+const noDraftSnapshot = () => EMPTY_DRAFT;
 
 import type {
   AttachmentSelection,
@@ -52,7 +60,6 @@ import {
 } from "../protocol.js";
 import type {
   ConversationRuntimeError,
-  ConversationRuntimeTurnResult,
 } from "../runtime.js";
 import { useConversationActions, useConversationSelector, useConversationStore } from "./hooks.js";
 
@@ -110,6 +117,8 @@ export interface UseConversationComposerOptions<TRequest = undefined> {
   /** Narrow cancellation seam; no runtime cancellation contract is assumed here. */
   readonly onCancel?: () => void | Promise<void>;
   readonly initialDraft?: string;
+  /** Optional account/chat-owned controller; negotiated sessions supply their own. */
+  readonly draftController?: ConversationDraftController;
 }
 
 export type ConversationComposerAttachmentStatus =
@@ -192,6 +201,10 @@ export interface ConversationComposerDropProps {
 }
 
 export interface ConversationComposerResult {
+  readonly draftPersistence?: {
+    readonly status: ConversationDraftSnapshot["status"]; readonly error: string | null;
+    readonly retry: () => Promise<void>; readonly reload: () => Promise<void>;
+  };
   readonly draft: string;
   readonly setDraft: (draft: string) => void;
   readonly attachments: readonly ConversationComposerAttachment[];
@@ -465,6 +478,10 @@ export function useConversationComposer<TRequest = undefined>(
 ): ConversationComposerResult {
   const actions = useConversationActions<TRequest>();
   const store = useConversationStore();
+  const conversationBinding = useContext(ConversationContext);
+  const draftController = options.draftController ?? conversationBinding?.runtime?.displaySession?.draft ?? undefined;
+  const persistedDraft = useSyncExternalStore(draftController?.subscribe ?? noDraftSubscribe,
+    draftController?.getSnapshot ?? noDraftSnapshot, draftController?.getSnapshot ?? noDraftSnapshot);
   const storeConversationId = useConversationSelector((state) => state.conversation_id);
   const activeTurnId = useConversationSelector((state) => state.active_turn_id);
   const reactId = useId();
@@ -510,7 +527,7 @@ export function useConversationComposer<TRequest = undefined>(
     ? options.imageIntake?.previews ?? true
     : generalizedIntake.previews ?? true;
 
-  const [draft, setDraftState] = useState(options.initialDraft ?? "");
+  const [localDraft, setDraftState] = useState(options.initialDraft ?? draftController?.getSnapshot().text ?? "");
   const [owned, setOwned] = useState<readonly OwnedAttachment[]>([]);
   const [snapshot, setSnapshot] = useState(() => uploader.getSnapshot());
   const [operationErrors, setOperationErrors] = useState<
@@ -534,7 +551,7 @@ export function useConversationComposer<TRequest = undefined>(
     };
   }, []);
   const composing = useRef(false);
-  const draftRef = useRef(draft);
+  const draftRef = useRef(localDraft);
   const draftRevision = useRef(0);
   const ownedRef = useRef(owned);
   const uploaderRef = useRef(uploader);
@@ -545,7 +562,15 @@ export function useConversationComposer<TRequest = undefined>(
     uploader,
     presence,
     initialized: false,
+    draftController,
   });
+  const previousScope = lifecycleRef.current;
+  const scopeChanged = previousScope.initialized && (previousScope.conversationId !== conversationId ||
+    previousScope.store !== store || previousScope.uploader !== uploader || previousScope.presence !== presence ||
+    previousScope.draftController !== draftController);
+  // Storage snapshots belong to the current account immediately, before effects
+  // run. Never render the previous scope's editor during a prop transition.
+  const draft = draftController ? persistedDraft.text : scopeChanged ? "" : localDraft;
   const pastePreparations = useRef(new Set<{ abort: AbortController; release(): void }>());
   useEffect(() => () => {
     for (const job of pastePreparations.current) { job.abort.abort(); job.release(); }
@@ -593,7 +618,7 @@ export function useConversationComposer<TRequest = undefined>(
       previous.conversationId === conversationId &&
       previous.store === store &&
       previous.uploader === uploader &&
-      previous.presence === presence
+      previous.presence === presence && previous.draftController === draftController
     ) {
       return;
     }
@@ -602,9 +627,9 @@ export function useConversationComposer<TRequest = undefined>(
     releaseOwned(previousOwned, previous.uploader);
     ownedRef.current = [];
     setOwned([]);
-    draftRef.current = "";
+    draftRef.current = draftController?.getSnapshot().text ?? "";
     draftRevision.current += 1;
-    setDraftState("");
+    setDraftState(draftRef.current);
     sendingRef.current = false;
     setIsSending(false);
     preparingSubmission.current = null;
@@ -618,8 +643,32 @@ export function useConversationComposer<TRequest = undefined>(
       uploader,
       presence,
       initialized: true,
+      draftController,
     };
-  }, [conversationId, presence, releaseOwned, store, uploader]);
+  }, [conversationId, presence, releaseOwned, store, uploader, draftController]);
+
+  useEffect(() => {
+    if (!draftController) return;
+    const adopt = () => {
+      const snapshot = draftController.getSnapshot();
+      if (options.initialDraft !== undefined && snapshot.status === "saved" && snapshot.edit === 0 && !snapshot.text) {
+        draftController.setText(options.initialDraft); return;
+      }
+      const next = snapshot.text;
+      if (draftRef.current !== next) { draftRevision.current++; draftRef.current = next; setDraftState(next); }
+    };
+    const unsubscribe = draftController.subscribe(adopt);
+    adopt();
+    const flush = () => { void draftController.flush().catch(() => undefined); };
+    const visibility = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", visibility);
+      unsubscribe(); flush();
+    };
+  }, [draftController, options.initialDraft]);
 
   useEffect(() => () => {
     // Late runtime notifications belong to the disposed composer, not a later mount.
@@ -703,12 +752,13 @@ export function useConversationComposer<TRequest = undefined>(
   const hasContent = draft.trim().length > 0 || attachments.length > 0;
   const canPrepare = submissionBlockCount > 0 && [...submissionBlocks.current.values()].every((prepare) => prepare !== undefined);
   const canSend = (submissionBlockCount === 0 || canPrepare) && !isPreparingSubmission && !isSending &&
-    activeTurnId === null && (hasContent || canPrepare) && uploadsReady;
+    persistedDraft.status !== "loading" && activeTurnId === null && (hasContent || canPrepare) && uploadsReady;
 
   const updateDraft = useCallback((nextDraft: string): void => {
     draftRevision.current += 1;
     draftRef.current = nextDraft;
     setDraftState(nextDraft);
+    draftController?.setText(nextDraft);
     // A send/cancel failure describes the previous attempt. Once the user
     // edits the draft it is no longer actionable and must not linger beside a
     // new message (intake errors remain until the next intake operation).
@@ -720,7 +770,7 @@ export function useConversationComposer<TRequest = undefined>(
     presence?.noteActivity();
     if (nextDraft.length === 0) presence?.stopTyping("explicit");
     else presence?.setTyping(true);
-  }, [presence]);
+  }, [presence, draftController]);
 
   const imageOptions = useCallback((): BrowserImageIntakeOptions => ({
     acceptedMediaTypes: acceptedImageMediaTypes,
@@ -962,7 +1012,7 @@ export function useConversationComposer<TRequest = undefined>(
     event?: FormEvent<Element>,
   ): Promise<ConversationRuntimeTurnResult | null> => {
     event?.preventDefault();
-    if (preparingSubmission.current !== null || sendingRef.current || store.getSnapshot().active_turn_id !== null) return null;
+    if (preparingSubmission.current !== null || sendingRef.current || draftController?.getSnapshot().status === "loading" || store.getSnapshot().active_turn_id !== null) return null;
     const preparations = [...submissionBlocks.current.values()];
     if (preparations.some((prepare) => prepare === undefined)) return null;
     if (preparations.length > 0) {
@@ -997,6 +1047,7 @@ export function useConversationComposer<TRequest = undefined>(
     });
     const currentDraft = draftRef.current;
     const submittedRevision = draftRevision.current;
+    const submittedDraftEdit = draftController?.getSnapshot().edit;
     const submissionScope = lifecycleRef.current;
     const isCurrent = () => lifecycleRef.current === submissionScope;
     let accepted = false;
@@ -1014,8 +1065,11 @@ export function useConversationComposer<TRequest = undefined>(
       attachments: Object.freeze(readyReferences),
     });
     const accept = () => {
-      if (accepted || !isCurrent()) return;
+      if (accepted) return;
       accepted = true;
+      const clearsCurrentDraft = isCurrent() && draftRevision.current === submittedRevision;
+      if (submittedDraftEdit !== undefined) draftController?.accepted(submittedDraftEdit);
+      if (!isCurrent()) return;
       if (pendingCancellation.current?.scope === submissionScope && pendingCancellation.current.requested) {
         pendingCancellation.current.requested = false;
         const turnId = store.getSnapshot().active_turn_id;
@@ -1032,7 +1086,7 @@ export function useConversationComposer<TRequest = undefined>(
       ownedRef.current = nextOwned;
       setOwned(nextOwned);
       // Revision identity protects the next draft even when it has identical text.
-      if (draftRevision.current === submittedRevision) {
+      if (clearsCurrentDraft) {
         draftRevision.current += 1;
         draftRef.current = "";
         setDraftState("");
@@ -1078,7 +1132,7 @@ export function useConversationComposer<TRequest = undefined>(
         setIsSending(false);
       }
     }
-  }, [actions, createRequest, presence, releaseOwned, request, store, uploader]);
+  }, [actions, createRequest, presence, releaseOwned, request, store, uploader, draftController]);
 
   const cancel = useCallback(async (): Promise<boolean> => {
     try {
@@ -1159,13 +1213,15 @@ export function useConversationComposer<TRequest = undefined>(
   }), [handleDragOver, handleDrop]);
 
   return useMemo(() => Object.freeze({
+    ...(draftController ? { draftPersistence: { status: persistedDraft.status, error: persistedDraft.error,
+      retry: draftController.flush, reload: () => draftController.reload() } } : {}),
     draft,
     setDraft: updateDraft,
     acquireSubmissionBlock,
-    attachments,
-    errors,
-    canSend,
-    isSending,
+    attachments: scopeChanged ? [] : attachments,
+    errors: scopeChanged ? [] : errors,
+    canSend: !scopeChanged && canSend,
+    isSending: !scopeChanged && isSending,
     submit,
     cancel,
     stop: cancel,
@@ -1191,5 +1247,8 @@ export function useConversationComposer<TRequest = undefined>(
     submit,
     textareaProps,
     updateDraft,
+    draftController,
+    persistedDraft,
+    scopeChanged,
   ]);
 }

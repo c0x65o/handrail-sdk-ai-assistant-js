@@ -5,7 +5,10 @@ export * from "../transcription-http.js";
 export * from "./presence.js";
 export * from "./synchronization.js";
 export * from "./display-window.js";
+export * from "./application-session.js";
+export * from "./session-submission.js";
 export * from "../conversation/display-history.js";
+export * from "../conversation/display-control.js";
 export {
   APPLICATION_GATEWAY_PROTOCOL_VERSION,
   ApplicationGatewayResourceError,
@@ -86,3 +89,6 @@ export {
 export { conversationTimeline, type ConversationTimelineEntry, type ConversationTimelineOptions } from "../conversation/timeline.js";
 
 export { assistantToolArgumentReference, reviewedToolArguments } from "../conversation/approval-arguments.js";
+export * from "../conversation/presentation.js";
+export * from "./application-runtime.js";
+export * from "./local-state.js";

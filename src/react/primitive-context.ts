@@ -1,3 +1,4 @@
+import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
 import {
   createContext,
   useCallback,
@@ -5,7 +6,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import type { ConversationState } from "../conversation/state.js";
+import type { } from "../conversation/state.js";
 import type {
   PresenceController,
   PresenceControllerSnapshot,

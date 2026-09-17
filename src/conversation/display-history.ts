@@ -1,6 +1,7 @@
 import type { ConversationMessageRecord, ConversationTurnRecord, ConversationToolCallRecord,
   ConversationApprovalProposalRecord, ConversationToolLoopBudgetExhaustion } from "./state.js";
 import type { Citation, CitationSource } from "../citations.js";
+import type { ConversationDisplayControl, ConversationDisplayControlInput } from "./display-control.js";
 
 /** Display records are not canonical checkpoints and must never seed model context. */
 export interface ConversationDisplayRecordTypes {
@@ -31,6 +32,8 @@ export type ConversationDisplayRecord = {
 export type ConversationDisplayView =
   | { readonly type: "messages" }
   | { readonly type: "turn"; readonly turnId: string }
+  /** Bounded related state for the currently displayed complete messages. */
+  | { readonly type: "context"; readonly messageIds: readonly string[]; readonly turnId?: string }
   | { readonly type: "citations"; readonly messageId: string };
 
 export interface ConversationDisplayPageInput {
@@ -92,6 +95,8 @@ export interface ConversationDisplayChanges extends ConversationDisplayPage {
 }
 
 export interface ConversationDisplayHistory {
+  /** Optional for older/custom display stores; advertised separately by gateways. */
+  control?(input: ConversationDisplayControlInput): Promise<ConversationDisplayControl>;
   page(input: ConversationDisplayPageInput): Promise<ConversationDisplayPage>;
   content(input: ConversationDisplayContentInput): Promise<ConversationDisplayContentChunk>;
   changes(input: ConversationDisplayChangesInput): Promise<ConversationDisplayChanges>;

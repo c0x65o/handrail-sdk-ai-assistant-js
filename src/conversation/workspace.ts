@@ -1,3 +1,4 @@
+import type { ConversationPresentationRuntime } from "./presentation.js";
 import type { ConversationId } from "./events.js";
 import type { ConversationRuntimeRegistry } from "./runtime-registry.js";
 import type { ConversationRuntime } from "../runtime.js";
@@ -6,7 +7,7 @@ export type ConversationWorkspaceTurnStatus = "idle" | "running" | "completed" |
 
 export interface ConversationWorkspaceThreadSnapshot {
   readonly conversationId: ConversationId;
-  readonly runtime: ConversationRuntime<unknown>;
+  readonly runtime: ConversationPresentationRuntime<unknown>;
   readonly turnStatus: ConversationWorkspaceTurnStatus;
   readonly unread: boolean;
   readonly revision: number | null;
@@ -29,8 +30,8 @@ export interface ConversationWorkspaceOpenInput<TAuthorizationContext> {
 
 type Listener = () => void;
 
-interface WorkspaceEntry<TRequest> {
-  readonly runtime: ConversationRuntime<TRequest>;
+interface WorkspaceEntry<TRuntime> {
+  readonly runtime: TRuntime;
   unsubscribe: () => void;
   turnStatus: ConversationWorkspaceTurnStatus;
   unread: boolean;
@@ -38,11 +39,13 @@ interface WorkspaceEntry<TRequest> {
 }
 
 export interface ConversationWorkspaceOptions {
+  /** Idle runtime LRU bound. Running/submitting turns keep their scalar observer. */
+  readonly maximumCachedIdleThreads?: number;
   readonly restoreActiveTurns?: boolean;
   readonly onRecoveryError?: (conversationId: ConversationId, error: unknown) => void;
 }
 
-function statusOf(runtime: ConversationRuntime<unknown>): ConversationWorkspaceTurnStatus {
+function statusOf(runtime: ConversationPresentationRuntime<unknown>): ConversationWorkspaceTurnStatus {
   const state = runtime.store.getSnapshot();
   if (state.active_turn_id !== null) return "running";
   const latest = state.turns.at(-1);
@@ -57,10 +60,10 @@ function statusOf(runtime: ConversationRuntime<unknown>): ConversationWorkspaceT
  * thread never releases the previous runtime, so its turn can finish in the
  * background and become unread.
  */
-export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
-  readonly #registry: ConversationRuntimeRegistry<TRequest, TAuthorizationContext>;
+export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown, TRuntime extends ConversationPresentationRuntime<TRequest> = ConversationRuntime<TRequest>> {
+  readonly #registry: ConversationRuntimeRegistry<TRequest, TAuthorizationContext, TRuntime>;
   readonly #options: ConversationWorkspaceOptions;
-  readonly #entries = new Map<ConversationId, WorkspaceEntry<TRequest>>();
+  readonly #entries = new Map<ConversationId, WorkspaceEntry<TRuntime>>();
   readonly #listeners = new Set<Listener>();
   #selectedConversationId: ConversationId | null = null;
   #visible = true;
@@ -69,7 +72,9 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
     threads: Object.freeze([]),
   });
 
-  constructor(registry: ConversationRuntimeRegistry<TRequest, TAuthorizationContext>, options: ConversationWorkspaceOptions = {}) {
+  constructor(registry: ConversationRuntimeRegistry<TRequest, TAuthorizationContext, TRuntime>, options: ConversationWorkspaceOptions = {}) {
+    if (options.maximumCachedIdleThreads !== undefined && (!Number.isSafeInteger(options.maximumCachedIdleThreads) ||
+      options.maximumCachedIdleThreads < 1 || options.maximumCachedIdleThreads > 100)) throw new TypeError("Invalid idle conversation cache size");
     this.#registry = registry;
     this.#options = options;
   }
@@ -81,7 +86,7 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
     return () => this.#listeners.delete(listener);
   };
 
-  async open(input: ConversationWorkspaceOpenInput<TAuthorizationContext>): Promise<ConversationRuntime<TRequest>> {
+  async open(input: ConversationWorkspaceOpenInput<TAuthorizationContext>): Promise<TRuntime> {
     let entry = this.#entries.get(input.conversationId);
     if (entry === undefined) {
       // Selection belongs to the workspace; the registry accepts only the
@@ -110,7 +115,7 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
       }
     }
     if (input.select !== false) this.select(input.conversationId);
-    else this.#publish();
+    else { entry.runtime.setSynchronizationActive?.(this.#selectedConversationId === input.conversationId && this.#visible); this.#publish(); }
     return entry.runtime;
   }
 
@@ -120,8 +125,10 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
     }
     this.#selectedConversationId = conversationId;
     const selected = conversationId === null ? undefined : this.#entries.get(conversationId);
+    if (selected && conversationId !== null) { this.#entries.delete(conversationId); this.#entries.set(conversationId, selected); }
     selected?.runtime.setSynchronizationActive?.(this.#visible);
     if (this.#visible && selected !== undefined) selected.unread = false;
+    this.#trimIdleThreads();
     this.#publish();
   }
 
@@ -155,7 +162,7 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
   }
 
   /** Picker-compatible view whose release is intentionally selection-neutral. */
-  pickerRegistry(): Pick<ConversationRuntimeRegistry<TRequest, TAuthorizationContext>, "open" | "clear" | "archive" | "restore" | "permanentlyDelete"> & {
+  pickerRegistry(): Pick<ConversationRuntimeRegistry<TRequest, TAuthorizationContext, TRuntime>, "open" | "clear" | "archive" | "restore" | "permanentlyDelete"> & {
     release(conversationId: ConversationId): Promise<boolean>;
   } {
     return Object.freeze({
@@ -176,19 +183,20 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
     await this.#registry.dispose();
   }
 
-  #update(conversationId: ConversationId, entry: WorkspaceEntry<TRequest>): void {
+  #update(conversationId: ConversationId, entry: WorkspaceEntry<TRuntime>): void {
     const state = entry.runtime.store.getSnapshot();
     const previous = entry.turnStatus;
     entry.turnStatus = statusOf(entry.runtime);
     entry.revision = state.revision;
     if ((!this.#visible || this.#selectedConversationId !== conversationId) && previous === "running" &&
       (entry.turnStatus === "completed" || entry.turnStatus === "error")) entry.unread = true;
+    this.#trimIdleThreads();
     this.#publish();
   }
 
   #publish(): void {
     const threads = Object.freeze([...this.#entries].map(([conversationId, entry]) => Object.freeze({
-      conversationId, runtime: entry.runtime as ConversationRuntime<unknown>, turnStatus: entry.turnStatus,
+      conversationId, runtime: entry.runtime as ConversationPresentationRuntime<unknown>, turnStatus: entry.turnStatus,
       unread: entry.unread, revision: entry.revision,
     })));
     this.#snapshot = Object.freeze({
@@ -199,5 +207,19 @@ export class ConversationWorkspace<TRequest, TAuthorizationContext = unknown> {
       threads,
     });
     for (const listener of this.#listeners) listener();
+  }
+
+  #trimIdleThreads(): void {
+    const limit = this.#options.maximumCachedIdleThreads;
+    if (limit === undefined) return;
+    const idle = [...this.#entries].filter(([, entry]) => entry.turnStatus !== "running" &&
+      !entry.runtime.displaySession?.getSnapshot().submitting && !entry.runtime.displaySession?.getSnapshot().loading);
+    let excess = idle.length - limit;
+    for (const [id] of idle) {
+      if (excess <= 0) break;
+      if (id === this.#selectedConversationId) continue;
+      excess--;
+      void this.close(id).catch(error => { try { this.#options.onRecoveryError?.(id, error); } catch { /* Diagnostic only. */ } });
+    }
   }
 }

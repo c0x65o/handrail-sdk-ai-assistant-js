@@ -76,7 +76,7 @@ describe("styled transcript presentation", () => {
     expect(view.queryByText("Threads")).toBeNull();
     expect(view.container.querySelector(".hr-chat__picker")).toBeNull();
     await waitFor(() => expect(list).toHaveBeenCalledOnce());
-    expect(list).toHaveBeenCalledWith(expect.objectContaining({ lifecycle: "all", authorizationContext: {} }));
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ lifecycle: "active", authorizationContext: {} }));
     if (selected) {
       expect(view.getByRole("textbox")).toBeTruthy();
       expect(view.getByRole("button", { name: "Dictate" })).toBeTruthy();

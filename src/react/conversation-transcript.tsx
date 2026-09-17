@@ -1,6 +1,10 @@
-import { Fragment, useMemo, type HTMLAttributes, type ReactNode } from "react";
+import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
+import { Fragment, useContext, useMemo, useSyncExternalStore, type HTMLAttributes, type ReactNode } from "react";
+import type { ApplicationConversationSession } from "../client/application-session.js";
+import { ConversationContext } from "./context.js";
+import { ConversationDisplayTranscript } from "./display-transcript.js";
 import { conversationTimeline, type ConversationActivityGroup, type ConversationTimelineOptions } from "../conversation/timeline.js";
-import type { ConversationApprovalProposalRecord, ConversationMessageRecord, ConversationState, ConversationToolCallRecord } from "../conversation/state.js";
+import type { ConversationApprovalProposalRecord, ConversationMessageRecord,  ConversationToolCallRecord } from "../conversation/state.js";
 import { useSmartTranscriptFollow } from "./transcript-follow.js";
 import { Message } from "./primitives.js";
 
@@ -16,7 +20,46 @@ export interface ConversationTranscriptProps extends Omit<HTMLAttributes<HTMLDiv
 }
 
 /** Shared chronology, saved failures and scroll following; hosts supply domain card formatting. */
-export function ConversationTranscript({ state, proposals, includeToolResult, includeActivity, renderActivity,
+export function ConversationTranscript(props: ConversationTranscriptProps) {
+  const session = useContext(ConversationContext)?.runtime?.displaySession;
+  return session && props.state.partial ? <PagedConversationTranscript {...props} session={session}/>
+    : <FullConversationTranscript {...props}/>;
+}
+
+function PagedConversationTranscript({ session, state, proposals, includeToolResult, includeActivity, renderActivity,
+  renderMessage, renderApproval, renderToolResult, renderFailure, emptyState, children, ...props }:
+  ConversationTranscriptProps & { readonly session: ApplicationConversationSession }) {
+  const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const positions = useMemo(() => ({ get: () => session.getPosition(), set: (_id: string, value: Parameters<typeof session.savePosition>[0]) => session.savePosition(value) }), [session]);
+  const entries = conversationTimeline(state, { ...(proposals ? { proposals } : {}),
+    ...(includeToolResult ? { includeToolResult } : {}), ...(includeActivity ? { includeActivity } : {}) });
+  const before = new Map<string, ReactNode[]>(); let pending: ReactNode[] = [];
+  for (const entry of entries) {
+    if (entry.type === "message") { before.set(entry.message.message_id, pending); pending = []; continue; }
+    const key = entry.type === "activity" ? `activity:${entry.group.id}` : entry.type === "approval" ? `approval:${entry.proposal.proposal_id}`
+      : entry.type === "tool_result" ? `tool:${entry.call.turn_id}:${entry.call.tool_call_id}` : `failure:${entry.turn.turn_id}`;
+    const node = entry.type === "activity" ? renderActivity?.(entry.group) : entry.type === "approval" ? renderApproval?.(entry.proposal)
+      : entry.type === "tool_result" ? renderToolResult?.(entry.call) : renderFailure?.(entry.turn) ?? <article role="listitem" aria-label="Failed request">
+        <strong>Request failed</strong><p>{entry.turn.error?.message ?? "The assistant could not complete this request."}</p></article>;
+    pending.push(<Fragment key={key}>{node}</Fragment>);
+  }
+  return <ConversationDisplayTranscript {...props} controller={session.window} conversationId={snapshot.conversationId}
+    manageSelection={false} positions={positions} pollingMilliseconds={0} onFollowingLatestChange={value => session.setFollowingLatest(value)}
+    emptyState={emptyState} renderMessage={record => {
+      const message = state.messages.find(message => message.message_id === record.id) ?? record.value;
+      return <>{before.get(record.id)}{message ? renderMessage?.(message) ?? <Message message={message}/> : null}</>;
+    }}>
+    {pending}{snapshot.loading && snapshot.window.status === "empty" && <p role="status">Loading conversation…</p>}
+    {snapshot.error && <div role="alert"><p>{snapshot.error.message}</p>
+      {snapshot.error.retryable && <button type="button" onClick={() => { void session.refresh().catch(() => undefined); }}>Retry conversation</button>}</div>}
+    {snapshot.hasMoreRelated && <button type="button" onClick={() => { void session.loadMoreRelated().catch(() => undefined); }}>Load more activity</button>}
+    {snapshot.hasPendingSubmission && <button type="button" disabled={snapshot.submitting}
+      onClick={() => { void session.retryPending().catch(() => undefined); }}>Retry saved message</button>}
+    {children}
+  </ConversationDisplayTranscript>;
+}
+
+function FullConversationTranscript({ state, proposals, includeToolResult, includeActivity, renderActivity,
   renderMessage, renderApproval, renderToolResult, renderFailure, emptyState, children, onScroll, ...props }: ConversationTranscriptProps) {
   const contentVersion = useMemo(() => ({ state, proposals }), [state, proposals]);
   const follow = useSmartTranscriptFollow({ conversationId: state.conversation_id, contentVersion });

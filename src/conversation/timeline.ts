@@ -1,4 +1,5 @@
-import type { ConversationApprovalProposalRecord, ConversationMessageRecord, ConversationState, ConversationToolCallRecord } from "./state.js";
+import type { ConversationPresentationState as ConversationState } from "./presentation.js";
+import type { ConversationApprovalProposalRecord, ConversationMessageRecord,  ConversationToolCallRecord } from "./state.js";
 
 export interface ConversationActivityGroup {
   readonly id: string;

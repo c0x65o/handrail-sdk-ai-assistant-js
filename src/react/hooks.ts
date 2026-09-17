@@ -8,15 +8,14 @@ import {
 
 import type { ConversationEvent, ConversationTurnId } from "../conversation/events.js";
 import type { ConversationState } from "../conversation/state.js";
+import type { ConversationPresentationState, ConversationPresentationSelector as ConversationStoreSelector,
+  ConversationPresentationRuntime as ConversationRuntime, ConversationPresentationTurnResult as ConversationRuntimeTurnResult } from "../conversation/presentation.js";
 import type {
   ConversationStore,
   ConversationStoreEquality,
-  ConversationStoreSelector,
 } from "../conversation/store.js";
 import type {
-  ConversationRuntime,
   ConversationRuntimeSendMessageInput,
-  ConversationRuntimeTurnResult,
 } from "../runtime.js";
 import {
   ConversationContext,
@@ -44,8 +43,8 @@ export function useConversationStore(): ConversationReadableStore {
   return useConversationBinding("useConversationStore").store;
 }
 
-/** Subscribe to the complete immutable conversation snapshot. */
-export function useConversationSnapshot(): ConversationState {
+/** Subscribe to immutable presentation state. `partial` marks a loaded window. */
+export function useConversationSnapshot(): ConversationPresentationState {
   const store = useConversationStore();
   const subscribe = useCallback(
     (notify: () => void) => store.subscribe(notify),
@@ -66,7 +65,7 @@ export function useConversationSelector<Selected>(
 ): Selected {
   const store = useConversationStore();
   const cache = useRef<{
-    readonly snapshot: ConversationState;
+    readonly snapshot: ConversationPresentationState;
     readonly selector: ConversationStoreSelector<Selected>;
     readonly selection: Selected;
   } | null>(null);

@@ -1,5 +1,6 @@
+import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
 import { useState, type ReactNode } from "react";
-import type { ConversationState } from "../conversation/state.js";
+import type { } from "../conversation/state.js";
 import type { ConversationActivityRecord } from "../conversation/activity.js";
 import type { ConversationActivityGroup } from "../conversation/timeline.js";
 import { projectToolActivity, type ToolActivitySnapshot } from "../conversation/tool-activity.js";

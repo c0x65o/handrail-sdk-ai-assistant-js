@@ -36,6 +36,14 @@ remains a separate mechanism and still needs the goal's complete restart audit.
 
 ## Gateway
 
+Related state can be loaded with `view: { type: "context", messageIds: [...],
+turnId?: string }`. It follows the retained messages' turn references and returns
+turns, tools, approvals, budgets, citations and cited source records in one bounded
+page. At most 100 message IDs are accepted, within the gateway's existing 8 KiB
+request envelope. Duplicate references are normalized and cursor identity covers
+the complete normalized view. Use `nextCursor` for further activity; never assume
+that one related page contains every historical tool or approval.
+
 Negotiate `capabilities.displayHistory.version === 1`. Older servers omit this
 capability. The authenticated POST route is `<mount>/conversations/history` and
 uses the existing `conversations` authorization action. It does not initialize a
@@ -145,6 +153,41 @@ overlay before clients can rely on it for token-by-token presentation.
 
 ## JavaScript client and validation
 
+### Bounded execution controls
+
+Gateways advertise `displayHistory.control: true` when the history resource also
+supports `{"operation":"control","input":{"conversationId":"...","turnId":"..."}}`.
+`turnId` is optional and verifies a particular admitted turn, including a completed
+turn outside the visible page. `createApplicationGatewayDisplayHistory().control`
+returns a distinct `ConversationDisplayControl`, never a partial canonical state.
+Custom gateways opt in with `displayControl: true` and must provide `control()`
+for every scoped store. Older/custom stores remain compatible without opting in.
+
+The response contains the generation and canonical/display revisions, plus up to
+three scalar turn summaries: active, latest and requested. A missing requested
+turn is `null`. Each summary has an ID, revision, status, remote-running flag and
+an optional bounded error. Message IDs, retry arrays, tool results and attachment
+contents are excluded. Error messages are explicitly marked `messageTruncated`
+when longer than 256 Unicode code points. The response has a 32 KiB hard budget.
+Both clients validate conversation/turn identity and reject contradictory status,
+missing controls and future revisions before exposing the data to a session.
+
+PostgreSQL computes summaries in the same append transaction as display records.
+Steady-state control reads use one indexed statement and never select the full
+turn payload or checkpoint. A partial index finds the latest admitted turn by
+first revision rather than repeatedly scanning old turns. Another partial index
+tracks legacy turns missing summaries. `backfillControls(conversationId, limit)`
+repairs at most 10 turns by default (maximum 50) under the append/deletion lock;
+the high-level assistant queues those steps after history preparation. Preparation
+may parse a legacy turn body inside the database; that one-time cost is separate
+from steady-state reads. Null summaries provide a durable restart watermark.
+
+Unprepared controls return `preparing`, with no turn summaries. Clients must wait
+or retry; this must never be interpreted as permission to send a second turn.
+Canonical admission still arbitrates races after a ready control response.
+This API does not alter model context, replace admission writes, or claim bounded
+SSE replay. Standard session/runtime adoption remains in progress.
+
 `createApplicationGatewayDisplayHistory({baseUrl, fetch, protectedRequest})`
 provides `page(input, signal?)`, `changes(input, signal?)` and
 `content(input, signal?)`. Aborting a selection
@@ -166,9 +209,11 @@ refresh; its watermark advances after the final page. Clear/access revocation
 evicts visible text; transient errors preserve it for retry. Dispose on logout.
 
 `createHandrailAiClient` exposes negotiated `displayHistory` and `displayWindow`
-properties and disposes the latter with its authenticated lifetime. These are
-currently additional presentation facilities: the existing runtime still uses
-canonical synchronization pending the separate runtime integration.
+properties and disposes the latter with its authenticated lifetime. When a gateway
+advertises `displayHistory.control: true`, standard single/multiple-conversation
+assembly uses `ApplicationConversationSession` through a read-only presentation
+runtime. An explicit custom runtime/event store retains the canonical path; older
+gateways remain compatible. Single mode still creates no registry or catalog UI.
 
 `ConversationDisplayTranscript` from the React entry point takes the controller,
 selected conversation ID, complete-message renderer, and optional explicit
@@ -178,6 +223,62 @@ and delayed layout anchoring. DOM size is bounded by the retained window; it doe
 not estimate off-screen heights. Its default cache holds at most 32 anchors.
 An account-scoped position store can replace it; the default is not durable.
 It never manufactures a partial canonical `ConversationState`.
+
+The standard `ConversationProvider`/`StyledChatPreset` now selects this transcript
+automatically for a negotiated session. The session owns selection, polling and
+abort lifetimes, so the component does not launch duplicate initial reads or
+polling. Only the selected session retains message bodies. The standard workspace
+keeps four idle sessions; running/submitting sessions retain scalar observation
+and stay within the existing registry capacity. Related activity is a separate
+bounded page. Standard approvals read that page rather than polling the complete
+proposal group. Pagination of all related activity and oversized-content expansion
+remain under qualification; initial bounded pages are not a complete approval log.
+
+### Presentation API and durable send retry
+
+React hooks and UI callbacks use `ConversationPresentationState`, a read-only
+contract also satisfied by canonical stores. `partial: true` identifies a loaded
+window. It has no processed-event IDs, replay cursor, or canonical checkpoint.
+Presentation actions return `ConversationPresentationTurnResult` (turn identity,
+status and optional error), rather than inventing a transport checkpoint. Code
+that requires canonical audit/model state must use an explicit canonical runtime
+or server store. `applyEvent/applyEvents` reject read-only presentation stores.
+
+The session captures input before awaiting anything, retains the original
+admission and start identities before writing, and verifies a specific admitted
+turn through scalar controls. A lost reply is retried with identical content and
+IDs. Stream frames wake projection reads; they are never appended by the browser.
+Local observation disconnect and authoritative cancellation remain separate.
+The standard transcript offers **Retry saved message** for retained intent.
+
+For browser reload recovery, provide the account/API-scoped IndexedDB adapter:
+
+```ts
+import { createHandrailAiClient } from '@handrail/ai-assistant/client';
+import { IndexedDBApplicationConversationPendingStore } from '@handrail/ai-assistant/browser';
+
+const pendingStore = new IndexedDBApplicationConversationPendingStore({
+  scope: `${apiEndpoint}|${opaqueAuthenticatedAccountId}`,
+});
+const client = await createHandrailAiClient({
+  baseUrl: apiEndpoint,
+  pendingStore,
+  conversations: { mode: 'multiple', clientId, authorize: () => 'allow' },
+});
+// On account teardown, unmount its UI, then:
+await client.dispose();
+pendingStore.close();
+```
+
+The endpoint-only `HandrailAssistantLauncher` accepts the same `pendingStore`.
+Use a stable opaque account identity and endpoint partition, never a token. The
+adapter stores user content as browser-local IndexedDB data; host policy controls
+whether logout erases it via `eraseAccount()` before close. `close()` alone retains
+uncertain sends for later authenticated recovery. Transactions arbitrate tabs,
+compare exact acknowledgement content, and enforce 32 pending conversations / a
+4 MiB scope budget without evicting ambiguous sends. An omitted adapter uses
+bounded account-lifetime memory and does **not** survive reload. Browser drafts
+and durable standard-transcript positions remain separate follow-up work.
 
 Run the synthetic component browser fixture with
 `TMPDIR=/tmp node scripts/check-display-window-browser.mjs`; set

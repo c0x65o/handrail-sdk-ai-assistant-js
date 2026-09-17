@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { PostgresSqlClient } from "./index.js";
 import { parseConversationEvent, type ConversationEvent, type ConversationRevision, type ConversationTurnId } from "../conversation/events.js";
 import { createInitialConversationState, type ConversationState } from "../conversation/state.js";
+import { displayTurnControl, parseConversationDisplayControl, CONVERSATION_DISPLAY_CONTROL_MAXIMUM_BYTES,
+  type ConversationDisplayControl, type ConversationDisplayControlInput } from "../conversation/display-control.js";
 import { reduceConversationEvent } from "../conversation/reducer.js";
 import { CONVERSATION_DISPLAY_LIMITS as limits, ConversationDisplayHistoryError,
   type ConversationDisplayContentInput, type ConversationDisplayHistory, type ConversationDisplayPage,
@@ -22,6 +24,11 @@ export const postgresDisplayHistorySchema = Object.freeze([
     payload text NOT NULL, payload_bytes integer NOT NULL,
     PRIMARY KEY (tenant_id,conversation_id,kind,record_id))`,
   `ALTER TABLE handrail_ai_display_records ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE handrail_ai_display_records ADD COLUMN IF NOT EXISTS control_payload text`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_display_latest_turn ON handrail_ai_display_records
+    (tenant_id,conversation_id,first_revision DESC,record_id DESC) WHERE kind='turn' AND NOT deleted`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_display_missing_control ON handrail_ai_display_records
+    (tenant_id,conversation_id,first_revision,record_id) WHERE kind='turn' AND NOT deleted AND control_payload IS NULL`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_messages ON handrail_ai_display_records
     (tenant_id,conversation_id,sort_at DESC,first_revision DESC,record_id DESC) WHERE kind='message' AND visible`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_turn ON handrail_ai_display_records
@@ -147,19 +154,20 @@ async function writeEntity(client: PostgresSqlClient, tenant: string, event: Con
     if (p.type === "citation.records_linked" && p.target.type === "tool_result") turnId = p.target.turn_id;
   }
   await client.query(`INSERT INTO handrail_ai_display_records
-    (tenant_id,conversation_id,kind,record_id,first_revision,revision,sort_at,turn_id,message_id,source_id,visible,payload,payload_bytes)
-    VALUES ($1,$2,$3,$4,$13,$5,$6,$7,$8,$9,$10,$11,$12)
+    (tenant_id,conversation_id,kind,record_id,first_revision,revision,sort_at,turn_id,message_id,source_id,visible,payload,payload_bytes,control_payload)
+    VALUES ($1,$2,$3,$4,$13,$5,$6,$7,$8,$9,$10,$11,$12,$14)
     ON CONFLICT (tenant_id,conversation_id,kind,record_id) DO UPDATE SET revision=EXCLUDED.revision,
       first_revision=CASE WHEN handrail_ai_display_records.deleted OR NOT handrail_ai_display_records.visible AND EXCLUDED.visible THEN EXCLUDED.first_revision
         ELSE handrail_ai_display_records.first_revision END,
       sort_at=CASE WHEN handrail_ai_display_records.deleted OR NOT handrail_ai_display_records.visible AND EXCLUDED.visible THEN EXCLUDED.sort_at
         ELSE handrail_ai_display_records.sort_at END,
       turn_id=COALESCE(EXCLUDED.turn_id,handrail_ai_display_records.turn_id),message_id=EXCLUDED.message_id,source_id=EXCLUDED.source_id,
-      visible=EXCLUDED.visible,payload=EXCLUDED.payload,payload_bytes=EXCLUDED.payload_bytes,deleted=false`,
+      visible=EXCLUDED.visible,payload=EXCLUDED.payload,payload_bytes=EXCLUDED.payload_bytes,deleted=false,control_payload=EXCLUDED.control_payload`,
   [tenant, event.conversation_id, kind, recordId(kind, value), event.revision, sortAt, turnId,
     kind === "message" ? data.message_id : target?.message_id ?? null,
     kind === "citation" ? data.source_id : null, kind !== "message" || data.role !== null,
-    payload, encoder.encode(payload).byteLength, firstRevision]);
+    payload, encoder.encode(payload).byteLength, firstRevision,
+    kind === "turn" ? JSON.stringify(displayTurnControl(value as ConversationDisplayRecordTypes["turn"], event.revision)) : null]);
 }
 
 /** Called in the append transaction after the canonical lock has been acquired.
@@ -237,7 +245,7 @@ export async function projectPostgresDisplayEvents(client: PostgresSqlClient, te
 }
 
 function identity(value: unknown): asserts value is string {
-  if (typeof value !== "string" || value.length < 1 || value.length > 512 || /[\u0000-\u001f\u007f]/u.test(value)) invalid();
+  if (typeof value !== "string" || value.length < 1 || value.length > 512 || Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) invalid();
 }
 function integer(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < min || (value as number) > max) invalid();
@@ -248,6 +256,15 @@ type Cursor = { v: 1; scope: string; generation: number; ceiling: number; view: 
 function viewOf(view: ConversationDisplayView | undefined): ConversationDisplayView {
   if (!view || view.type === "messages") return { type: "messages" };
   if (view.type === "turn") { identity(view.turnId); return { type: "turn", turnId: view.turnId }; }
+  if (view.type === "context") {
+    // A display window can retain adjacent pages. The request envelope and
+    // response page budgets still apply independently of this reference bound.
+    if (!Array.isArray(view.messageIds) || view.messageIds.length > 100) invalid();
+    view.messageIds.forEach(identity);
+    if (view.turnId !== undefined) identity(view.turnId);
+    return { type: "context", messageIds: [...new Set(view.messageIds)].sort(),
+      ...(view.turnId === undefined ? {} : { turnId: view.turnId }) };
+  }
   if (view.type === "citations") { identity(view.messageId); return { type: "citations", messageId: view.messageId }; }
   return invalid();
 }
@@ -285,6 +302,83 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
     });
   }
 
+  /** Scalar controls read only indexed metadata and precomputed small summaries.
+   * A legacy summary is prepared separately, never by parsing history here. */
+  async control(input: ConversationDisplayControlInput): Promise<ConversationDisplayControl> {
+    identity(input.conversationId);
+    if (input.turnId !== undefined) identity(input.turnId);
+    await this.authorize(input.conversationId);
+    const result = await this.client.query<{ revision: string; generation: string; canonical_revision: string;
+      active_turn_id: string | null; latest_turn_id: string | null; deleted: boolean;
+      record_id: string | null; control_payload: string | null }>(`
+      WITH head AS (
+        SELECT COALESCE(h.revision,0) AS revision,COALESCE(h.generation,0) AS generation,h.active_turn_id,
+          COALESCE((SELECT e.revision FROM handrail_ai_events e WHERE e.tenant_id=$1 AND e.conversation_id=$2
+            ORDER BY e.revision DESC LIMIT 1),0) AS canonical_revision,
+          EXISTS(SELECT 1 FROM handrail_ai_documents WHERE tenant_id=$1 AND kind='conversation_deleted'
+            AND scope_id=$2 AND record_id='deleted') AS deleted
+        FROM (SELECT 1) seed LEFT JOIN handrail_ai_display_heads h ON h.tenant_id=$1 AND h.conversation_id=$2
+      ), latest AS (
+        SELECT record_id FROM handrail_ai_display_records WHERE tenant_id=$1 AND conversation_id=$2
+          AND kind='turn' AND NOT deleted ORDER BY first_revision DESC,record_id DESC LIMIT 1
+      ) SELECT h.revision::text,h.generation::text,h.canonical_revision::text,h.active_turn_id,h.deleted,
+        (SELECT record_id FROM latest) AS latest_turn_id,r.record_id,
+        CASE WHEN octet_length(r.control_payload)<=8192 THEN r.control_payload ELSE NULL END AS control_payload
+      FROM head h LEFT JOIN handrail_ai_display_records r ON r.tenant_id=$1 AND r.conversation_id=$2
+        AND r.kind='turn' AND NOT r.deleted AND h.revision=h.canonical_revision AND NOT h.deleted
+        AND r.record_id=ANY(ARRAY[h.active_turn_id,(SELECT record_id FROM latest),$3::text])`,
+    [this.tenantId, input.conversationId, input.turnId ?? null]);
+    await this.authorize(input.conversationId);
+    const head = result.rows[0]!;
+    if (head.deleted) throw new ConversationDisplayHistoryError("not_found", "Conversation not found");
+    const turns = new Map(result.rows.filter(row => row.record_id !== null)
+      .map(row => [row.record_id, row.control_payload ? JSON.parse(row.control_payload) as unknown : null]));
+    const ready = head.revision === head.canonical_revision && ![...turns.values()].includes(null) &&
+      (!head.active_turn_id || turns.has(head.active_turn_id)) && (!head.latest_turn_id || turns.has(head.latest_turn_id));
+    const response = parseConversationDisplayControl({ schemaVersion: 1, conversationId: input.conversationId,
+      status: ready ? "ready" : "preparing", generation: Number(head.generation), revision: Number(head.revision),
+      canonicalRevision: Number(head.canonical_revision), activeTurnId: head.active_turn_id,
+      activeTurn: ready && head.active_turn_id ? turns.get(head.active_turn_id) : null,
+      latestTurn: ready && head.latest_turn_id ? turns.get(head.latest_turn_id) : null,
+      requestedTurn: ready && input.turnId ? turns.get(input.turnId) ?? null : null }, input);
+    if (encoder.encode(JSON.stringify(response)).byteLength > CONVERSATION_DISPLAY_CONTROL_MAXIMUM_BYTES) {
+      throw new TypeError("Display control exceeded its byte budget");
+    }
+    return response;
+  }
+
+  /** One-time preparation for display indexes written by an older SDK. Null
+   * summaries are the durable watermark. The append lock excludes clear/delete
+   * and concurrent projection; no canonical data is rewritten. */
+  async backfillControls(conversationId: string, maximumTurns = 10) {
+    identity(conversationId); integer(maximumTurns, 1, 50);
+    await this.authorize(conversationId);
+    return this.client.transaction(async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [lockKey(this.tenantId, conversationId)]);
+      await this.authorize(conversationId);
+      const deleted = await client.query(`SELECT 1 FROM handrail_ai_documents
+        WHERE tenant_id=$1 AND kind='conversation_deleted' AND scope_id=$2 AND record_id='deleted'`, [this.tenantId, conversationId]);
+      if (deleted.rows.length) throw new ConversationDisplayHistoryError("not_found", "Conversation not found");
+      const repaired = await client.query(`WITH batch AS (
+        SELECT record_id,revision,payload::jsonb AS p FROM handrail_ai_display_records
+        WHERE tenant_id=$1 AND conversation_id=$2 AND kind='turn' AND NOT deleted AND control_payload IS NULL
+        ORDER BY first_revision DESC,record_id DESC LIMIT $3 FOR UPDATE
+      ) UPDATE handrail_ai_display_records r SET control_payload=jsonb_build_object(
+        'turnId',b.record_id,'revision',b.revision,'status',b.p->>'status',
+        'remoteMayStillBeRunning',b.p->'remote_may_still_be_running',
+        'error',CASE WHEN b.p->'error' IS NULL OR b.p->'error'='null'::jsonb THEN 'null'::jsonb ELSE jsonb_build_object(
+          'code',left(b.p#>>'{error,code}',64),'message',left(b.p#>>'{error,message}',256),
+          'retryable',b.p#>'{error,retryable}','messageTruncated',length(b.p#>>'{error,message}')>256) END)::text
+        FROM batch b WHERE r.tenant_id=$1 AND r.conversation_id=$2 AND r.kind='turn' AND r.record_id=b.record_id
+        RETURNING r.record_id`, [this.tenantId, conversationId, maximumTurns]);
+      const remaining = await client.query(`SELECT 1 FROM handrail_ai_display_records
+        WHERE tenant_id=$1 AND conversation_id=$2 AND kind='turn' AND NOT deleted AND control_payload IS NULL LIMIT 1`,
+      [this.tenantId, conversationId]);
+      await this.authorize(conversationId);
+      return { processed: repaired.rows.length, hasMore: remaining.rows.length > 0 };
+    });
+  }
+
   async page(input: ConversationDisplayPageInput): Promise<ConversationDisplayPage> {
     identity(input.conversationId);
     const view = viewOf(input.view), limit = input.limit ?? limits.defaultPageSize;
@@ -311,8 +405,18 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
     const order = direction === "older" ? "DESC" : "ASC";
     const comparison = (direction === "older" ? "<" : ">") + (input.anchor?.inclusive ? "=" : "");
     await this.authorize(input.conversationId);
+    const contextMatch = `(c.kind='citation' AND c.message_id=ANY(ARRAY(SELECT jsonb_array_elements_text($9::jsonb->'messageIds')))
+      OR c.turn_id=ANY(ARRAY(SELECT turn_id FROM handrail_ai_display_records
+          WHERE tenant_id=$1 AND conversation_id=$2 AND kind='message' AND NOT deleted
+          AND record_id=ANY(ARRAY(SELECT jsonb_array_elements_text($9::jsonb->'messageIds')))
+        UNION SELECT $9::jsonb->>'turnId'))) AND c.kind IN ('turn','tool','approval','budget','citation')`;
     const filter = view.type === "messages" ? "r.kind='message' AND r.visible AND $9::text IS NULL"
       : view.type === "turn" ? "r.turn_id=$9 AND r.kind IN ('turn','tool','approval','budget','citation')"
+        : view.type === "context" ? `(r.kind,r.record_id) IN (
+          SELECT c.kind,c.record_id FROM handrail_ai_display_records c
+            WHERE c.tenant_id=$1 AND c.conversation_id=$2 AND NOT c.deleted AND ${contextMatch}
+          UNION SELECT 'source',c.source_id FROM handrail_ai_display_records c
+            WHERE c.tenant_id=$1 AND c.conversation_id=$2 AND NOT c.deleted AND c.kind='citation' AND ${contextMatch})`
         : "r.message_id=$9 AND r.kind='citation'";
     // One statement owns both the projection watermark and records, so a concurrent
     // clear/append cannot combine an old generation with new page contents.
@@ -356,7 +460,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
       ORDER BY p.sort_at ${order},p.first_revision ${order},p.record_id ${order},p.kind ${order}`,
     [this.tenantId, input.conversationId, cursor?.ceiling ?? null, Math.min(limits.maximumInlineRecordBytes, maximumBytes - 4096),
       cursor?.at ?? null, cursor?.sequence ?? null, cursor?.id ?? null, cursor?.kind ?? null,
-      view.type === "messages" ? null : view.type === "turn" ? view.turnId : view.messageId, limit + 1, maximumBytes - 1024,
+      view.type === "messages" ? null : view.type === "turn" ? view.turnId : view.type === "context" ? JSON.stringify(view) : view.messageId, limit + 1, maximumBytes - 1024,
       input.anchor?.messageId ?? null]);
     await this.authorize(input.conversationId);
     const head = result.rows[0]!;

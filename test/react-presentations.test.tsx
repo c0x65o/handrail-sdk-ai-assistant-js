@@ -101,7 +101,7 @@ describe("checked React presentation recipes", () => {
     });
     const input = within(dialog).getByLabelText("Attach files");
     expect(input.getAttribute("accept")).toBe(
-      "image/jpeg,image/png,image/gif,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values",
+      "image/jpeg,image/png,image/gif,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values",
     );
     fireEvent.change(input, {
       target: { files: [image, pdf] },

@@ -21,15 +21,16 @@ const empty: ConversationDisplayWindowSnapshot = Object.freeze({ conversationId:
 /** Owns selection and foreground-only polling, never a canonical runtime. */
 export function useConversationDisplayWindow(controller: ConversationDisplayWindow, conversationId: string | null,
   options: { readonly visible?: boolean; readonly pollingMilliseconds?: number;
-    readonly positions?: ConversationDisplayPositionStore } = {}) {
+    readonly positions?: ConversationDisplayPositionStore; readonly manageSelection?: boolean } = {}) {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const positionStore = useRef(options.positions); positionStore.current = options.positions;
   useEffect(() => {
+    if (options.manageSelection === false) return;
     const saved = conversationId ? positionStore.current?.get(conversationId) : undefined;
     void controller.select(conversationId, saved && !saved.following ? { messageId: saved.messageId,
       generation: saved.generation, direction: "newer", inclusive: true } : undefined).catch(() => {});
     return () => { void controller.select(null).catch(() => {}); };
-  }, [controller, conversationId]);
+  }, [controller, conversationId, options.manageSelection]);
   const polling = options.pollingMilliseconds ?? 1000;
   if (!Number.isFinite(polling) || polling < 0 || polling > 0 && polling < 100) throw new TypeError("Invalid display polling interval");
   useEffect(() => {
@@ -49,6 +50,9 @@ export function useConversationDisplayWindow(controller: ConversationDisplayWind
 }
 
 export interface ConversationDisplayTranscriptProps extends Omit<HTMLAttributes<HTMLDivElement>, "children"> {
+  /** False when a server-owned session owns selection, cancellation and polling. */
+  readonly manageSelection?: boolean;
+  readonly onFollowingLatestChange?: (following: boolean) => void;
   readonly controller: ConversationDisplayWindow;
   readonly conversationId: string | null;
   readonly positions?: ConversationDisplayPositionStore;
@@ -64,7 +68,7 @@ export interface ConversationDisplayTranscriptProps extends Omit<HTMLAttributes<
 /** A bounded DOM window with upward/downward paging and message-based anchors.
  * It deliberately does not manufacture a partial ConversationState. */
 export function ConversationDisplayTranscript({ controller, conversationId, positions, visible,
-  pollingMilliseconds, renderMessage, renderDeferred, emptyState, children, onScroll, ...props }: ConversationDisplayTranscriptProps) {
+  pollingMilliseconds, manageSelection, onFollowingLatestChange, renderMessage, renderDeferred, emptyState, children, onScroll, ...props }: ConversationDisplayTranscriptProps) {
   const local = useRef({ controller, values: new Map<string, ConversationDisplayPosition>() });
   if (local.current.controller !== controller) local.current = { controller, values: new Map() };
   const localStore = useRef<ConversationDisplayPositionStore>({
@@ -76,6 +80,7 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
   });
   const store = positions ?? localStore.current;
   const state = useConversationDisplayWindow(controller, conversationId, { positions: store,
+    ...(manageSelection === undefined ? {} : { manageSelection }),
     ...(visible === undefined ? {} : { visible }), ...(pollingMilliseconds === undefined ? {} : { pollingMilliseconds }) });
   const viewport = useRef<HTMLDivElement>(null);
   const anchor = useRef<ConversationDisplayPosition | undefined>(undefined);
@@ -104,6 +109,10 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       setAway(!following.current);
     }
     if (previousVersion.current === state.version || !state.records.length) return;
+    if (previousVersion.current === -1 && conversationId) {
+      const restored = store.get(conversationId);
+      if (restored && restored.generation === state.generation) { anchor.current = restored; following.current = restored.following; setAway(!restored.following); }
+    }
     previousVersion.current = state.version;
     if (state.change === "latest" || following.current && !state.hasNewer && state.change !== "older") {
       element.scrollTop = element.scrollHeight; following.current = true; setAway(false);
@@ -113,9 +122,10 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       if (item) element.scrollTop += item.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.current.offset;
     }
     capture();
+    onFollowingLatestChange?.(following.current);
   });
   const load = (direction: "older" | "newer") => {
-    capture(); if (direction === "older") { following.current = false; setAway(true); }
+    capture(); if (direction === "older") { following.current = false; setAway(true); onFollowingLatestChange?.(false); }
     void (direction === "older" ? controller.loadOlder() : controller.loadNewer());
   };
   useEffect(() => {
@@ -152,6 +162,7 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
         onScroll?.(event); if (event.defaultPrevented) return;
         const element = event.currentTarget;
         following.current = !state.hasNewer && element.scrollHeight - element.scrollTop - element.clientHeight <= 48;
+        onFollowingLatestChange?.(following.current);
         setAway(!following.current);
         capture();
         if (state.loading !== null || state.error || state.status !== "ready") return;
@@ -170,6 +181,6 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       {children}
     </div>
     {(state.hasNewer || away) && <button type="button" className="hr-chat__jump" disabled={state.loading !== null}
-      onClick={() => { following.current = true; void controller.jumpToLatest(); }}>Jump to latest</button>}
+      onClick={() => { following.current = true; onFollowingLatestChange?.(true); void controller.jumpToLatest(); }}>Jump to latest</button>}
   </div>;
 }

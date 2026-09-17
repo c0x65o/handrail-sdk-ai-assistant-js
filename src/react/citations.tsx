@@ -1,3 +1,4 @@
+import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
 import {
   Fragment,
   forwardRef,
@@ -13,7 +14,7 @@ import {
   type Citation,
   type CitationSource,
 } from "../citations.js";
-import type { ConversationState } from "../conversation/state.js";
+import type { } from "../conversation/state.js";
 import { useResolvedState } from "./primitive-context.js";
 import type { PrimitiveRender } from "./primitives.js";
 

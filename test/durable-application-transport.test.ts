@@ -40,6 +40,43 @@ const input = { conversationId: "conversation-1", conversationTurnId: "turn-1" a
 async function collect(events: AsyncIterable<Event>) { const output: Event[] = []; for await (const event of events) output.push(event); return output; }
 
 describe("createDurableApplicationTransport", () => {
+  it("backpressures projection after durability and releases worker resources when it fails", async () => {
+    const store = new InMemoryDurableApplicationTurnStore<Request, Event>();
+    const emitted = [{ id: "1", text: "hello" }, { id: "2", text: " world" }];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const diagnostics = vi.fn(), stopped = vi.fn();
+    const projected: number[] = [];
+    const transport = createDurableApplicationTransport({ delegate: delegate(emitted).transport, store, workerId: "writer",
+      pollMilliseconds: 25, diagnostics, onWorkerStopped: stopped,
+      async onEventPersisted(document) {
+        const saved = await store.load(input.conversationId, input.conversationTurnId);
+        expect(saved!.record.events).toEqual(document.record.events);
+        projected.push(document.record.events.length);
+        if (projected.length === 1) await held;
+        throw new Error("projection unavailable");
+      },
+      requestCodec: { encode: (request: Request) => request, decode: request => request, fingerprint: request => request.ref },
+      checkpointForEvent: event => checkpoint(event.id) });
+    const started = await transport.startTurn(input);
+    if (!started.ok) throw new Error(started.error.message);
+    try {
+      await vi.waitFor(() => expect(projected).toEqual([1]));
+      expect((await store.load(input.conversationId, input.conversationTurnId))?.record.events).toHaveLength(1);
+      expect(stopped).not.toHaveBeenCalled();
+    } finally { release(); }
+    expect(await collect(started.value.observation.events)).toEqual(emitted);
+    expect(await started.value.observation.result).toMatchObject({ status: "completed" });
+    await vi.waitFor(() => expect(stopped).toHaveBeenCalledOnce());
+    expect(projected).toEqual([1, 2]);
+    expect(stopped).toHaveBeenCalledWith({ conversationId: input.conversationId, turnId: input.conversationTurnId });
+    expect(diagnostics.mock.calls.filter(([event]) => event.code === "projection_failed")).toHaveLength(2);
+    const replay = await transport.startTurn(input);
+    if (!replay.ok) throw new Error(replay.error.message);
+    expect(await collect(replay.value.observation.events)).toEqual(emitted);
+    expect(projected).toEqual([1, 2]);
+  });
+
   it.each(["completed", "failed", "cancelled"] as const)("publishes %s without observers and does not republish on replay", async (status) => {
     const store = new InMemoryDurableApplicationTurnStore<Request, Event>();
     const terminal: TurnObservationResult = status === "failed"

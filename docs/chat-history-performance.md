@@ -127,7 +127,7 @@ attachment-download tests passed. This is scoped validation, not full completion
 | Deliverable | Current state | Required before completion |
 | --- | --- | --- |
 | 1. Cheap list and bounded recovery | Local list and queue implementation; regression coverage | Real phase timings, byte limits on metadata, overload/fairness, durable recovery/restart coverage, runtime cache bounds |
-| 2. Partial transcript loading | Indexed projection, paged gateway and changes feed, JS/Dart bounded controllers, React display component with tested anchors | Standard React runtime and Flutter session/widget adoption, durable position/draft integration, related-state presentation, bounded live resume metadata |
+| 2. Partial transcript loading | Indexed projection, paged gateway/changes/controls, JS/Dart bounded controllers, standard React/Flutter session/transcript adoption, Flutter durable positions | Complete related-state/oversized-content presentation, custom Flutter aggregate formatting, durable draft and React position integration, bounded live resume metadata |
 | 3. Complete chatbot experience | Existing components identified; list controls improved | Explicit feature matrix and end-to-end verification of streaming, stop/retry/reconnect, drafts, lifecycle, unread state, Markdown/code/citations, attachments, tools/approvals, voice, accessibility |
 | 4. Correctness | Existing authorization/recovery tests retained and session-revocation test added | Clear/delete generation invalidation, concurrency and idempotency with partial history; prove provider context and canonical history remain independent |
 | 5. Validation and scaling | 128 scoped server tests; typecheck/build; first 20k/100k storage and 30-scope benchmark | Incremental/live correctness, browser traces/render budgets, full Flutter tests, real concurrent database throughput, three consumer contracts |
@@ -160,20 +160,17 @@ citations in the display projection; citation reuse in an atomic batch matches
 canonical replay.
 
 Bounded authoritative transport resume metadata remains outstanding. It still
-comes from whole-log `hydrateRuntimeMetadata` on web. The next integration also
-needs live text presentation: Flutter's current `_observe` saves checkpoints
-without applying text, and high-level server `reconcileFor` skips text projection
-while a durable turn is pending/running. Polling the new changes feed alone would
-therefore still wait for terminal reconciliation to display the answer. Address
-this with authorized live canonical projection or a bounded stream overlay with
-correct resume/deduplication; preserve existing approvals and terminal receipts.
+comes from whole-log `hydrateRuntimeMetadata` on web. Server-owned live canonical
+projection now supplies running text to the display changes feed; see the live
+projection and standard Flutter integration sections below. Its execution runtime
+still hydrates canonical history once per worker and requires a separate audit.
 
 Indexed message anchors now restore older saved positions and support navigation
 back toward newer messages after eviction. Both controllers enforce independent
-row/byte budgets. Standard UI/runtime adoption remains outstanding.
+row/byte budgets. Standard React runtime adoption remains outstanding.
 
-After that server contract exists, replace Flutter's repeated full-snapshot path
-and web's initial full replay with the negotiated display-history capability.
+Flutter now negotiates bounded display; web's initial full replay still needs
+replacement with the negotiated display-history capability.
 Keep old gateway compatibility explicit; do not silently represent a partial
 snapshot as a complete audit projection. Preserve in-flight turns while evicting
 idle cached views, with drafts and scroll anchors stored separately from runtimes.
@@ -214,12 +211,165 @@ measurements remain outstanding.
 Latest slice: 36 tests passed across display storage/gateway/window/React and
 client bootstrap; 12 Dart display-client/window tests passed; Dart fatal-info
 analysis and TypeScript typecheck passed. Indexed anchors also cover directional
-cursors, missing IDs, clear invalidation and tenant isolation. These controllers
-are not yet wired into standard runtime/session ownership, so consumers still
-use their full-history path. No production improvement is claimed from these
-local component measurements.
+cursors, missing IDs, clear invalidation and tenant isolation. These measurements
+preceded standard Flutter adoption described below. Consumer dependency pins
+remain unchanged; no production improvement is claimed from local measurements.
+
+## Server-owned live projection and Flutter display surface
+
+The durable server worker now projects persisted stream frames into canonical
+history while the turn is running. Previously server reconciliation deferred
+text until terminal settlement, while web clients performed canonical writes
+themselves and Flutter waited for saved snapshots. Paged display clients need
+server-owned live writes independently of which browser is connected.
+
+The projector reuses the runtime's protocol validation, canonical append conflict
+handling and deterministic frame idempotency. It rechecks ownership before writes,
+accepts at most one in-flight frame, and cannot start a provider. Frames are saved
+durably before projection; a projection failure leaves them recoverable, stops
+repeated per-token runtime construction, and does not convert successful provider
+work into failure. Completion, lease loss and assistant projection shutdown clean
+up the runtime. Terminal reconciliation remains the durable fallback.
+
+This is **not** a bounded execution runtime: initialization still hydrates canonical
+state once per active worker. Active-worker limits, indexed resume metadata and
+provider-context preparation still need work. Display pages remain independent
+of that state. Shutdown stops the live projector; it does not claim to stop all
+provider work. The complete durable-worker shutdown/recovery audit remains open.
+
+Targeted tests cover live text with no browser runtime, completion after projection
+shutdown, replay without duplicate text, simultaneous projector conflicts, revoked
+write authorization, clear fencing, and conflicting duplicate protocol frames.
+The durable hook test proves frames are saved before the backpressured callback,
+callback failure preserves the retained result, and cleanup runs once. The four
+runtime/cancellation/citation/context suites passed 79 tests; 56 distinct tests
+passed across the server/recovery/projection/durable suites including the new
+regressions. TypeScript typecheck passed.
+
+Flutter now exports a separate `HandrailDisplayTranscript` connected through
+`HandrailDisplayWindow.uiBinding`. It supplies bounded exact row layout, upward
+and downward paging, delayed-layout scroll anchoring, loading/error/retry states,
+jump-to-latest and per-chat message positions. A storage interface supports durable
+account-scoped anchors; the default memory cache holds 32 chats. Tests cover
+switching accounts during a pending read, cancellation, row bounds and anchor
+stability. Six new Flutter display widget tests and 13 existing transcript widget
+tests passed; 13 Dart display-resource/window tests passed. Dart and Flutter
+analysis with fatal infos passed. These are scoped component checks, not a full
+Flutter suite or device performance measurement at that stage. Standard Flutter
+session/default-transcript integration is described below. No full
+canonical snapshot is manufactured from a display page. See the Flutter repo's
+`docs/display-history.md` for the usage and remaining limitations.
 
 ## Adoption constraints
+
+### Bounded turn-control API
+
+The next session-integration prerequisite is implemented in PostgreSQL, the
+gateway and JS/Dart clients: a separately negotiated scalar control response for
+active/latest/requested turns. It uses one indexed SQL read, with no full turn
+payload, checkpoint or event body. A regression test replaces a turn payload with
+100,000 retry entries and verifies that the control result and database transfer
+remain below 2 KiB / 3 KiB respectively. Summaries are updated transactionally;
+legacy controls are prepared in bounded, resumable, authorized maintenance steps.
+Tests cover clear, deletion, scope isolation, authorization after reads, Unicode
+error truncation, requested-turn identity and invalid/future/contradictory states.
+
+Current validation: 23 display-storage/gateway/control tests passed with one
+worker, plus 16 server/catalog/high-level compatibility tests. All 16 Dart
+display-control/history/window tests passed; Dart analysis with fatal infos,
+TypeScript typecheck and SDK build passed. The interrupted Dart test fixture used
+the wrong constructor argument (`headers`); it now uses `protectedHeaders`, and
+the protected-request and cancellation cases run successfully.
+
+The standard Flutter and JavaScript sessions now negotiate these controls and use
+bounded pages for display. Explicit custom canonical runtimes retain their original
+contract. Server execution memory and saved provider resume remain outstanding.
+
+### Standard Flutter integration
+
+The account controller/default transcript now uses scalar controls, newest-page
+selection, upward paging, bounded message retention, citations and tool result
+rendering. Related-state queries cover the retained message window and reject
+stale responses. Switching chats cancels obsolete reads and drops hidden message
+pages; background turns retain scalar observation. Idle sessions have a four-entry
+cache. The existing account/API-scoped encrypted key-value adapter supplies a
+32-chat durable scroll journal automatically. The displayed view is explicitly
+partial; canonical admission still uses the correct empty-log/null revision and
+exact requested-turn verification. Account disposal closes waits and evicts state.
+
+Real Flutter HTTP integration now has an explicit local-SDK mode backed by PGlite
+and the production PostgreSQL adapters, without dependency/lockfile changes. It
+caught and verified fixes for empty-log admission, live tail following without a
+mounted widget, turn/message association in the partial view, and account-close
+wait outcomes. Its approval fixture now mirrors authoritative proposal expiry
+instead of constructing contradictory canonical data. All 17 HTTP scenarios pass
+against the local SDK with real PostgreSQL adapters. The longer-history case opens
+30 messages, retains at most 90 while paging, leaves scrolled-up content in place
+on append, checks actual response bytes against 65,536 + 1,024 bytes, and performs
+zero snapshot reads for display. A separate canonical read still returns all
+201 messages. This is an in-process test database behind actual local HTTP, not
+production network latency or a Flutter device memory measurement.
+
+Latest validation: all 181 Dart client tests pass against the locked published
+gateway fixture (one local-SDK-only history test skipped); all 173 Flutter widget
+tests pass. The local-SDK HTTP run passes all 17 tests separately. Dart and Flutter
+analysis with fatal infos, TypeScript typecheck/build, and 40 scoped display,
+control, durable-transport and server-live tests pass. Expensive checks ran
+sequentially with one test worker. Neither SDK dependency pins nor lockfiles were
+changed, and no release action was taken.
+
+This is not complete Flutter feature qualification. Aggregate `contentBuilder`
+formatting still uses the old scroll surface; oversized-record expansion and the
+full related-state/approval paging experience need work. Actual device memory,
+frame timing, consumer builds and all remaining goal evidence are still required.
+
+### Standard JavaScript/React integration
+
+Negotiated control support now selects the bounded server-owned session for
+standard single/multiple conversation bootstrap. React reads a separate
+`ConversationPresentationState`; its partial window cannot be assigned to a
+canonical `ConversationState` or checkpoint. Existing canonical runtimes still
+satisfy the UI presentation contract and custom event stores preserve their path.
+The default transcript uses newest-page selection, upward scrolling, a 90-message
+retention bound and jump-to-latest. Switching suspends and evicts hidden bodies;
+the standard workspace retains four idle sessions. Running/submitting sessions
+retain scalar observation within the existing registry bounds.
+
+Admission captures immutable input before async work and journals the original
+mutation/start identities before network writes. Exact retries, completed-turn
+reconciliation, callbacks that dispose the account, separate cancellation and
+observation, stale reads and permission revocation have regression coverage.
+An account/API-scoped IndexedDB pending store supports reload recovery, atomic
+multi-tab conflict checks, compare-and-delete acknowledgement and bounded storage.
+The default memory fallback is explicitly not durable. The standard transcript
+surfaces retained sends for retry; host account teardown owns durable store close
+and optional erasure.
+
+The standard React preset is tested through negotiated resource clients against
+200 messages: initial 30 rows, scrolling capped at 90, no full history/approval-list
+read, bounded serialized response bytes, and isolation while switching chats.
+A separate integration uses the real high-level assistant, gateway and PostgreSQL
+adapters in PGlite. It verifies running streamed text, exactly one completed turn,
+preserved canonical history, no client snapshot/resume read, and bounded display
+responses. This uses Fetch Request/Response in-process, not production HTTP timing.
+
+Validation for this integration: the 46-file React/client regression run passed
+392 of 396 cases. Four stale expectations (eager/all-lifecycle catalog reads,
+background polling activation and the already-supported DOCX MIME type) were
+updated to their intended contracts; the 60-case focused rerun passed, including
+every previously failing file, storage/session tests and the standard paged UI.
+All three server-live gateway scenarios passed, including the new PostgreSQL
+session test. TypeScript typecheck, SDK build, and the Vite public-consumer check
+passed after integration. Checks ran sequentially with one test worker.
+
+Outstanding in this path: complete related-state/approval pagination, explicit
+oversized content UI, durable draft/position integration, richer reconnect/retry
+qualification, actual browser memory/paint profiling of the standard workspace,
+and all three consumer contract builds. The new presentation types require
+consumer compilation before adoption. No performance or completion claim is based
+solely on mocked UI timing.
+
+### Release boundaries
 
 The JS SDK, Flutter SDK, Hitcents, Mills and Spartan are the in-scope repositories.
 Mills retains its single-conversation mode. All three web apps currently declare

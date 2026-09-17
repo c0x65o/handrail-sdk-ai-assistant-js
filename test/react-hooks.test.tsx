@@ -633,7 +633,7 @@ describe("ConversationProvider and hooks", () => {
       content: "Local follow-up",
       request: { model: "fixture-model" },
     };
-    let sending!: ReturnType<ConversationRuntime<PairedRequest>["sendMessage"]>;
+    let sending!: ReturnType<NonNullable<typeof actions>["sendMessage"]>;
     await act(async () => {
       sending = actions!.sendMessage(input);
       await controlled.paused;

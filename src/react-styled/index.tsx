@@ -1,3 +1,5 @@
+import type { ConversationPresentationRuntime as ConversationRuntime } from "../conversation/presentation.js";
+import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
 import { ConversationActivityCard, HANDRAIL_ACTIVITY_CSS } from "./activity.js";
 import { createInitialConversationState } from "../conversation/state.js";
 import { ConversationTranscript } from "../react/conversation-transcript.js";
@@ -25,7 +27,9 @@ import type { ConversationActivityRecord } from "../conversation/activity.js";
 import { useRealtimeWorkspaceActivity } from "../react/realtime-workspace.js";
 import { RealtimeWorkspaceMonitor, summarizeRealtimeWorkspace, type RealtimeWorkspaceMonitorOptions, type RealtimeWorkspaceSnapshot, type RealtimeWorkspaceSummary } from "../realtime/workspace.js";
 import { useConversationApprovals } from "../react/use-conversation-approvals.js";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { ConversationContext } from "../react/context.js";
+import type { ApplicationConversationPendingStore } from "../client/session-submission.js";
 import { createHandrailAiClient, type HandrailAiClient } from "../client/bootstrap.js";
 import { type AttachmentUploader } from "../attachments/uploader.js";
 import type { ApplicationGatewayCapabilities } from "../transports/application-gateway.js";
@@ -37,7 +41,7 @@ import { ProtectedMessageAttachmentPreview, type MessageAttachmentLoader } from 
 import { AttachmentImage, ATTACHMENT_IMAGE_CSS } from "./attachment-image.js";
 export { ATTACHMENT_IMAGE_CSS } from "./attachment-image.js";
 export { ProtectedMessageAttachmentPreview, type MessageAttachmentLoader } from "./protected-attachment.js";
-import type { ConversationMessageRecord, ConversationState, ConversationToolResultRecord } from "../conversation/state.js";
+import type { ConversationMessageRecord,  ConversationToolResultRecord } from "../conversation/state.js";
 import type { PresenceController } from "../presence/controller.js";
 import { type AiDiagnosticSink } from "../diagnostics.js";
 import type { MessageAttachmentRenderer, MessageContentRenderer, ToolResultRenderer } from "../react/primitives.js";
@@ -45,7 +49,6 @@ import { ConversationProvider } from "../react/context.js";
 import { useConversationComposer, type ConversationComposerResult, type UseConversationComposerOptions } from "../react/use-conversation-composer.js";
 import { resolveConversationActivity } from "../conversation/activity-projection.js";
 import { useResolvedState } from "../react/primitive-context.js";
-import type { ConversationRuntime } from "../runtime.js";
 import type { ConversationId } from "../conversation/events.js";
 import type { ConversationCatalog, ConversationCatalogDescriptor, ConversationCatalogIdempotencyKey } from "../conversation/catalog.js";
 import type { ConversationWorkspaceOpenInput } from "../conversation/workspace.js";
@@ -286,7 +289,8 @@ export function createHandrailChatThemeStyle(theme: HandrailChatTheme = {}): Han
 export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
   const labels = { ...DEFAULT_LABELS, ...props.labels };
   const resolvedState = useResolvedState(props.state) ?? EMPTY_CHAT_STATE;
-  const approvalReview = useConversationApprovals(props.approvalResources ?? null, resolvedState?.conversation_id ?? null);
+  const session = useContext(ConversationContext)?.runtime?.displaySession;
+  const approvalReview = useConversationApprovals(props.approvalResources ?? null, resolvedState?.conversation_id ?? null, session);
   const proposals = props.proposals ?? (props.approvalResources ? approvalReview.proposals : resolvedState?.approval_proposals);
   const activity = props.activity;
   const subscribeActivity = useCallback((notify: () => void) =>
@@ -827,6 +831,8 @@ export interface HandrailAssistantLauncherProps extends Omit<HandrailChatWorkspa
   readonly voiceActivity?: Omit<RealtimeWorkspaceMonitorOptions, "loadConversationIds">;
   /** The only required integration value; capabilities and resources are negotiated from this endpoint. */
   readonly endpoint: string;
+  /** Account/API-scoped durable retry storage, retained by the host across reloads. */
+  readonly pendingStore?: ApplicationConversationPendingStore<ChatRequest>;
   readonly fetch?: typeof globalThis.fetch;
   readonly protectedRequest?: (input: RequestInit & { readonly url: string }) => RequestInit | Promise<RequestInit>;
   /** Receives safe lifecycle diagnostics from browser transports and controllers. */
@@ -1059,7 +1065,7 @@ function browserIdentity(prefix: string): string {
 /** Endpoint-only production launcher. It owns negotiation, catalog, runtimes, uploads, recovery, and cleanup. */
 export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps): ReactNode {
   const configurationKey = useMemo(() => Object.freeze({}),
-    [props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId]);
+    [props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId, props.pendingStore]);
   const [savedState, setState] = useState<AssistantLauncherState | null>(null);
   // Never render or observe a previous account/endpoint while the replacement boots.
   const state = savedState?.configurationKey === configurationKey ? savedState : null;
@@ -1075,6 +1081,7 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
         const deviceId = (props.deviceId ?? browserIdentity("device")) as ConversationDeviceId;
         const client = await createHandrailAiClient<StreamEvent, ChatRequest, object>({
           baseUrl: props.endpoint,
+          ...(props.pendingStore ? { pendingStore: props.pendingStore } : {}),
           ...(props.fetch === undefined ? {} : { fetch: props.fetch }),
           ...(props.protectedRequest === undefined ? {} : { protectedRequest: props.protectedRequest }),
           ...(props.diagnostics === undefined ? {} : { diagnostics: props.diagnostics }),
@@ -1114,7 +1121,7 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
       const previous = owned; owned = null;
       void previous?.client.dispose();
     };
-  }, [configurationKey, props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId]);
+  }, [configurationKey, props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId, props.pendingStore]);
 
   const voiceMonitor = useMemo(() => {
     if (!state || !props.voiceActivity) return null;
@@ -1140,12 +1147,12 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
   if (error !== null) return <>{styles}{props.failure?.(error) ?? <span role="alert">Assistant unavailable.</span>}</>;
   if (state === null || state.client.workspace === null) return <>{styles}{props.loading ?? null}</>;
   const { endpoint: _endpoint, fetch: _fetch, protectedRequest: _protected, diagnostics: _diagnostics, clientId: _clientId,
-    deviceId: _deviceId, loading: _loading, failure: _failure, includeStyles: _includeStyles,
+    deviceId: _deviceId, pendingStore: _pendingStore, loading: _loading, failure: _failure, includeStyles: _includeStyles,
     onWorkingChange: _onWorkingChange, autoTitle: _autoTitle,
     presentation: _presentation, uploaderForConversation: _uploaderForConversation,
     attachmentIntake: _attachmentIntake, voiceActivity: _voiceOptions, ...launcher } = props;
   void _endpoint; void _fetch; void _protected; void _diagnostics; void _clientId; void _deviceId; void _loading;
-  void _failure; void _includeStyles; void _onWorkingChange; void _autoTitle; void _presentation;
+  void _failure; void _includeStyles; void _onWorkingChange; void _autoTitle; void _presentation; void _pendingStore;
   void _uploaderForConversation; void _attachmentIntake; void _voiceOptions;
   const authorizationContext = EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT;
   return <>{styles}<AssistantWorkingObserver workspace={state.client.workspace}

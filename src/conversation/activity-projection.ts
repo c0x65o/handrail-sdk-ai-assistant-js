@@ -1,5 +1,5 @@
 import type { ConversationWorkspaceSnapshot } from "./workspace.js";
-import type { ConversationState } from "./state.js";
+import type { ConversationPresentationState as ConversationState } from "./presentation.js";
 import type { ConversationActivityRecord } from "./activity.js";
 
 /** Resolve server activity against the latest locally synchronized turn. */

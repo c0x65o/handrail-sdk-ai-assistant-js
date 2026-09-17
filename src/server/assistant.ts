@@ -915,6 +915,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         },
         transportFor,
         checkpointForEvent,
+        displayControl: true,
         displayHistoryFor(current): ConversationDisplayHistory {
           const identity = maintenanceIdentity(current);
           const authorize = async (conversationId: string) => {
@@ -924,20 +925,22 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           };
           const history = new PostgresConversationDisplayHistory(options.persistence.persistence.client,
             current.tenantId, current.scopeId, authorize);
-          const prepare = <T extends ConversationDisplayPage>(page: T): T => {
+          const prepare = <T extends Pick<ConversationDisplayPage, "status" | "conversationId">>(page: T): T => {
               if (page.status === "preparing" && historyRequest) {
                 const key = JSON.stringify(["history-backfill", identity, page.conversationId]);
                 const step = async () => {
                   const progress = await history.backfill(page.conversationId);
+                  const controls = !progress.hasMore ? await history.backfillControls(page.conversationId) : null;
                   // Durable watermark survives process restarts; each small step
                   // reauthenticates and goes to the back of the shared work queue.
-                  if (progress.hasMore) maintenance.enqueue(key, step);
+                  if (progress.hasMore || controls?.hasMore) maintenance.enqueue(key, step);
                 };
                 maintenance.enqueue(key, step);
               }
               return page;
           };
           return {
+            control: async input => prepare(await history.control(input)),
             page: async input => prepare(await history.page(input)),
             changes: async input => prepare(await history.changes(input)),
             content: input => history.content(input),

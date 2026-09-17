@@ -7,6 +7,7 @@ import * as clipboardImages from "../src/browser/clipboard-image.js";
 import { createSavedConversationRequestPreparer } from "../src/server/saved-conversation-request.js";
 import { createAttachmentContentValidator } from "../src/server/attachment-content.js";
 import { createOpenAIResponsesProviderAdapter, type OpenAIResponsesProviderOptions } from "../src/providers/openai-responses.js";
+import { ConversationDraftController, InMemoryConversationLocalStateStore } from "../src/client/local-state.js";
 
 import {
   AttachmentUploadAdapterError,
@@ -30,6 +31,77 @@ import {
 } from "../src/react/index.js";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+it("restores the saved composer before sending, preserves it over initial text, and flushes on unmount", async () => {
+  const storage = new InMemoryConversationLocalStateStore();
+  await storage.writeDraft("conversation_composer", "saved before reload", null);
+  const controller = new ConversationDraftController("conversation_composer", storage);
+  const { runtime } = fakeRuntime(), uploader = immediateUploader();
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, draftController: controller, initialDraft: "initial placeholder" }), { wrapper: wrapper(runtime) });
+  try {
+    expect(result.current.canSend).toBe(false);
+    await waitFor(() => expect(result.current.draft).toBe("saved before reload"));
+    expect(result.current.canSend).toBe(true);
+    act(() => result.current.setDraft("last edit before close"));
+    unmount();
+    await vi.waitFor(async () => expect((await storage.readDraft("conversation_composer"))?.text).toBe("last edit before close"));
+  } finally { unmount(); await controller.dispose(); uploader.dispose(); }
+});
+
+it("never renders another account's draft during a scope change, and late admission clears only its original journal", async () => {
+  const a = new InMemoryConversationLocalStateStore(), b = new InMemoryConversationLocalStateStore();
+  await a.writeDraft("conversation_composer", "private account A", null);
+  await b.writeDraft("conversation_composer", "private account B", null);
+  const first = new ConversationDraftController("conversation_composer", a), second = new ConversationDraftController("conversation_composer", b);
+  await first.flush(); await second.flush();
+  const { runtime, sendMessage } = fakeRuntime(), uploader = immediateUploader();
+  let accept!: () => void, settle!: (value: ConversationRuntimeTurnResult) => void;
+  sendMessage.mockImplementation(input => {
+    accept = () => input.onAccepted?.({ conversationId: "conversation_composer" as never, messageId: "accepted" as never, turnId: "turn_composer" as never });
+    return new Promise(resolve => { settle = resolve; });
+  });
+  const renders: { controller: ConversationDraftController; text: string }[] = [];
+  const { result, rerender, unmount } = renderHook(({ controller }) => {
+    const composer = useConversationComposer({ uploader, draftController: controller });
+    renders.push({ controller, text: composer.draft }); return composer;
+  }, { wrapper: wrapper(runtime), initialProps: { controller: first } });
+  try {
+    let sending!: ReturnType<ConversationComposerResult["submit"]>;
+    act(() => { sending = result.current.submit(); });
+    rerender({ controller: second });
+    expect(renders.filter(row => row.controller === second).every(row => row.text === "private account B")).toBe(true);
+    await act(async () => { accept(); settle(completed()); await sending; await first.flush(); });
+    expect(await a.readDraft("conversation_composer")).toBeNull();
+    expect((await b.readDraft("conversation_composer"))?.text).toBe("private account B");
+    expect(result.current.draft).toBe("private account B");
+  } finally { unmount(); await first.dispose(); await second.dispose(); uploader.dispose(); }
+});
+
+it("keeps newer text after admission and exposes recoverable draft storage failures", async () => {
+  const storage = new InMemoryConversationLocalStateStore(), controller = new ConversationDraftController("conversation_composer", storage);
+  await controller.flush();
+  const { runtime, sendMessage } = fakeRuntime(), uploader = immediateUploader();
+  let accept!: () => void, settle!: (value: ConversationRuntimeTurnResult) => void;
+  sendMessage.mockImplementation(input => {
+    accept = () => input.onAccepted?.({ conversationId: "conversation_composer" as never, messageId: "accepted" as never, turnId: "turn_composer" as never });
+    return new Promise(resolve => { settle = resolve; });
+  });
+  const { result, unmount } = renderHook(() => useConversationComposer({ uploader, draftController: controller }), { wrapper: wrapper(runtime) });
+  try {
+    act(() => result.current.setDraft("sent"));
+    let sending!: ReturnType<ConversationComposerResult["submit"]>;
+    act(() => { sending = result.current.submit(); result.current.setDraft("newer draft"); });
+    await act(async () => { accept(); settle(completed()); await sending; });
+    expect(result.current.draft).toBe("newer draft");
+    vi.spyOn(storage, "writeDraft").mockRejectedValueOnce(new Error("Device quota"));
+    await act(async () => { await expect(result.current.draftPersistence!.retry()).rejects.toThrow("Device quota"); });
+    expect(result.current.draftPersistence).toMatchObject({ status: "error", error: expect.stringContaining("could not be saved") });
+    expect(result.current.draft).toBe("newer draft");
+    await act(async () => { await result.current.draftPersistence!.retry(); });
+    expect(result.current.draftPersistence!.status).toBe("saved");
+    expect((await storage.readDraft("conversation_composer"))?.text).toBe("newer draft");
+  } finally { unmount(); await controller.dispose(); uploader.dispose(); }
+});
 
 it("clears the failed Stop error after a successful retry and preserves the draft", async () => {
   const { runtime } = fakeRuntime();

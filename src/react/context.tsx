@@ -1,3 +1,4 @@
+import type { ConversationPresentationRuntime as ConversationRuntime } from "../conversation/presentation.js";
 import {
   createContext,
   useEffect,
@@ -7,13 +8,10 @@ import {
 } from "react";
 
 import type { ConversationStore } from "../conversation/store.js";
-import type { ConversationRuntime } from "../runtime.js";
+import type { ConversationPresentationStore } from "../conversation/presentation.js";
 
 /** The read capabilities required by React hooks and primitives. */
-export type ConversationReadableStore = Pick<
-  ConversationStore,
-  "getSnapshot" | "subscribe" | "select"
->;
+export type ConversationReadableStore = ConversationPresentationStore;
 
 export type ConversationProviderFactory<TRequest = unknown> = () =>
   | ConversationReadableStore

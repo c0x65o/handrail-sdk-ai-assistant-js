@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import type { HandrailAiClient } from "../client/index.js";
 import type { StreamEvent, ChatRequest } from "../protocol.js";
 import type { ConversationApprovalProposalRecord } from "../conversation/state.js";
+import type { ApplicationConversationSession } from "../client/application-session.js";
 
 export type ConversationApprovalResources = Pick<HandrailAiClient<StreamEvent, ChatRequest, object>["resources"],
   "listApprovalGroup" | "transitionApproval">;
 
 /** Shared approval polling and decisions for styled, custom web and native React views. */
-export function useConversationApprovals(resources: ConversationApprovalResources | null, conversationId: string | null) {
+export function useConversationApprovals(resources: ConversationApprovalResources | null, conversationId: string | null,
+  session?: ApplicationConversationSession) {
   const [state, setState] = useState({ resources, conversationId,
     proposals: [] as readonly ConversationApprovalProposalRecord[], busy: null as string | null, error: null as "refresh" | "decision" | null });
   const lifecycle = useRef<{
@@ -21,7 +23,10 @@ export function useConversationApprovals(resources: ConversationApprovalResource
     }
     let loading = false;
     let refreshAfterLoad = false;
-    const current = { resources, conversationId, active: true, busy: false, revision: 0, refresh: () => { void load(); } };
+    const current = { resources, conversationId, active: true, busy: false, revision: 0,
+      refresh: () => { if (session) void session.refresh().then(load).catch(() => {
+        if (current.active) setState(previous => ({ ...previous, error: "refresh" }));
+      }); else void load(); } };
     lifecycle.current = current;
     setState({ resources, conversationId, proposals: [], busy: null, error: null as "refresh" | "decision" | null });
     async function load() {
@@ -30,9 +35,13 @@ export function useConversationApprovals(resources: ConversationApprovalResource
       loading = true;
       const revision = current.revision;
       try {
-        const proposals = await current.resources.listApprovalGroup({ groupId: conversationId as never });
+        const proposals = session ? session.getSnapshot().related.flatMap(record => record.kind === "approval" && record.value ? [record.value] : [])
+          : await current.resources.listApprovalGroup({ groupId: conversationId as never });
         if (current.active && revision === current.revision) {
-          setState((previous) => ({ ...previous, resources, proposals, error: null as "refresh" | "decision" | null }));
+          setState((previous) => ({ ...previous, resources, proposals: proposals.map(proposal => {
+            const receipt = previous.proposals.find(candidate => candidate.proposal_id === proposal.proposal_id);
+            return receipt && receipt.proposal_version > proposal.proposal_version ? receipt : proposal;
+          }), error: null as "refresh" | "decision" | null }));
         }
       } catch {
         if (current.active && revision === current.revision) {
@@ -44,9 +53,10 @@ export function useConversationApprovals(resources: ConversationApprovalResource
       }
     }
     void load();
-    const timer = globalThis.setInterval(current.refresh, 2_000);
-    return () => { current.active = false; globalThis.clearInterval(timer); };
-  }, [resources, conversationId]);
+    const unsubscribe = session?.subscribe(() => { void load(); });
+    const timer = session ? undefined : globalThis.setInterval(current.refresh, 2_000);
+    return () => { current.active = false; unsubscribe?.(); globalThis.clearInterval(timer); };
+  }, [resources, conversationId, session]);
   const decide = async (proposal: ConversationApprovalProposalRecord, status: "confirmed" | "rejected") => {
     const current = lifecycle.current;
     if (!current?.active || current.busy || current.resources !== resources || current.conversationId !== conversationId) return;

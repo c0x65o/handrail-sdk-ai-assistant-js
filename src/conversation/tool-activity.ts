@@ -1,4 +1,5 @@
-import type { ConversationState, ConversationToolCallRecord, ConversationTurnRecord } from "./state.js";
+import type { ConversationPresentationState as ConversationState, ConversationPresentationTurn as ConversationTurnRecord } from "./presentation.js";
+import type {  ConversationToolCallRecord} from "./state.js";
 import { parseToolRecoverySummary, type ToolRecoverySummary } from "../tools/recovery.js";
 
 export type ToolActivityStatus = "pending" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "incomplete";

@@ -61,13 +61,13 @@ export interface ConversationRuntimeFactoryInput<TAuthorizationContext> {
 }
 
 /** Event stores, transports, credentials, and all other runtime dependencies stay host-owned. */
-export type ConversationRuntimeFactory<TRequest, TAuthorizationContext> = (
+export type ConversationRuntimeFactory<TRequest, TAuthorizationContext, TRuntime extends { destroy(): void } = ConversationRuntime<TRequest>> = (
   input: ConversationRuntimeFactoryInput<TAuthorizationContext>,
-) => ConversationRuntime<TRequest> | Promise<ConversationRuntime<TRequest>>;
+) => TRuntime | Promise<TRuntime>;
 
-export interface ConversationRuntimeRegistryOptions<TRequest, TAuthorizationContext> {
+export interface ConversationRuntimeRegistryOptions<TRequest, TAuthorizationContext, TRuntime extends { destroy(): void } = ConversationRuntime<TRequest>> {
   readonly catalog: ConversationCatalog<TAuthorizationContext>;
-  readonly createRuntime: ConversationRuntimeFactory<TRequest, TAuthorizationContext>;
+  readonly createRuntime: ConversationRuntimeFactory<TRequest, TAuthorizationContext, TRuntime>;
   readonly authorize: ConversationRuntimeRegistryPolicy<TAuthorizationContext>;
   readonly limits?: Partial<ConversationRuntimeRegistryLimits>;
 }
@@ -118,22 +118,22 @@ export class ConversationRuntimeRegistryError extends Error {
   }
 }
 
-type RegistryEntry<TRequest> =
+type RegistryEntry<TRuntime> =
   | {
       kind: "pending";
       readonly controller: AbortController;
-      promise: Promise<ConversationRuntime<TRequest>>;
+      promise: Promise<TRuntime>;
       invalidation: ConversationRuntimeRegistryError | null;
     }
   | {
       readonly kind: "live";
-      readonly runtime: ConversationRuntime<TRequest>;
+      readonly runtime: TRuntime;
     }
   | {
       readonly kind: "lifecycle";
       readonly action: Exclude<ConversationRuntimeRegistryPolicyAction, "open">;
       /** A live archive runtime stays usable until the host commits. */
-      readonly retainedRuntime?: ConversationRuntime<TRequest>;
+      readonly retainedRuntime?: TRuntime;
     }
   | {
       readonly kind: "deleted";
@@ -182,18 +182,18 @@ function registryLimits(
  * Released identities may be opened again. Cleared identities remain openable.
  * Deleted identities retain bounded tombstones for this registry's entire lifetime.
  */
-export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unknown> {
+export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unknown, TRuntime extends { destroy(): void } = ConversationRuntime<TRequest>> {
   readonly #catalog: ConversationCatalog<TAuthorizationContext>;
-  readonly #createRuntime: ConversationRuntimeFactory<TRequest, TAuthorizationContext>;
+  readonly #createRuntime: ConversationRuntimeFactory<TRequest, TAuthorizationContext, TRuntime>;
   readonly #authorize: ConversationRuntimeRegistryPolicy<TAuthorizationContext>;
   readonly #limits: Readonly<ConversationRuntimeRegistryLimits>;
-  readonly #entries = new Map<ConversationId, RegistryEntry<TRequest>>();
+  readonly #entries = new Map<ConversationId, RegistryEntry<TRuntime>>();
   readonly #destroyedRuntimes = new WeakSet<object>();
   #activeConstructions = 0;
   #disposed = false;
   #disposePromise: Promise<void> | null = null;
 
-  constructor(options: ConversationRuntimeRegistryOptions<TRequest, TAuthorizationContext>) {
+  constructor(options: ConversationRuntimeRegistryOptions<TRequest, TAuthorizationContext, TRuntime>) {
     if (options === null || typeof options !== "object" ||
       typeof options.createRuntime !== "function" ||
       typeof options.authorize !== "function" ||
@@ -236,7 +236,7 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
 
   async open(
     input: GetConversationInput<TAuthorizationContext>,
-  ): Promise<ConversationRuntime<TRequest>> {
+  ): Promise<TRuntime> {
     this.#assertUsable();
     const parsed = parseGetConversationInput<TAuthorizationContext>(input);
     const existing = this.#entries.get(parsed.conversationId);
@@ -250,7 +250,7 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
     }
 
     const controller = new AbortController();
-    const entry: Extract<RegistryEntry<TRequest>, { kind: "pending" }> = {
+    const entry: Extract<RegistryEntry<TRuntime>, { kind: "pending" }> = {
       kind: "pending",
       controller,
       promise: Promise.resolve(undefined as never),
@@ -337,8 +337,8 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
 
   async #construct(
     input: GetConversationInput<TAuthorizationContext>,
-    entry: Extract<RegistryEntry<TRequest>, { kind: "pending" }>,
-  ): Promise<ConversationRuntime<TRequest>> {
+    entry: Extract<RegistryEntry<TRuntime>, { kind: "pending" }>,
+  ): Promise<TRuntime> {
     try {
       const loaded = await this.#catalog.get(input);
       const descriptor = parseConversationCatalogDescriptor(loaded.descriptor);
@@ -384,7 +384,7 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
     if (existing?.kind === "lifecycle") this.#fail("lifecycle_in_progress");
     if (existing === undefined) this.#reserveEntryCapacity();
     const retainedRuntime = action === "archive" && existing?.kind === "live" ? existing.runtime : undefined;
-    const operation: RegistryEntry<TRequest> = { kind: "lifecycle", action,
+    const operation: RegistryEntry<TRuntime> = { kind: "lifecycle", action,
       ...(retainedRuntime === undefined ? {} : { retainedRuntime }) };
     this.#entries.set(input.conversationId, operation);
     if (existing?.kind === "live" && retainedRuntime === undefined) this.#destroyRuntime(existing.runtime);
@@ -442,7 +442,7 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
   }
 
   #invalidatePending(
-    entry: Extract<RegistryEntry<TRequest>, { kind: "pending" }>,
+    entry: Extract<RegistryEntry<TRuntime>, { kind: "pending" }>,
     code: "disposed" | "construction_invalidated" | "permanently_deleted",
   ): void {
     if (entry.invalidation !== null) return;
@@ -451,7 +451,7 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
     entry.controller.abort(error);
   }
 
-  #destroyRuntime(runtime: ConversationRuntime<TRequest>): void {
+  #destroyRuntime(runtime: TRuntime): void {
     if (this.#destroyedRuntimes.has(runtime)) return;
     this.#destroyedRuntimes.add(runtime);
     runtime.destroy();
@@ -472,8 +472,8 @@ export class ConversationRuntimeRegistry<TRequest, TAuthorizationContext = unkno
   }
 }
 
-export function createConversationRuntimeRegistry<TRequest, TAuthorizationContext = unknown>(
-  options: ConversationRuntimeRegistryOptions<TRequest, TAuthorizationContext>,
-): ConversationRuntimeRegistry<TRequest, TAuthorizationContext> {
+export function createConversationRuntimeRegistry<TRequest, TAuthorizationContext = unknown, TRuntime extends { destroy(): void } = ConversationRuntime<TRequest>>(
+  options: ConversationRuntimeRegistryOptions<TRequest, TAuthorizationContext, TRuntime>,
+): ConversationRuntimeRegistry<TRequest, TAuthorizationContext, TRuntime> {
   return new ConversationRuntimeRegistry(options);
 }

@@ -407,19 +407,19 @@ describe("styled React preset", () => {
     expect(markRead).toHaveBeenCalledWith("running");
     expect(onConversationRead).toHaveBeenCalledWith("running");
   });
-  it("hydrates every authorized catalog page and exposes archive and restore lifecycle actions", async () => {
+  it("loads catalog pages on demand and exposes archive and restore lifecycle actions", async () => {
     const active = { conversationId: "active", title: "Active case", lifecycle: "active",
       archivedAt: null, createdAt: "2026-01-01", updatedAt: "2026-01-02", version: "v1", metadata: {} } as never;
     const archived = { conversationId: "archived", title: "Past case", lifecycle: "archived",
       archivedAt: "2026-01-02", createdAt: "2026-01-01", updatedAt: "2026-01-02", version: "v2", metadata: {} } as never;
-    const list = vi.fn(async (input: { cursor?: string }) => input.cursor
+    const list = vi.fn(async (input: { cursor?: string; lifecycle?: string }) => input.cursor || input.lifecycle === "archived"
       ? { items: [archived], nextCursor: null, hasMore: false,
           order: { field: "updated_at", direction: "desc" } }
       : { items: [active], nextCursor: "next", hasMore: true,
           order: { field: "updated_at", direction: "desc" } });
     const archive = vi.fn(async () => ({ descriptor: archived }));
     const restore = vi.fn(async () => ({ descriptor: active }));
-    const catalog = { list, archive, restore,
+    const catalog = { list, archive, restore, get: async () => ({ descriptor: active }),
       capabilities: { archive: { supported: true }, restore: { supported: true } } } as never;
     const snapshot = { selectedConversationId: "active", runningCount: 0, errorCount: 0,
       unreadCount: 0, threads: [{ conversationId: "active", runtime: { getSnapshot: () => ({ messages: [] }) }, turnStatus: "idle",
@@ -431,9 +431,11 @@ describe("styled React preset", () => {
     const view = render(<CatalogWorkspaceThreadPicker workspace={workspace as never}
       catalogOptions={{ catalog, authorizationContext: { accountId: "authorized" }, pageSize: 1 }}/>);
     const picker = within(view.container);
-    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
     expect(open).not.toHaveBeenCalled();
     fireEvent.click(view.container.querySelector("summary")!);
+    fireEvent.click(picker.getByRole("button", { name: "Load more conversations" }));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     fireEvent.click(picker.getByRole("button", { name: "Archive Active case" }));
     await waitFor(() => expect(archive).toHaveBeenCalledWith(expect.objectContaining({
       conversationId: "active", expectedVersion: "v1",

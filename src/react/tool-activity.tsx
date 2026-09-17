@@ -1,6 +1,7 @@
+import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
 import type { ReactNode } from "react";
 import { projectToolActivity, type ToolActivitySnapshot, type ToolActivityStatus } from "../conversation/tool-activity.js";
-import type { ConversationState } from "../conversation/state.js";
+import type { } from "../conversation/state.js";
 import { useResolvedState } from "./primitive-context.js";
 
 export interface ToolActivityProps {

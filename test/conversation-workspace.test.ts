@@ -92,7 +92,7 @@ describe("ConversationWorkspace", () => {
     await workspace.open({ authorizationContext: undefined, conversationId: "first" as ConversationId });
     expect(firstPolling).toHaveBeenLastCalledWith(true);
     await workspace.open({ authorizationContext: undefined, conversationId: "second" as ConversationId, select: false });
-    expect(secondPolling).not.toHaveBeenCalled();
+    expect(secondPolling).toHaveBeenLastCalledWith(false);
     workspace.select("second" as ConversationId);
     expect(firstPolling).toHaveBeenLastCalledWith(false);
     expect(secondPolling).toHaveBeenLastCalledWith(true);

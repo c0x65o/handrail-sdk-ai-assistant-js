@@ -1,4 +1,6 @@
 import { parseServerSentEvents } from "./sse.js";
+import { parseConversationDisplayControl, CONVERSATION_DISPLAY_CONTROL_MAXIMUM_BYTES,
+  type ConversationDisplayControlInput } from "../conversation/display-control.js";
 import { ConversationDisplayHistoryError, CONVERSATION_DISPLAY_LIMITS, parseConversationDisplayPage,
   type ConversationDisplayHistory, type ConversationDisplayPageInput, type ConversationDisplayContentInput,
   type ConversationDisplayChangesInput } from "../conversation/display-history.js";
@@ -67,7 +69,7 @@ export interface ApplicationGatewayCapabilities {
   readonly presence: boolean;
   readonly synchronization: boolean;
   /** Complete message records, separate from canonical audit synchronization. */
-  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number };
+  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true };
   readonly activity?: boolean;
   /** Omitted by older gateways; never assume saved files have public URLs. */
   readonly attachmentDownloads?: false | AttachmentDownloadCapability;
@@ -135,6 +137,8 @@ export interface ApplicationGatewayOptions<TEvent, TRequest, TContext extends Ap
   readonly maximumRequestBytes?: number;
   readonly conversations?: ConversationCatalog<TContext>;
   readonly displayHistoryFor?: (context: TContext) => ConversationDisplayHistory;
+  /** Advertise only when every scoped display store supplies control(). */
+  readonly displayControl?: true;
   readonly approvals?: ApprovalProposalStore<TContext>;
   readonly titleGeneration?: ApplicationGatewayTitleGeneration<TContext>;
   readonly handlers?: ApplicationGatewayResourceHandlers<TContext>;
@@ -382,7 +386,8 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
     ...(options.capabilities?.transcription === undefined ? {} : { transcription: options.capabilities.transcription }),
     synchronization: options.capabilities?.synchronization ?? false,
     ...(options.displayHistoryFor ? { displayHistory: { version: 1 as const,
-      maximumPageSize: CONVERSATION_DISPLAY_LIMITS.maximumPageSize, maximumPageBytes: CONVERSATION_DISPLAY_LIMITS.maximumPageBytes } } : {}),
+      maximumPageSize: CONVERSATION_DISPLAY_LIMITS.maximumPageSize, maximumPageBytes: CONVERSATION_DISPLAY_LIMITS.maximumPageBytes,
+      ...(options.displayControl ? { control: true as const } : {}) } } : {}),
     ...(options.capabilities?.documentInput === undefined ? {} : { documentInput: options.capabilities.documentInput }),
     ...(options.capabilities?.assistant === undefined ? {} : { assistant: options.capabilities.assistant }),
     resources: Object.freeze({ conversations: options.conversations?.capabilities ?? false,
@@ -441,6 +446,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
             const history = options.displayHistoryFor(authorizationContext);
             const value = input.operation === "page" ? await history.page(input.input as ConversationDisplayPageInput)
               : input.operation === "changes" ? await history.changes(input.input as ConversationDisplayChangesInput)
+              : input.operation === "control" && history.control ? await history.control(input.input as ConversationDisplayControlInput)
               : input.operation === "content" ? await history.content(input.input as ConversationDisplayContentInput)
                 : null;
             if (value === null) throw new ConversationDisplayHistoryError("invalid_input", "Invalid history operation");
@@ -931,6 +937,8 @@ export function createApplicationGatewayDisplayHistory(
     return bytes + 1024;
   };
   return Object.freeze({
+    control: async (input: ConversationDisplayControlInput, signal?: AbortSignal) =>
+      parseConversationDisplayControl(await invoke("control", input, CONVERSATION_DISPLAY_CONTROL_MAXIMUM_BYTES + 1024, signal), input),
     page: async (input: ConversationDisplayPageInput, signal?: AbortSignal) =>
       parseConversationDisplayPage(await invoke("page", input, pageBudget(input), signal), input) as Awaited<ReturnType<ConversationDisplayHistory["page"]>>,
     content: async (input: ConversationDisplayContentInput, signal?: AbortSignal) => {

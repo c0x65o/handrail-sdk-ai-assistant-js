@@ -10,6 +10,26 @@ const transport: ConversationTransport<never, never> = {
 };
 const point = () => ({ lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null });
 
+it("negotiates bounded controls without creating a provider transport and rejects mismatched turn identities", async () => {
+  const turn = { turnId: "turn", revision: 12, status: "running" as const, remoteMayStillBeRunning: true, error: null };
+  const value = { schemaVersion: 1 as const, status: "ready" as const, conversationId: "conversation", generation: 0,
+    revision: 12, canonicalRevision: 12, activeTurnId: "turn", activeTurn: turn, latestTurn: turn, requestedTurn: null };
+  const history: ConversationDisplayHistory = { page: vi.fn(), changes: vi.fn(), content: vi.fn(), control: vi.fn(async () => value) };
+  const resolve = vi.fn(() => transport);
+  const gateway = createApplicationGateway({ transportFor: resolve, authorize: async () => ({ principalId: "user" }),
+    checkpointForEvent: point, displayHistoryFor: () => history, displayControl: true });
+  const client = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test",
+    fetch: (async (url, init) => gateway.handle(new Request(url, init))) as typeof fetch });
+  expect(await client.control({ conversationId: "conversation" })).toEqual(value);
+  expect(resolve).not.toHaveBeenCalled();
+  expect(await (await gateway.handle(new Request("https://app.test/capabilities"))).json())
+    .toMatchObject({ value: { displayHistory: { control: true } } });
+  const forged = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test",
+    fetch: (async () => Response.json({ ok: true, value: { ...value, requestedTurn: { ...turn, turnId: "different" } } })) as typeof fetch });
+  await expect(forged.control({ conversationId: "conversation", turnId: "turn" })).rejects.toThrow("Invalid display control");
+  await expect(client.control({ conversationId: "other" })).rejects.toThrow("Invalid display history");
+});
+
 it("rejects cross-conversation and malformed pages before caching and bounds streamed response bytes", async () => {
   const valid = { schemaVersion: 1, status: "ready", conversationId: "conversation", generation: 0,
     revision: 12, canonicalRevision: 12, activeTurnId: null, records: [], nextCursor: null };

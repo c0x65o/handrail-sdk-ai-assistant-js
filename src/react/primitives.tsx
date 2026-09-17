@@ -1,3 +1,4 @@
+import type { ConversationPresentationState as ConversationState, ConversationPresentationTurn as ConversationTurnRecord } from "../conversation/presentation.js";
 import {
   createContext,
   Fragment,
@@ -29,10 +30,8 @@ import type {
   ConversationAttachmentRecord,
   ConversationMessageRecord,
   ConversationReplayError,
-  ConversationState,
   ConversationToolCallRecord,
   ConversationToolResultRecord,
-  ConversationTurnRecord,
   ConversationTurnStateStatus,
 } from "../conversation/state.js";
 import type {

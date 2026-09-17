@@ -14,7 +14,7 @@ export function assistantToolArgumentReference(arguments_: JsonObject): string {
 }
 
 /** Return authorized review data only when it matches this proposal's immutable binding. */
-export function reviewedToolArguments(state: ConversationState, proposal: ConversationApprovalProposalRecord): JsonObject | null {
+export function reviewedToolArguments(state: Pick<ConversationState, "tool_calls">, proposal: ConversationApprovalProposalRecord): JsonObject | null {
   if (proposal.reviewed_arguments.type === "redacted_json") return proposal.reviewed_arguments.value as JsonObject;
   const call = state.tool_calls.find(candidate => candidate.turn_id === proposal.turn_id &&
     candidate.tool_call_id === proposal.tool_call_id && candidate.name === proposal.tool_name);

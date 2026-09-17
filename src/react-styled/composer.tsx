@@ -212,6 +212,12 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
       </div>
       {props.actions}
       <ErrorList className="hr-composer__errors"/>
+      {props.composer?.draftPersistence?.status === "loading" && <p role="status">Restoring draft…</p>}
+      {props.composer?.draftPersistence?.error && <div className="hr-composer__errors" role="alert">
+        <p>{props.composer.draftPersistence.error}</p>
+        <button type="button" onClick={() => { void props.composer?.draftPersistence?.retry().catch(() => undefined); }}>Retry saving draft</button>
+        <button type="button" onClick={() => { void props.composer?.draftPersistence?.reload().catch(() => undefined); }}>Replace editor with saved draft</button>
+      </div>}
     </Form>
   </Composer>;
 }
