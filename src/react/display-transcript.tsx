@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type ReactNode } from "react";
 import type { ConversationDisplayWindow, ConversationDisplayWindowSnapshot } from "../client/display-window.js";
 import type { ConversationDisplayRecord } from "../conversation/display-history.js";
 import { ConversationLargeMessage, type ConversationMessageTextReader } from "./large-message.js";
@@ -60,6 +60,16 @@ export interface ConversationDisplayTranscriptProps extends Omit<HTMLAttributes<
   readonly visible?: boolean;
   readonly pollingMilliseconds?: number;
   readonly renderMessage: (record: Extract<ConversationDisplayRecord, { kind: "message" }>) => ReactNode;
+  /** Activity preceding a message stays outside that message's scroll anchor. */
+  readonly renderBeforeMessage?: (record: Extract<ConversationDisplayRecord, { kind: "message" }>) => ReactNode;
+  /** Changes to activity can move messages without replacing the message window. */
+  readonly contentVersion?: unknown;
+  /** When present, page this window's older activity before loading older messages. */
+  readonly olderActivity?: {
+    readonly load: () => Promise<void>;
+    readonly disabled?: boolean;
+    readonly error?: boolean;
+  };
   /** Oversized records are explicit; opening their bounded content viewer is a separate action. */
   readonly renderDeferred?: (record: ConversationDisplayRecord) => ReactNode;
   readonly readMessageText?: ConversationMessageTextReader;
@@ -70,7 +80,8 @@ export interface ConversationDisplayTranscriptProps extends Omit<HTMLAttributes<
 /** A bounded DOM window with upward/downward paging and message-based anchors.
  * It deliberately does not manufacture a partial ConversationState. */
 export function ConversationDisplayTranscript({ controller, conversationId, positions, visible,
-  pollingMilliseconds, manageSelection, onFollowingLatestChange, renderMessage, renderDeferred, readMessageText, emptyState, children, onScroll, ...props }: ConversationDisplayTranscriptProps) {
+  pollingMilliseconds, manageSelection, onFollowingLatestChange, renderMessage, renderBeforeMessage, contentVersion, olderActivity,
+  renderDeferred, readMessageText, emptyState, children, onScroll, ...props }: ConversationDisplayTranscriptProps) {
   const [expanded, setExpanded] = useState<{ controller: ConversationDisplayWindow; conversationId: string; id: string } | null>(null);
   useEffect(() => { setExpanded(null); }, [controller, conversationId]);
   const local = useRef({ controller, values: new Map<string, ConversationDisplayPosition>() });
@@ -92,6 +103,17 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
   const [away, setAway] = useState(false);
   const selected = useRef<{ controller: ConversationDisplayWindow; id: string | null } | null>(null);
   const previousVersion = useRef(-1);
+  const previousContentVersion = useRef(contentVersion);
+  type ActivityRequest = { controller: ConversationDisplayWindow; conversationId: string | null; status: "loading" | "error" };
+  const activityRequestRef = useRef<ActivityRequest | null>(null);
+  const [activityRequest, setActivityRequest] = useState<ActivityRequest | null>(null);
+  const currentActivityRequest = activityRequest?.controller === controller && activityRequest.conversationId === conversationId ? activityRequest : null;
+  const loadingActivity = currentActivityRequest?.status === "loading";
+  const previousActivityRequest = useRef(currentActivityRequest);
+  useEffect(() => {
+    activityRequestRef.current = null; setActivityRequest(null);
+    return () => { activityRequestRef.current = null; };
+  }, [controller, conversationId]);
   const capture = () => {
     const element = viewport.current;
     if (!element || !conversationId || !state.records.length) return;
@@ -112,7 +134,8 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       following.current = anchor.current?.following ?? true;
       setAway(!following.current);
     }
-    if (previousVersion.current === state.version || !state.records.length) return;
+    const windowChanged = previousVersion.current !== state.version;
+    if ((!windowChanged && previousContentVersion.current === contentVersion && previousActivityRequest.current === currentActivityRequest) || !state.records.length) return;
     if (anchor.current && anchor.current.generation !== state.generation) {
       anchor.current = undefined; following.current = true; setAway(false);
     }
@@ -121,7 +144,9 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       if (restored && restored.generation === state.generation) { anchor.current = restored; following.current = restored.following; setAway(!restored.following); }
     }
     previousVersion.current = state.version;
-    if (state.change === "latest" || following.current && !state.hasNewer && state.change !== "older") {
+    previousContentVersion.current = contentVersion;
+    previousActivityRequest.current = currentActivityRequest;
+    if (windowChanged && state.change === "latest" || following.current && !state.hasNewer && (!windowChanged || state.change !== "older")) {
       element.scrollTop = element.scrollHeight; following.current = true; setAway(false);
     } else if (anchor.current && anchor.current.generation === state.generation) {
       const item = Array.from(element.querySelectorAll<HTMLElement>("[data-display-message]"))
@@ -132,14 +157,29 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
     onFollowingLatestChange?.(following.current);
   });
   const load = (direction: "older" | "newer") => {
-    capture(); if (direction === "older") { following.current = false; setAway(true); onFollowingLatestChange?.(false); }
+    if (direction === "older") { following.current = false; setAway(true); onFollowingLatestChange?.(false); }
+    capture();
     void (direction === "older" ? controller.loadOlder() : controller.loadNewer());
   };
+  const loadActivity = () => {
+    const pending = activityRequestRef.current;
+    if (!olderActivity || olderActivity.disabled || state.loading !== null || state.status !== "ready" ||
+      pending?.controller === controller && pending.conversationId === conversationId && pending.status === "loading") return;
+    following.current = false; setAway(true); onFollowingLatestChange?.(false); capture();
+    const request: ActivityRequest = { controller, conversationId, status: "loading" };
+    activityRequestRef.current = request; setActivityRequest(request);
+    const complete = (status: "error" | null) => {
+      if (activityRequestRef.current !== request) return;
+      const next = status ? { ...request, status } : null;
+      activityRequestRef.current = next; setActivityRequest(next);
+    };
+    void Promise.resolve().then(() => olderActivity.load()).then(() => complete(null), () => complete("error"));
+  };
   useEffect(() => {
-    if (following.current && state.hasNewer && state.loading === null && !state.error && state.status === "ready") {
+    if (following.current && state.hasNewer && state.loading === null && !loadingActivity && !state.error && state.status === "ready") {
       void controller.loadNewer();
     }
-  }, [controller, state.hasNewer, state.loading, state.error, state.status]);
+  }, [controller, state.hasNewer, state.loading, state.error, state.status, loadingActivity]);
   useEffect(() => {
     const element = viewport.current, view = element?.ownerDocument.defaultView;
     if (!element || !view || typeof ResizeObserver === "undefined") return;
@@ -158,38 +198,46 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       });
     });
     observer.observe(element, { box: "border-box" });
-    for (const item of Array.from(element.querySelectorAll("[data-display-message]"))) observer.observe(item, { box: "border-box" });
+    // Activity cards can expand independently of their neighboring messages.
+    for (const item of Array.from(element.children)) observer.observe(item, { box: "border-box" });
     return () => { observer.disconnect(); if (frame !== undefined) view.cancelAnimationFrame(frame); };
-  }, [controller, conversationId, state.version, state.generation, state.hasNewer]);
+  }, [controller, conversationId, state.version, state.generation, state.hasNewer, contentVersion]);
   return <div className="hr-chat__transcript-wrap">
     <div {...props} ref={viewport} role={props.role ?? "log"} tabIndex={props.tabIndex ?? 0}
       style={{ ...props.style, overflowAnchor: "none" }}
       aria-label={props["aria-label"] ?? "Conversation transcript"} aria-live="off"
-      aria-busy={state.loading !== null || state.status === "preparing"} onScroll={event => {
+      aria-busy={state.loading !== null || loadingActivity || state.status === "preparing"} onScroll={event => {
         onScroll?.(event); if (event.defaultPrevented) return;
         const element = event.currentTarget;
         following.current = !state.hasNewer && element.scrollHeight - element.scrollTop - element.clientHeight <= 48;
         onFollowingLatestChange?.(following.current);
         setAway(!following.current);
         capture();
-        if (state.loading !== null || state.error || state.status !== "ready") return;
-        if (element.scrollTop <= 96 && state.hasOlder) load("older");
+        if (state.loading !== null || loadingActivity || state.error || state.status !== "ready") return;
+        if (element.scrollTop <= 96 && olderActivity) {
+          if (!olderActivity.error && currentActivityRequest?.status !== "error") loadActivity();
+        }
+        else if (element.scrollTop <= 96 && state.hasOlder) load("older");
         else if (element.scrollHeight - element.scrollTop - element.clientHeight <= 96 && state.hasNewer) load("newer");
       }}>
-      {state.hasOlder && <button type="button" disabled={state.loading !== null} onClick={() => load("older")}>Load older messages</button>}
+      {olderActivity && <button type="button" disabled={state.loading !== null || state.status !== "ready" || olderActivity.disabled || loadingActivity}
+        onClick={loadActivity}>Load more activity</button>}
+      {olderActivity && currentActivityRequest?.status === "error" && <p role="alert">Older activity could not be loaded. Try again.</p>}
+      {state.hasOlder && <button type="button" disabled={state.loading !== null || loadingActivity} onClick={() => load("older")}>Load older messages</button>}
       {(state.status === "loading" || state.status === "preparing") && <p role="status">{state.status === "preparing" ? "Preparing conversation history…" : "Loading conversation…"}</p>}
-      {state.records.map(record => record.kind === "message" && <article key={record.id} data-display-message={record.id}>
+      {state.records.map(record => record.kind === "message" && <Fragment key={record.id}>
+        {renderBeforeMessage?.(record)}<article data-display-message={record.id}>
         {record.deferred ? renderDeferred?.(record) ?? (record.kind === "message" && readMessageText && conversationId
           ? <ConversationLargeMessage conversationId={conversationId} generation={state.generation} record={record} read={readMessageText}
               expanded={expanded?.controller === controller && expanded.conversationId === conversationId && expanded.id === record.id}
               onOpen={() => setExpanded({ controller, conversationId, id: record.id })} onClose={() => setExpanded(null)}
               onRefresh={() => { void controller.refresh().catch(() => undefined); }}/>
           : <p>This message is too large for the history preview.</p>) : renderMessage(record)}
-      </article>)}
+      </article></Fragment>)}
       {state.status === "ready" && state.records.length === 0 ? emptyState : null}
       {state.error && <div role="alert"><p>Conversation history could not be loaded.</p>
         <button type="button" disabled={state.loading !== null} onClick={() => { void controller.retry(); }}>Retry history</button></div>}
-      {state.hasNewer && <button type="button" disabled={state.loading !== null} onClick={() => load("newer")}>Load newer messages</button>}
+      {state.hasNewer && <button type="button" disabled={state.loading !== null || loadingActivity} onClick={() => load("newer")}>Load newer messages</button>}
       {children}
     </div>
     {(state.hasNewer || away) && <button type="button" className="hr-chat__jump" disabled={state.loading !== null}

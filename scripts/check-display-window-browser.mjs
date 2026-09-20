@@ -60,16 +60,50 @@ try {
   await page.getByRole("button", { name: "Read message", exact: true }).waitFor();
   assert.equal(await page.evaluate(() => globalThis.fixture.contentRequests.length), 0);
   await page.getByRole("button", { name: "Read message", exact: true }).click();
-  await page.waitForFunction(() => Array.from(document.querySelector('[aria-label="Message text part"]')?.textContent ?? '').length === 8192);
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.waitForFunction(() => Array.from(globalThis.document.querySelector('[aria-label="Message text part"]')?.textContent ?? '').length === 8192);
+  assert.ok(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth));
   await page.getByRole("button", { name: "Next part", exact: true }).click();
   await page.getByText("Last part of the large message.", { exact: true }).waitFor();
   assert.equal(await page.locator('[aria-label="Message text part"]').count(), 1);
   await page.getByRole("button", { name: "Previous part", exact: true }).click();
-  await page.waitForFunction(() => Array.from(document.querySelector('[aria-label="Message text part"]')?.textContent ?? '').length === 8192);
+  await page.waitForFunction(() => Array.from(globalThis.document.querySelector('[aria-label="Message text part"]')?.textContent ?? '').length === 8192);
   assert.deepEqual(await page.evaluate(() => globalThis.fixture.contentRequests.map(input => input.offset)), [0, 8192, 0]);
   await page.getByRole("button", { name: "Close message", exact: true }).click();
   assert.equal(await page.locator('[aria-label="Message text part"]').count(), 0);
+  // Activity arrives without a new message-window version. Both the top-edge
+  // load and its keyboard/click fallback must preserve the message being read.
+  await page.getByRole("button", { name: "Activity chat" }).click();
+  await page.waitForFunction(() => globalThis.fixture.controller.getSnapshot().conversationId === "activity" && globalThis.fixture.controller.getSnapshot().status === "ready");
+  const activityMessageRequests = await page.evaluate(() => globalThis.fixture.requests.length);
+  const activityVersion = await page.evaluate(() => globalThis.fixture.controller.getSnapshot().version);
+  assert.equal(await page.evaluate(() => globalThis.fixture.activityPages), 0);
+  assert.ok(await page.getByRole("button", { name: "Load more activity" }).evaluate(button =>
+    Boolean(button.compareDocumentPosition(globalThis.document.querySelector("[data-display-message]")) & globalThis.Node.DOCUMENT_POSITION_FOLLOWING)));
+  await page.locator("#transcript").evaluate(element => { element.scrollTop = 40; });
+  await page.waitForFunction(() => globalThis.document.querySelector("#transcript").getAttribute("aria-busy") === "true");
+  const beforeActivity = await position();
+  await page.waitForFunction(() => globalThis.fixture.activityPages === 1);
+  await page.waitForTimeout(100);
+  const afterActivity = await position();
+  assert.equal(afterActivity.id, beforeActivity.id, JSON.stringify({ beforeActivity, afterActivity }));
+  assert.ok(Math.abs(afterActivity.offset - beforeActivity.offset) <= 2, JSON.stringify({ beforeActivity, afterActivity }));
+  assert.equal(await page.evaluate(() => globalThis.fixture.controller.getSnapshot().version), activityVersion);
+  assert.equal(await page.evaluate(() => globalThis.fixture.requests.length), activityMessageRequests);
+  assert.equal(await page.evaluate(() => globalThis.fixture.activityRequests), 1);
+  await page.locator("[data-activity-history]").evaluate(item => { item.style.height = "300px"; });
+  await page.waitForTimeout(150);
+  const resizedActivity = await position();
+  assert.equal(resizedActivity.id, afterActivity.id, JSON.stringify({ afterActivity, resizedActivity }));
+  assert.ok(Math.abs(resizedActivity.offset - afterActivity.offset) <= 2, JSON.stringify({ afterActivity, resizedActivity }));
+  await page.getByRole("button", { name: "Load more activity" }).evaluate(button => button.click());
+  await page.waitForFunction(() => globalThis.fixture.activityPages === 2);
+  await page.waitForTimeout(100);
+  const afterActivityClick = await position();
+  assert.equal(afterActivityClick.id, afterActivity.id, JSON.stringify({ afterActivity, afterActivityClick }));
+  assert.ok(Math.abs(afterActivityClick.offset - afterActivity.offset) <= 2, JSON.stringify({ afterActivity, afterActivityClick }));
+  assert.equal(await page.getByRole("button", { name: "Load more activity" }).count(), 0);
+  await page.locator("#transcript").evaluate(element => { element.scrollTop = 0; });
+  await page.waitForFunction(version => globalThis.fixture.controller.getSnapshot().version > version, activityVersion);
   // Separate frontend metrics: synthetic page reads, no production HTTP or database timing.
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Performance.enable");
@@ -109,6 +143,9 @@ try {
   const report = { browser: "Chromium", viewport: 390, initialRequests: 1, initialMessages: 20,
     maximumRenderedMessages: 60, prependAnchorDriftPixels: Math.abs(after.offset - before.offset),
     delayedLayoutAnchorDriftPixels: Math.abs(resized.offset - after.offset),
+    activityScrollAnchorDriftPixels: Math.abs(afterActivity.offset - beforeActivity.offset),
+    activityButtonAnchorDriftPixels: Math.abs(afterActivityClick.offset - afterActivity.offset),
+    activityResizeAnchorDriftPixels: Math.abs(resizedActivity.offset - afterActivity.offset),
     switchCancellation: "passed", keyboardFocus: "passed", responsiveWidth: "passed",
     largeMessageText: { automaticReads: 0, maximumRetainedCharacters: 8192, navigation: "passed", responsiveWidth: "passed" }, frontend,
     limitation: "Synthetic SDK component with direct page fixtures; React development build. Browser heap includes Vite/React. Does not measure HTTP, production data, model streaming or Flutter rendering." };

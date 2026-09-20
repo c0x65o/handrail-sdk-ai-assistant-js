@@ -47,9 +47,11 @@ function PagedConversationTranscript({ session, state, proposals, includeToolRes
   return <ConversationDisplayTranscript {...props} controller={session.window} conversationId={snapshot.conversationId}
     manageSelection={false} positions={positions} pollingMilliseconds={0} onFollowingLatestChange={value => session.setFollowingLatest(value)}
     {...(session.supportsMessageText ? { readMessageText: session.readMessageText } : {})}
+    {...(snapshot.hasMoreRelated ? { olderActivity: { load: () => session.loadMoreRelated(), disabled: snapshot.loading, error: snapshot.error !== null } } : {})}
+    contentVersion={snapshot.related} renderBeforeMessage={record => before.get(record.id)}
     emptyState={emptyState} renderMessage={record => {
       const message = state.messages.find(message => message.message_id === record.id) ?? record.value;
-      return <>{before.get(record.id)}{message ? renderMessage?.(message) ?? <Message message={message}/> : null}</>;
+      return message ? renderMessage?.(message) ?? <Message message={message}/> : null;
     }}>
     {pending}{snapshot.loading && snapshot.window.status === "empty" && <p role="status">Loading conversation…</p>}
     {snapshot.error && <div role="alert"><p>{snapshot.error.message}</p>
@@ -58,7 +60,6 @@ function PagedConversationTranscript({ session, state, proposals, includeToolRes
     {session.supportsRecordText && <ConversationDeferredRecords conversationId={snapshot.conversationId}
       generation={snapshot.window.generation} records={snapshot.related} read={session.readRecordText}
       onRefresh={() => { void session.showLatestRelated().catch(() => undefined); }}/>}
-    {snapshot.hasMoreRelated && <button type="button" onClick={() => { void session.loadMoreRelated().catch(() => undefined); }}>Load more activity</button>}
     {snapshot.relatedTruncated && <p>Showing part of this chat’s activity. <button type="button"
       onClick={() => { void session.showLatestRelated().catch(() => undefined); }}>Show latest activity</button></p>}
     {snapshot.hasPendingSubmission && <button type="button" disabled={snapshot.submitting}

@@ -11,7 +11,7 @@ const capabilities: ApplicationGatewayCapabilities = { protocolVersion: APPLICAT
   resources: { conversations: true, approvals: true, titleGeneration: false },
   displayHistory: { version: 1, maximumPageSize: 50, maximumPageBytes: 262144, control: true } };
 function gateway(options: { large?: boolean; activity?: boolean; citation?: boolean } = {}) {
-  const requests: { path: string; operation: string; input: any; bytes: number }[] = [];
+  const requests: { path: string; operation: string; input: Record<string, unknown>; bytes: number }[] = [];
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
     const path = new URL(String(url)).pathname, body = JSON.parse(String(init?.body)), input = body.input ?? body;
     let value: unknown;
@@ -88,6 +88,29 @@ it("keeps the transcript usable while a source arrives on a later activity page"
     await waitFor(() => expect(client.conversation!.getSnapshot().citations).toHaveLength(1));
     expect(client.conversation!.getSnapshot().citation_sources[0]?.label).toBe("Loaded source");
     expect(screen.queryByText("Some citation sources are not loaded in this activity window.")).toBeNull();
+    view.unmount();
+  } finally { await client.dispose(); }
+});
+
+it("places activity paging above history and loads activity on an upward scroll before older messages", async () => {
+  const f = gateway({ citation: true });
+  const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", fetch: f.fetcher, capabilities,
+    conversations: { mode: "single", conversationId: "single" as never, clientId: "client" as never } });
+  try {
+    const view = render(<ConversationProvider runtime={client.conversation!}><StyledChatPreset/></ConversationProvider>);
+    const more = await screen.findByRole("button", { name: "Load more activity" });
+    const transcript = screen.getByRole("region", { name: "Conversation transcript" });
+    const first = view.container.querySelector("[data-display-message]")!;
+    expect(more.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    Object.defineProperties(transcript, { scrollHeight: { configurable: true, value: 2000 }, clientHeight: { configurable: true, value: 500 } });
+    fireEvent.scroll(transcript, { target: { scrollTop: 1500 } });
+    expect(f.requests.filter(request => request.input.view)).toHaveLength(1);
+    fireEvent.scroll(transcript, { target: { scrollTop: 0 } });
+    await waitFor(() => expect(client.conversation!.getSnapshot().citations).toHaveLength(1));
+    expect(f.requests.filter(request => request.operation === "page" && !request.input.view)).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Load more activity" })).toBeNull();
+    fireEvent.scroll(transcript, { target: { scrollTop: 0 } });
+    await screen.findByText("single saved 141");
     view.unmount();
   } finally { await client.dispose(); }
 });

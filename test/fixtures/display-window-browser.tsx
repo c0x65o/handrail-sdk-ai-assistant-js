@@ -17,6 +17,7 @@ const record = (index: number, conversation: string): ConversationDisplayRecord 
     content: [{ type: "text", text: `${conversation}: message ${index}\n${"Variable height message content.\n".repeat(index % 4 + 1)}` }] } });
 let total = 1000;
 let delay = 15;
+let activityRequests = 0;
 const controller = new ConversationDisplayWindow({ pageSize: 20, maximumMessages: 60, reader: {
   async page(input, signal) {
     requests.push(input);
@@ -36,11 +37,21 @@ const controller = new ConversationDisplayWindow({ pageSize: 20, maximumMessages
 } });
 function App() {
   const [conversation, setConversation] = useState("chat");
-  Object.assign(globalThis, { fixture: { controller, requests, contentRequests, setConversation, setTotal: (value: number) => { total = value; },
+  const [activityPages, setActivityPages] = useState(0);
+  Object.assign(globalThis, { fixture: { controller, requests, contentRequests, activityRequests, activityPages, setConversation, setTotal: (value: number) => { total = value; },
     setDelay: (value: number) => { delay = value; } } });
   return <><button onClick={() => setConversation("slow")}>Slow chat</button><button onClick={() => setConversation("fast")}>Fast chat</button>
     <button onClick={() => setConversation("large")}>Large chat</button>
+    <button onClick={() => { setActivityPages(0); activityRequests = 0; setConversation("activity"); }}>Activity chat</button>
     <ConversationDisplayTranscript controller={controller} conversationId={conversation} pollingMilliseconds={0} id="transcript"
+      contentVersion={activityPages}
+      {...(conversation === "activity" && activityPages < 2 ? { olderActivity: { load: async () => {
+        activityRequests++;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        setActivityPages(value => value + 1);
+      } } } : {})}
+      renderBeforeMessage={record => conversation === "activity" && activityPages > 0 && record.id === controller.getSnapshot().records[0]?.id
+        ? <div data-activity-history style={{ height: activityPages * 180 }}>Earlier activity</div> : null}
       readMessageText={readMessageText} renderMessage={record => <p>{record.value?.content.map(part => part.type === "text" ? part.text : "").join("")}</p>}/></>;
 }
 createRoot(document.getElementById("root")!).render(<App/>);

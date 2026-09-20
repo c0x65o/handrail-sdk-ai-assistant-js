@@ -257,6 +257,11 @@ deferred-content renderer. It provides foreground polling, older/newer scroll
 loading, keyboard-accessible load/retry/jump controls, message-based anchoring
 and delayed layout anchoring. DOM size is bounded by the retained window; it does
 not estimate off-screen heights. Its default cache holds at most 32 anchors.
+The standard transcript pages older activity at the top before requesting older
+messages, with a keyboard-accessible activity button above the history. Activity
+requests are deduplicated and failures wait for an explicit retry. Custom display
+transcripts can supply `olderActivity`, `contentVersion`, and `renderBeforeMessage`
+to retain message anchors when separately paged activity is inserted above them.
 An account-scoped position store can replace it; the default is not durable.
 It never manufactures a partial canonical `ConversationState`.
 
