@@ -99,6 +99,22 @@ it("retains the chosen mode with the request and rejects invalid modes", () => {
   expect(composerApprovalModeFromRequest(request)).toBeUndefined();
   expect(() => composerApprovalModeFromRequest({ metadata: { handrail_approval_mode: "anything" } })).toThrow();
 });
+it.each(["running", "waiting for approval"])("allows choosing auto-approval for the next message while %s", (phase) => {
+  const onApprovalModeChange = vi.fn();
+  render(<StandardChatComposer composer={{ ...composer(), isSending: phase === "running" }}
+    canStop={phase === "running"} onApprovalModeChange={onApprovalModeChange} voiceControls={null}/>);
+  fireEvent.click(screen.getByRole("button", { name: "Approval settings" }));
+  expect((screen.getByRole("switch") as HTMLInputElement).disabled).toBe(false);
+  expect(screen.getByText("Applies to your next message. Running requests and pending approvals keep their original setting.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("switch"));
+  expect(onApprovalModeChange).toHaveBeenCalledWith("automatic");
+});
+it("keeps approval preference read-only when the host has not connected a change handler", () => {
+  render(<StandardChatComposer composer={composer()} voiceControls={null}/>);
+  fireEvent.click(screen.getByRole("button", { name: "Approval settings" }));
+  expect((screen.getByRole("switch") as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByText("Approval settings are managed by this application.")).toBeTruthy();
+});
 it("dictates into the latest draft, blocks submission, and aborts on unmount", () => {
   const instances: FakeRecognition[] = [];
   class FakeRecognition {

@@ -2,6 +2,7 @@ import { ConversationPagedApprovalReview } from "../react/paged-approval-review.
 import type { ConversationPresentationRuntime as ConversationRuntime } from "../conversation/presentation.js";
 import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
 import { ConversationActivityCard, HANDRAIL_ACTIVITY_CSS } from "./activity.js";
+import { ConversationRequestStatus, REQUEST_STATUS_CSS } from "./request-status.js";
 import { createInitialConversationState } from "../conversation/state.js";
 import { ConversationPendingApprovals } from "../react/pending-approvals.js";
 import { ConversationTranscript } from "../react/conversation-transcript.js";
@@ -261,7 +262,7 @@ export const handrailChatPresetCss = `
 .hr-chat__workspace-picker{align-items:flex-start;display:flex;gap:.4rem;position:relative}.hr-chat__workspace-picker summary{background:var(--hr-panel,#f6f7fb);border:1px solid var(--hr-border,#dfe3eb);border-radius:9px;cursor:pointer;list-style:none;padding:.55rem .7rem}.hr-chat__workspace-picker summary::-webkit-details-marker{display:none}.hr-chat__workspace-picker ul{background:var(--hr-bg,#fff);border:1px solid var(--hr-border,#dfe3eb);border-radius:10px;box-shadow:0 12px 35px #17192724;display:grid;gap:.2rem;inset-block-start:calc(100% + .35rem);inset-inline-end:0;list-style:none;margin:0;max-block-size:20rem;min-inline-size:18rem;overflow:auto;padding:.4rem;position:absolute;z-index:10}.hr-chat__workspace-picker li{align-items:center;display:flex;margin:0;padding:0}.hr-chat__workspace-picker li button:first-child{align-items:center;display:flex;flex:1;inline-size:100%;justify-content:space-between;max-inline-size:none;text-align:start}.hr-chat__workspace-picker small{color:var(--hr-muted,#687083);margin-inline-start:.5rem}.hr-chat__workspace-picker [data-turn-status=running] small{color:var(--hr-activity)}.hr-chat__empty{display:grid;min-block-size:12rem;place-items:center;padding:1rem}
 .hr-chat__pending-approvals{max-block-size:50vh;overflow:auto;overflow-wrap:anywhere;padding:.75rem;border-block-start:1px solid var(--hr-border)}.hr-chat__pending-approvals ul{padding-inline-start:1.5rem}.hr-chat__approvals{display:grid;gap:.5rem}.hr-chat .hr-chat__approval{background:var(--hr-bg);border:1px solid var(--hr-border);border-radius:var(--hr-radius-control);display:grid;gap:.75rem;padding:1rem;inline-size:auto;white-space:normal}.hr-chat__approval>strong{font-size:1.05em}.hr-chat__approval-status{color:var(--hr-muted);font-size:.9em}.hr-chat__approval details{min-inline-size:0}.hr-chat__approval summary{cursor:pointer;font-weight:600}.hr-chat__approval details[open]>summary{margin-block-end:.75rem}.hr-chat__approval-actions{display:flex;flex-wrap:wrap;gap:.5rem;border-block-start:1px solid var(--hr-border);padding-block-start:.75rem}.hr-chat__approval-error{color:var(--hr-danger)}
 .hr-chat__message-actions{align-items:center;flex-wrap:wrap;gap:.25rem}
-` + HANDRAIL_CONVERSATION_HISTORY_CSS + HANDRAIL_STRUCTURED_DETAILS_CSS + HANDRAIL_ACTIVITY_CSS + ATTACHMENT_IMAGE_CSS;
+` + HANDRAIL_CONVERSATION_HISTORY_CSS + HANDRAIL_STRUCTURED_DETAILS_CSS + HANDRAIL_ACTIVITY_CSS + REQUEST_STATUS_CSS + ATTACHMENT_IMAGE_CSS;
 
 export function StyledChatPresetStyles(): ReactNode {
   return <style data-handrail-ai-preset={HANDRAIL_CHAT_PRESET_VERSION}>{handrailChatPresetCss}</style>;
@@ -295,6 +296,18 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
   const session = useContext(ConversationContext)?.runtime?.displaySession;
   const approvalReview = useConversationApprovals(props.approvalResources ?? null, resolvedState?.conversation_id ?? null, session);
   const proposals = props.proposals ?? (props.approvalResources ? approvalReview.proposals : resolvedState?.approval_proposals);
+  const statusRoot = useRef<HTMLDivElement>(null);
+  const subscribeApprovals = useCallback((notify: () => void) => session?.subscribe(notify) ?? (() => undefined), [session]);
+  const getPendingApprovals = useCallback(() => session?.getSnapshot().control?.hasPendingApprovals ?? false, [session]);
+  const hasPendingApprovals = useSyncExternalStore(subscribeApprovals, getPendingApprovals, getPendingApprovals);
+  const reviewNextApproval = () => {
+    const chat = statusRoot.current?.closest(".hr-chat");
+    const card = chat?.querySelector<HTMLElement>('[data-pending-approval="true"]');
+    if (card) { card.scrollIntoView({ block: "nearest" }); card.focus({ preventScroll: true }); return; }
+    const inbox = chat?.querySelector<HTMLButtonElement>(".hr-chat__pending-approvals>button");
+    if (inbox?.getAttribute("aria-expanded") === "false") inbox.click();
+    inbox?.focus();
+  };
   const activity = props.activity;
   const subscribeActivity = useCallback((notify: () => void) =>
     activity?.subscribe(notify) ?? (() => undefined), [activity]);
@@ -334,6 +347,7 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
     <main className="hr-chat__body">
       {resolvedState && <ConversationTranscript state={resolvedState} className="hr-chat__transcript" role="region" includeActivity
         renderActivity={group => <ConversationActivityCard state={resolvedState} group={group}
+          proposals={proposals}
           display={props.toolActivity ?? "collapsed"} renderDetails={props.renderToolActivity}
           activity={group.turnId === (currentActivity?.turnId ?? latestTurn?.turn_id) ? currentActivity : undefined}/>}
         {...(proposals ? { proposals } : {})} emptyState={props.emptyState}
@@ -344,8 +358,9 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
           const context: StyledApprovalRenderContext = { state: resolvedState, busy: approvalReview.busy !== null,
             readOnly: Boolean(props.readOnly || !props.approvalResources || approvalReview.error),
             decide: async status => { if (!props.readOnly && !approvalReview.error) await approvalReview.decide(proposal, status); } };
-          return props.renderApproval ? props.renderApproval(proposal, context)
-            : <StandardApprovalCard proposal={proposal} context={context}/>;
+          return <div data-pending-approval={proposal.status === "pending"} tabIndex={-1}>
+            {props.renderApproval ? props.renderApproval(proposal, context)
+              : <StandardApprovalCard proposal={proposal} context={context}/>}</div>;
         }}
         renderMessage={message => props.renderConversationMessage ? props.renderConversationMessage(message, resolvedState)
           : <div className="hr-chat__message-row">
@@ -384,6 +399,10 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
     </main>
     {(props.approvals || props.citations) && <aside className="hr-chat__aux">{props.readOnly
       ? <fieldset disabled style={{ border: 0, margin: 0, padding: 0 }}>{props.approvals}</fieldset> : props.approvals}{props.citations}</aside>}
+    <div ref={statusRoot} style={{ flex: "none" }}><ConversationRequestStatus state={resolvedState} proposals={proposals ?? []}
+      activity={currentActivity} hasPendingApprovals={hasPendingApprovals} savingDecision={approvalReview.busy !== null}
+      onReview={!props.readOnly && (proposals?.some(proposal => proposal.status === "pending") || hasPendingApprovals)
+        ? reviewNextApproval : undefined}/></div>
     {props.readOnly ? <p className="hr-history__notice">Archived conversations are read-only. Restore this conversation to continue.</p>
       : <StandardChatComposer key={resolvedState?.conversation_id ?? "unselected"} {...(props.composer ? { composer: props.composer } : {})} canStop={canStop}
       placeholder={labels.placeholder} labels={labels}

@@ -19,6 +19,30 @@ paused turn. React and Flutter treat it as resting: no busy/Stop state or error,
 and a comment can be sent without deciding, replacing or deleting the proposal.
 Large formatted details stay collapsed under the shared disclosure policy.
 
+The React preset also keeps the current request status above the composer,
+outside the scrolling transcript. Pending proposals take precedence over a
+stale working indicator, and Review next focuses the next loaded approval or
+opens the pending-approvals inbox for actions outside the display window.
+Saving a decision, running approved changes, continuation, completion, failure
+and cancellation remain distinct. A completed action does not mark the whole
+request complete. Counts are shown only for a complete proposal list; a partial
+display window never presents its loaded count as the conversation total.
+
+The composer approval preference can be changed while a request is running.
+It applies to the next submitted message; admitted requests and existing
+proposals retain their original policy. A host that supplies no preference
+change handler still exposes a read-only control. This React presentation
+change requires a new committed SDK pin and matching lockfile in each web
+consumer before deployment. It does not change Flutter widgets or the server's
+authorization policy.
+
+Run `node scripts/check-approval-progress.mjs` for synthetic browser qualification
+at 390, 667 and 1280 pixels. It exercises scrolling, successive approvals,
+rejection, continuation, completion, the auto-approve switch and draft retention.
+`HANDRAIL_TEST_CHROMIUM` selects an installed browser and
+`HANDRAIL_APPROVAL_SCREENSHOT_DIR` optionally saves screenshots. Environments
+with long temporary directory paths may need `TMPDIR=/tmp` for Chromium sockets.
+
 Only a saved explicit confirmation or rejection wakes a paused turn. Current
 conversation access is checked before resumption, then normal tool permissions,
 reviewed argument binding and execution ledgers apply at dispatch. Repeated

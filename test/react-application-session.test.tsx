@@ -10,7 +10,7 @@ const capabilities: ApplicationGatewayCapabilities = { protocolVersion: APPLICAT
   authoritativeCancellation: false, attachments: false, presence: false, activity: false, synchronization: false,
   resources: { conversations: true, approvals: true, titleGeneration: false },
   displayHistory: { version: 1, maximumPageSize: 50, maximumPageBytes: 262144, control: true } };
-function gateway(options: { large?: boolean; activity?: boolean; citation?: boolean } = {}) {
+function gateway(options: { large?: boolean; activity?: boolean; citation?: boolean; pending?: boolean } = {}) {
   const requests: { path: string; operation: string; input: Record<string, unknown>; bytes: number }[] = [];
   const fetcher = vi.fn<typeof fetch>(async (url, init) => {
     const path = new URL(String(url)).pathname, body = JSON.parse(String(init?.body)), input = body.input ?? body;
@@ -22,9 +22,12 @@ function gateway(options: { large?: boolean; activity?: boolean; citation?: bool
       if (!path.endsWith("/conversations/history")) throw new Error(`Unexpected full-history endpoint: ${path}`);
       const header = { schemaVersion: 1, status: "ready", conversationId: input.conversationId, generation: 0,
         revision: 200, canonicalRevision: 200, activeTurnId: null };
-      if (body.operation === "control") value = { ...header, activeTurn: null, latestTurn: null, requestedTurn: null };
+      if (body.operation === "control") value = { ...header, activeTurn: null, latestTurn: null, requestedTurn: null,
+        ...(options.pending ? { hasPendingApprovals: true } : {}) };
       else if (body.operation === "content") value = { encoding: "plain-text", text: "Expanded message text", revision: 200, nextOffset: null };
       else if (body.operation === "changes") value = { ...header, records: [], nextCursor: null, throughRevision: 200 };
+      else if (input.view?.type === "pending_approvals") value = { ...header, records: [{ kind: "approval", id: "old-approval", turnId: "old-turn",
+        revision: 1, bytes: 200, deferred: false, value: { proposal_id: "old-approval", tool_name: "update_device", status: "pending" } }], nextCursor: null };
       else if (input.view?.type === "context") {
         const page = Number(input.cursor ?? 0);
         value = { ...header, records: options.activity ? Array.from({ length: 30 }, (_, i) => ({ kind: "source", id: `source-${page * 30 + i}`,
@@ -49,6 +52,23 @@ function gateway(options: { large?: boolean; activity?: boolean; citation?: bool
   });
   return { requests, fetcher };
 }
+
+it("keeps unloaded approvals visible and opens their inbox from the fixed request status", async () => {
+  const f = gateway({ pending: true });
+  const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", fetch: f.fetcher,
+    capabilities: { ...capabilities, displayHistory: { version: 1, maximumPageSize: 50, maximumPageBytes: 262144, control: true, pendingApprovals: true } },
+    conversations: { mode: "single", conversationId: "single" as never, clientId: "client" as never } });
+  try {
+    render(<ConversationProvider runtime={client.conversation!}><StyledChatPreset includeStyles={false}/></ConversationProvider>);
+    const status = await screen.findByRole("region", { name: "Current request" });
+    expect(status.textContent).toContain("Waiting for approval");
+    expect(client.conversation!.getSnapshot().approval_proposals).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Review next" }));
+    await screen.findByRole("button", { name: "Review update_device" });
+    expect(screen.getByRole("button", { name: "Close pending approvals" })).toBe(document.activeElement);
+    expect(f.requests.some(request => request.input.view && (request.input.view as { type: string }).type === "pending_approvals")).toBe(true);
+  } finally { cleanup(); await client.dispose(); }
+});
 
 it("uses negotiated large text and bounded activity navigation through the standard preset", async () => {
   const f = gateway({ large: true, activity: true });

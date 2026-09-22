@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import type { } from "../conversation/state.js";
 import type { ConversationActivityRecord } from "../conversation/activity.js";
 import type { ConversationActivityGroup } from "../conversation/timeline.js";
+import type { ConversationApprovalProposalRecord } from "../conversation/state.js";
 import { projectToolActivity, type ToolActivitySnapshot } from "../conversation/tool-activity.js";
 import { structuredDetailLabel } from "../react/structured-details.js";
 
@@ -10,22 +11,28 @@ const labels = { pending: "Queued", running: "Running", awaiting_approval: "Wait
   completed: "Completed", failed: "Failed", cancelled: "Stopped", incomplete: "No result recorded" };
 
 /** One inline request group; raw tool arguments/results never enter the activity summary. */
-export function ConversationActivityCard({ state, group, display = "collapsed", activity: remote, renderDetails }: {
+export function ConversationActivityCard({ state, group, display = "collapsed", activity: remote, proposals, renderDetails }: {
   readonly state: ConversationState;
   readonly group: ConversationActivityGroup;
   readonly display?: "collapsed" | "expanded" | "hidden";
   readonly activity?: ConversationActivityRecord | undefined;
+  readonly proposals?: readonly ConversationApprovalProposalRecord[] | undefined;
   readonly renderDetails?: ((activity: ToolActivitySnapshot) => ReactNode) | undefined;
 }) {
   const [open, setOpen] = useState(display === "expanded");
   const activity = projectToolActivity(state, group.turnId);
   const turn = state.turns.find(turn => turn.turn_id === group.turnId);
-  const waiting = turn?.status === "waiting_for_approval" || activity.awaitingApproval > 0;
+  const approvals = (proposals ?? state.approval_proposals).filter(proposal => group.turnIds.includes(proposal.turn_id));
+  const currentApprovals = approvals.filter(proposal => proposal.turn_id === group.turnId);
+  const decided = currentApprovals.length > 0 && currentApprovals.every(proposal => proposal.status !== "pending");
+  const waiting = approvals.some(proposal => proposal.status === "pending")
+    || !decided && (turn?.status === "waiting_for_approval" || activity.awaitingApproval > 0);
   const stopped = turn?.status === "cancelled";
   const failed = turn?.status === "failed";
   const terminal = stopped || failed || turn?.status === "completed" && turn.outcome !== "tool_calls";
   const active = !waiting && !terminal && (state.active_turn_id === group.turnId ||
-    !!activity.running || !!activity.pending || turn?.outcome === "tool_calls" || remote?.turnStatus === "running");
+    !!activity.running || !!activity.pending || turn?.outcome === "tool_calls" || remote?.turnStatus === "running"
+    || turn?.status === "waiting_for_approval" && decided);
   const streaming = active && state.messages.some(message => message.role === "assistant" &&
     group.turnIds.includes(message.turn_id ?? "") && message.content.some(part => part.type === "text" && part.text.length > 0));
   // Quiet text-only completed turns don't need a permanent activity card.

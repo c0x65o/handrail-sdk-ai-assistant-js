@@ -45,7 +45,7 @@ export function ComposerApprovalControl({ approvalMode = "required", onApprovalM
         disabled={disabled || !onApprovalModeChange} onChange={(event) => onApprovalModeChange?.(event.target.checked ? "automatic" : "required")}/></label>
       <p>{approvalMode === "automatic" ? "Add, edit, and delete without asking each time, within your account permissions."
         : "Review and approve additions, edits, and deletions before they run."}</p>
-      <p>{onApprovalModeChange ? "Applies to your next message. Changes already running keep their original setting."
+      <p>{onApprovalModeChange ? "Applies to your next message. Running requests and pending approvals keep their original setting."
         : "Approval settings are managed by this application."}</p>
     </div>}
   </div>;
@@ -198,7 +198,7 @@ export function StandardChatComposer(props: StandardChatComposerProps) {
         {props.attachmentsEnabled !== false && <><FileInput ref={input} hidden disabled={intakeDisabled}/>
           <button className="hr-composer__icon" type="button" aria-label={props.labels?.attach ?? "Add files and images"}
             title={props.labels?.attach ?? "Add files and images"} disabled={intakeDisabled} onClick={() => input.current?.click()}><ComposerIcon name="plus"/></button></>}
-        {props.showApprovalControl !== false && <ComposerApprovalControl {...props} disabled={Boolean(props.composer?.isSending || props.canStop)}/>}
+        {props.showApprovalControl !== false && <ComposerApprovalControl {...props}/>}
         <div className="hr-composer__spacer"/>
         <div className="hr-composer__voice">{props.voiceControls !== undefined ? props.voiceControls
           : props.transcription === false ? null
