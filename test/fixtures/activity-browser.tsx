@@ -7,6 +7,7 @@ function snapshot(stage: number) {
   const payloads: object[] = [
     { type: "message.created", message_id: "question", role: "user", content: [{ type: "text", text: "What is the income this month?" }] },
     { type: "turn.started", turn_id: "turn", input_message_ids: ["question"] },
+    { type: "turn.status_changed", turn_id: "turn", status: "running" },
   ];
   if (stage >= 1) for (let i = 0; i < 20; i++) {
     payloads.push({ type: "tool_call.requested", turn_id: "turn", tool_call_id: `call-${i}`, name: i === 0 ? "read_profit_and_loss" : `check_revenue_source_${i}`, arguments: { private: "DO_NOT_RENDER" } },

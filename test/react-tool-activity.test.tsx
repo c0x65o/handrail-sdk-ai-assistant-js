@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { ToolActivity } from "../src/react/tool-activity.js";
 import { StyledChatPreset } from "../src/react-styled/index.js";
 import { projectToolActivity } from "../src/conversation/tool-activity.js";
 import { createInitialConversationState, type ConversationState } from "../src/conversation/state.js";
 import { parseConversationEvent } from "../src/conversation/events.js";
 import { reduceConversationEvent } from "../src/conversation/reducer.js";
+
+afterEach(cleanup);
 
 function history(payloads: object[]): ConversationState {
   return payloads.reduce<ConversationState>((state, payload, index) => reduceConversationEvent(state, parseConversationEvent({
@@ -118,7 +120,8 @@ it("keeps one expanded group with its original question across tool continuation
   const text = view.container.querySelector(".hr-chat__transcript")!.textContent!;
   expect(text.indexOf("Activity complete")).toBeLessThan(text.indexOf("Here is the answer"));
   expect(text.indexOf("Here is the answer")).toBeLessThan(text.indexOf("Second question"));
-  expect(text.indexOf("Second question")).toBeLessThan(text.indexOf("Thinking…"));
+  expect(text).not.toContain("Thinking…");
+  expect(screen.getByRole("region", { name: "Current request" }).textContent).toContain("Queued…");
   expect(group.open).toBe(true);
   view.unmount();
   const restored = render(<StyledChatPreset state={completed}/>);

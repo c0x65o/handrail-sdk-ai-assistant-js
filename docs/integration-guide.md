@@ -116,6 +116,13 @@ registered through `rendererPlugins`. Unregistered results remain available to
 the runtime and tool activity; the styled UI does not dump their JSON into an
 assistant message. Intentional code blocks in assistant Markdown still render.
 
+The React preset shows live request status once, above the composer and outside
+the scrolling transcript. It distinguishes queued, thinking, tool execution,
+writing, approval review, and continuation. A saved approval shows “Continuing…”
+until execution starts; terminal results stop the activity animation. Safe remote
+progress summaries appear in this same status area. The transcript retains
+approval cards and expandable action history, without a separate Thinking card.
+
 ### Saved image attachments
 
 React presets render attachment cards even when filenames are absent. Supply

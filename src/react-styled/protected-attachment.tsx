@@ -65,15 +65,18 @@ export function ProtectedMessageAttachmentPreview({ attachment, conversationId, 
   const current = state.owner === active.current && state.owner?.loader === loadAttachment &&
     state.owner.conversation === conversationId && state.owner.attachment === attachmentId && state.owner.mediaType === mediaType &&
     state.owner.byteSize === byteSize ? state : null;
+  const downloadButton = <button type="button" disabled={current?.opening === true} onClick={() => { void download(); }}>
+    {current?.opening ? "Loading attachment…" : `Download ${name}`}
+  </button>;
+  const errorMessage = current?.error ? <small role="status">{current.error}</small> : null;
   return <span className="hr-chat__attachment-card">
-    {current?.url ? <AttachmentImage key={current.url} name={name} url={current.url} onError={() => setState((previous) => ({
+    {current?.url ? <AttachmentImage key={current.url} name={name} url={current.url}
+      footer={<>{downloadButton}{errorMessage}</>} onError={() => setState((previous) => ({
       owner: previous.owner, error: "Preview unavailable. Try again.",
     }))}/> : <strong aria-hidden="true">{mediaType === "application/pdf" ? "PDF" : "FILE"}</strong>}
     <span className="hr-chat__attachment-copy"><strong>{name}</strong><small>{mediaType}</small>
-      <button type="button" disabled={current?.opening === true} onClick={() => { void download(); }}>
-        {current?.opening ? "Loading attachment…" : `Download ${name}`}
-      </button>
-      {current?.error ? <><small role="status">{current.error}</small>
+      {(!image || (!current?.url && current?.error)) ? downloadButton : null}
+      {!current?.url && current?.error ? <>{errorMessage}
         {image && !current.url ? <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry preview</button> : null}</> : null}
     </span>
   </span>;

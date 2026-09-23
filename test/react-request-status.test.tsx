@@ -43,6 +43,8 @@ it("keeps successive approvals and continuation visible outside the transcript u
   view.rerender(<StyledChatPreset {...props} state={state} proposals={[proposal("one", "executed"), proposal("two")]}/>);
   expect(current().textContent).toContain("1 action needs your review");
   view.rerender(<StyledChatPreset {...props} state={state} proposals={[proposal("one", "executed"), proposal("two", "confirmed")]}/>);
+  expect(current().textContent).toContain("Continuing…");
+  view.rerender(<StyledChatPreset {...props} state={state} proposals={[proposal("one", "executed"), proposal("two", "executing")]}/>);
   expect(current().textContent).toContain("Running approved changes…");
   expect(within(current()).queryByRole("button")).toBeNull();
   view.rerender(<StyledChatPreset {...props} state={state} proposals={[proposal("one", "executed"), proposal("two", "executed")]}/>);
@@ -66,13 +68,13 @@ it("uses approval records when the loaded tool activity still looks like a runni
     { type: "turn.started", turn_id: "turn", input_message_ids: ["question"] });
   render(<StyledChatPreset state={state} proposals={[proposal("one")]} includeStyles={false} transcription={false}/>);
   expect(current().textContent).toContain("Waiting for approval");
-  expect(document.querySelector(".hr-activity")?.getAttribute("data-active")).toBe("false");
+  expect(document.querySelector(".hr-activity")).toBeNull();
 });
 
-it("shows an admitted running turn as working while its remote execution is active", () => {
+it("shows thinking after approved actions finish while the response is still running", () => {
   const state = advance(waiting(), { type: "turn.status_changed", turn_id: "turn", status: "running" });
   render(<StyledChatPreset state={state} proposals={[proposal("one", "executed")]} includeStyles={false} transcription={false}/>);
-  expect(current().textContent).toContain("Working…");
+  expect(current().textContent).toContain("Thinking…");
 });
 
 it("reports approvals outside a loaded window without presenting its partial count as the total", () => {
@@ -100,4 +102,87 @@ it.each(["failed", "cancelled", "completed"] as const)("honors %s over a stale r
   render(<StyledChatPreset state={state} proposals={[proposal("one", "confirmed")]} activity={activity} includeStyles={false} transcription={false}/>);
   expect(current().textContent).toContain(status === "failed" ? "Request failed" : status === "cancelled" ? "Request stopped" : "Request complete");
   expect(current().getAttribute("data-phase")).not.toBe("working");
+});
+
+it("uses one fixed status for queued, thinking, tool execution, writing and completion", () => {
+  let state = advance(createInitialConversationState("conversation" as never),
+    { type: "message.created", message_id: "question", role: "user", content: [{ type: "text", text: "Check the devices" }] },
+    { type: "turn.started", turn_id: "turn", input_message_ids: ["question"] });
+  const props = { includeStyles: false, transcription: false as const };
+  const view = render(<StyledChatPreset {...props} state={state}/>);
+  const transcript = screen.getByRole("region", { name: "Conversation transcript" });
+  expect(current().textContent).toContain("Queued…");
+  expect(transcript.contains(current())).toBe(false);
+  expect(transcript.querySelector(".hr-activity")).toBeNull();
+  state = advance(state, { type: "turn.status_changed", turn_id: "turn", status: "running" });
+  view.rerender(<StyledChatPreset {...props} state={state}/>);
+  expect(screen.getAllByText("Thinking…")).toHaveLength(1);
+  expect(within(current()).getByText("Thinking…")).toBeTruthy();
+  expect(within(transcript).queryByText("Thinking…")).toBeNull();
+  expect(screen.queryByText("Working…")).toBeNull();
+  state = advance(state,
+    { type: "tool_call.requested", turn_id: "turn", tool_call_id: "read", name: "read_devices", arguments: {} },
+    { type: "tool_call.started", turn_id: "turn", tool_call_id: "read" });
+  view.rerender(<StyledChatPreset {...props} state={state}/>);
+  expect(screen.getAllByText("Working…")).toHaveLength(1);
+  expect(within(current()).getByText("Working…")).toBeTruthy();
+  expect(within(transcript).getByText("Actions")).toBeTruthy();
+  expect(transcript.querySelector(".hr-activity__dots")).toBeNull();
+  state = advance(state,
+    { type: "tool_call.result_recorded", turn_id: "turn", tool_call_id: "read", content: [{ type: "text", text: "Ready" }], is_error: false },
+    { type: "message.text_appended", message_id: "answer", turn_id: "turn", text: "The devices are ready." });
+  view.rerender(<StyledChatPreset {...props} state={state}/>);
+  expect(screen.getAllByText("Writing response…")).toHaveLength(1);
+  expect(within(current()).getByText("Writing response…")).toBeTruthy();
+  expect(within(transcript).queryByText("Writing response…")).toBeNull();
+  state = advance(state, { type: "turn.completed", turn_id: "turn", outcome: "stop", output_message_ids: ["answer"] });
+  view.rerender(<StyledChatPreset {...props} state={state}/>);
+  expect(current().getAttribute("data-phase")).toBe("complete");
+  expect(current().textContent).not.toContain("•••");
+  expect(within(transcript).getByText("Activity complete")).toBeTruthy();
+});
+
+it("does not mistake earlier commentary for a response being written on the continuation", () => {
+  const state = advance(createInitialConversationState("conversation" as never),
+    { type: "turn.started", turn_id: "turn", input_message_ids: ["question"] },
+    { type: "message.text_appended", message_id: "commentary", turn_id: "turn", text: "I will check." },
+    { type: "turn.completed", turn_id: "turn", outcome: "tool_calls", output_message_ids: ["commentary"] },
+    { type: "turn.started", turn_id: "next", continuation_of_turn_id: "turn", input_message_ids: ["question"] },
+    { type: "turn.status_changed", turn_id: "next", status: "running" });
+  render(<StyledChatPreset state={state} includeStyles={false} transcription={false}/>);
+  expect(within(current()).getByText("Thinking…")).toBeTruthy();
+  expect(screen.queryByText("Writing response…")).toBeNull();
+});
+
+it("requires execution evidence before describing a confirmed approval as running", () => {
+  let state = advance(waiting(),
+    { type: "tool_call.requested", turn_id: "turn", tool_call_id: "one", name: "update_device", arguments: {} },
+    { type: "tool_call.approval_required", turn_id: "turn", tool_call_id: "one" });
+  const props = { proposals: [proposal("one", "confirmed")], includeStyles: false, transcription: false as const };
+  const view = render(<StyledChatPreset {...props} state={state}/>);
+  expect(current().textContent).toContain("Continuing…");
+  state = advance(state, { type: "tool_call.started", turn_id: "turn", tool_call_id: "one" });
+  view.rerender(<StyledChatPreset {...props} state={state}/>);
+  expect(current().textContent).toContain("Running approved changes…");
+  expect(screen.getAllByText("Running approved changes…")).toHaveLength(1);
+});
+
+it("keeps unknown remote activity in the fixed status without inserting a transcript card", () => {
+  const activity = new InMemoryConversationActivityStore();
+  activity.upsert({ conversationId: "conversation", turnId: "remote", turnStatus: "running", unread: false,
+    summary: "Checking device connections", progress: { completed: 2, total: 7, unit: "devices" } });
+  const view = render(<StyledChatPreset state={createInitialConversationState("conversation" as never)}
+    activity={activity} includeStyles={false} transcription={false}/>);
+  expect(current().textContent).toContain("Checking device connections (2/7 devices)");
+  expect(screen.getAllByText("Working…")).toHaveLength(1);
+  expect(view.container.querySelector(".hr-activity")).toBeNull();
+});
+
+it("keeps uncertain disconnected work visible without claiming it is executing", () => {
+  const started = advance(createInitialConversationState("conversation" as never),
+    { type: "turn.started", turn_id: "turn", input_message_ids: ["question"] });
+  const state = { ...started, active_turn_id: null };
+  render(<StyledChatPreset state={state} includeStyles={false} transcription={false}/>);
+  expect(current().textContent).toContain("Checking request status…");
+  expect(screen.queryByText("Working…")).toBeNull();
 });

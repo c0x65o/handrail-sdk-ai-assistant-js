@@ -18,9 +18,14 @@ export function ConversationRequestStatus({ state, proposals, activity, hasPendi
   const decisions = proposals.filter(proposal => proposal.turn_id === turn?.turn_id);
   const decided = decisions.length > 0 && decisions.every(proposal => proposal.status !== "pending");
   const waiting = pending.length > 0 || hasPendingApprovals || turn?.status === "waiting_for_approval" && !decided;
-  const executing = decisions.some(proposal => proposal.status === "confirmed" || proposal.status === "executing");
-  const remoteRunning = activity?.turnStatus === "running" && (!turn || activity.turnId !== turn.turn_id);
+  const executing = decisions.some(proposal => proposal.status === "executing" || proposal.status === "confirmed"
+    && tools.items.some(tool => tool.toolCallId === proposal.tool_call_id && tool.status === "running"));
+  const continuing = decisions.some(proposal => proposal.status === "confirmed")
+    || turn?.status === "waiting_for_approval" && decided || turn?.status === "completed" && turn.outcome === "tool_calls";
+  const remoteRunning = activity?.turnStatus === "running" && (!turn || activity.turnId !== undefined && activity.turnId !== turn.turn_id);
   const terminal = turn?.status === "failed" || turn?.status === "cancelled" || turn?.status === "completed" && turn.outcome !== "tool_calls";
+  const writing = state.messages.some(message => message.role === "assistant" && message.turn_id === turn?.turn_id
+    && message.content.some(part => part.type === "text" && part.text.length > 0));
   let phase: "saving" | "waiting" | "working" | "complete" | "attention";
   let title: string, detail: string;
   if (savingDecision) {
@@ -30,14 +35,19 @@ export function ConversationRequestStatus({ state, proposals, activity, hasPendi
     detail = pending.length > 0 && !state.partial
       ? `${pending.length} ${pending.length === 1 ? "action needs" : "actions need"} your review.`
       : "There are actions that need your review.";
-  } else if (turn?.remote_may_still_be_running && !state.active_turn_id) {
+  } else if (!terminal && turn?.remote_may_still_be_running && !state.active_turn_id && !executing && !continuing) {
     phase = "working"; title = "Checking request status…"; detail = "The assistant may still be working.";
-  } else if (remoteRunning || !terminal && (state.active_turn_id || executing || turn?.status === "waiting_for_approval" && decided
-    || turn?.status === "completed" && turn.outcome === "tool_calls")) {
+  } else if (remoteRunning || !terminal && (state.active_turn_id || executing || continuing
+    || turn?.status === "running" || turn?.status === "queued" || turn?.status === "waiting_for_tool_result")) {
     phase = "working";
-    title = executing ? "Running approved changes…" : turn?.status === "waiting_for_approval" || turn?.outcome === "tool_calls"
-      ? "Continuing…" : "Working…";
-    detail = "The request is still in progress.";
+    title = remoteRunning ? "Working…" : executing ? "Running approved changes…"
+      : tools.running || tools.pending || turn?.status === "waiting_for_tool_result" ? "Working…"
+        : continuing ? "Continuing…" : writing ? "Writing response…" : turn?.status === "queued" ? "Queued…" : "Thinking…";
+    const progress = activity?.progress;
+    detail = activity?.turnStatus === "running" && activity.summary
+      ? `${activity.summary}${progress ? ` (${progress.completed}/${progress.total}${progress.unit ? ` ${progress.unit}` : ""})` : ""}`
+      : title === "Queued…" ? "Waiting to start." : title === "Continuing…" ? "Waiting for the assistant to resume."
+        : "The request is still in progress.";
   } else if (turn?.status === "failed" || activity?.turnStatus === "error") {
     phase = "attention"; title = "Request failed"; detail = "Review the error in this conversation.";
   } else if (turn?.status === "cancelled") {
@@ -46,8 +56,6 @@ export function ConversationRequestStatus({ state, proposals, activity, hasPendi
     phase = tools.failed || tools.incomplete ? "attention" : "complete";
     title = phase === "attention" ? "Finished · some actions need attention" : "Request complete";
     detail = "The assistant has finished responding.";
-  } else if (turn) {
-    phase = "working"; title = "Working…"; detail = "The request is still in progress.";
   } else return null;
   return <section className="hr-chat__request-status" aria-label="Current request" data-phase={phase}>
     <div role="status" aria-live="polite" aria-atomic="true">

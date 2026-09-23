@@ -347,9 +347,7 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
     <main className="hr-chat__body">
       {resolvedState && <ConversationTranscript state={resolvedState} className="hr-chat__transcript" role="region" includeActivity
         renderActivity={group => <ConversationActivityCard state={resolvedState} group={group}
-          proposals={proposals}
-          display={props.toolActivity ?? "collapsed"} renderDetails={props.renderToolActivity}
-          activity={group.turnId === (currentActivity?.turnId ?? latestTurn?.turn_id) ? currentActivity : undefined}/>}
+          display={props.toolActivity ?? "collapsed"} renderDetails={props.renderToolActivity}/>}
         {...(proposals ? { proposals } : {})} emptyState={props.emptyState}
         includeToolResult={props.includeToolResult ?? (call => !!props.toolRendererKeys?.[call.name ?? ""])}
         renderToolResult={call => props.renderCompletedTool ? props.renderCompletedTool(call, resolvedState)
@@ -372,9 +370,6 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
               conversationId={resolvedState.conversation_id} disabled={!responseIsComplete(resolvedState, message)} reporting={props.badResponseReporting}/>}
           </div>}
         </div>}>
-          {currentActivity?.turnStatus === "running" && (!latestTurn || currentActivity.turnId && !resolvedState.turns.some(turn => turn.turn_id === currentActivity.turnId)) &&
-            <ConversationActivityCard state={resolvedState} group={{ id: "remote", turnId: currentActivity.turnId ?? "remote", turnIds: [] }}
-              activity={currentActivity} display={props.toolActivity ?? "collapsed"}/>}
           <TypingIndicator/>
         </ConversationTranscript>}
       {session && resolvedState && <ConversationPendingApprovals key={resolvedState.conversation_id ?? "unselected"} session={session}

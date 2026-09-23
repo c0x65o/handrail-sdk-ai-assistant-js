@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 export const ATTACHMENT_IMAGE_CSS = `
 .hr-attachment-image{display:inline-flex;min-width:0;flex-shrink:0}
@@ -8,19 +8,22 @@ dialog.hr-attachment-viewer{box-sizing:border-box;width:min(1100px,calc(100vw - 
 .hr-attachment-viewer::backdrop{background:#0009}
 .hr-attachment-viewer__header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--hr-border,#ddd)}
 .hr-attachment-viewer__header strong{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hr-attachment-viewer__header button{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:4px 8px;border:1px solid var(--hr-border,#ddd);border-radius:8px;background:var(--hr-panel,#f7f7f7);color:inherit;font:inherit;cursor:pointer}
+.hr-attachment-viewer__header button,.hr-attachment-viewer__footer button{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:4px 8px;border:1px solid var(--hr-border,#ddd);border-radius:8px;background:var(--hr-panel,#f7f7f7);color:inherit;font:inherit;cursor:pointer}
+.hr-attachment-viewer__footer{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid var(--hr-border,#ddd);overflow-wrap:anywhere}
+.hr-attachment-viewer__footer button{max-width:100%;white-space:normal}
 .hr-attachment-viewer button:focus-visible,.hr-attachment-image__open:focus-visible{outline:3px solid var(--hr-accent,#5577cc);outline-offset:2px}
 .hr-attachment-viewer__canvas{overflow:auto;height:min(75dvh,800px);background:#ededed}
 .hr-attachment-viewer__stage{display:grid;place-items:center;min-width:100%;min-height:100%}
 .hr-attachment-viewer .hr-attachment-viewer__stage img{display:block;width:100%;height:100%;max-width:none;max-height:none;object-fit:contain}
-@media(pointer:coarse){.hr-attachment-viewer__header button{min-width:44px;min-height:44px}}
+@media(pointer:coarse){.hr-attachment-viewer__header button,.hr-attachment-viewer__footer button{min-width:44px;min-height:44px}}
 `;
 
 /** Shared draft/saved image viewer. Native modal behavior supplies focus trapping and Escape. */
-export function AttachmentImage({ url, name, onError }: {
+export function AttachmentImage({ url, name, onError, footer }: {
   readonly url: string;
   readonly name: string;
   readonly onError: () => void;
+  readonly footer?: ReactNode;
 }) {
   const [openUrl, setOpenUrl] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -71,6 +74,7 @@ export function AttachmentImage({ url, name, onError }: {
         style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%` }}>
         <img src={url} alt={name} onError={() => { close(); onError(); }}/>
       </div></div>
+      {footer && <footer className="hr-attachment-viewer__footer">{footer}</footer>}
     </dialog>}
   </span>;
 }

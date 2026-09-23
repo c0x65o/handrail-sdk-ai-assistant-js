@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageAttachmentPreview, StyledChatPreset, ProtectedMessageAttachmentPreview, type MessageAttachmentLoader } from "../src/react-styled/index.js";
 import { createInitialConversationState } from "../src/conversation/state.js";
@@ -89,17 +89,24 @@ it.each(["account", "conversation", "unmount"])("aborts and ignores a late saved
 });
 
 it("reauthorizes an image download and cleans up its preview when scope changes", async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true; } });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false; } });
   const urls = objectUrls();
   const load = vi.fn<MessageAttachmentLoader>().mockResolvedValueOnce(new Uint8Array([1])).mockRejectedValueOnce(new Error("expired"))
     .mockResolvedValueOnce(new Uint8Array([2]));
   const file = { ...attachment, size_bytes: 1 };
   const view = render(<ProtectedMessageAttachmentPreview attachment={file} conversationId="first" loadAttachment={load}/>);
   await view.findByRole("img");
-  fireEvent.click(view.getByRole("button", { name: "Download Image" }));
-  await view.findByText("Attachment unavailable. Try again.");
+  expect(view.queryByRole("button", { name: "Download Image" })).toBeNull();
+  fireEvent.click(view.getByRole("button", { name: "Enlarge Image" }));
+  const preview = within(view.getByRole("dialog", { name: "Image image preview" }));
+  fireEvent.click(preview.getByRole("button", { name: "Download Image" }));
+  await preview.findByText("Attachment unavailable. Try again.");
   expect(urls.click).not.toHaveBeenCalled();
   view.rerender(<ProtectedMessageAttachmentPreview attachment={file} conversationId="second" loadAttachment={load}/>);
   await waitFor(() => expect(view.getByRole("img").getAttribute("src")).toBe("blob:attachment-2"));
+  expect(view.queryByRole("dialog")).toBeNull();
+  expect(view.queryByRole("button", { name: "Download Image" })).toBeNull();
   expect(urls.revoke).toHaveBeenCalledWith("blob:attachment-1");
   expect(load).toHaveBeenCalledTimes(3);
   view.unmount();
