@@ -28,13 +28,27 @@ and cancellation remain distinct. A completed action does not mark the whole
 request complete. Counts are shown only for a complete proposal list; a partial
 display window never presents its loaded count as the conversation total.
 
-The composer approval preference can be changed while a request is running.
-It applies to the next submitted message; admitted requests and existing
-proposals retain their original policy. A host that supplies no preference
-change handler still exposes a read-only control. This React presentation
-change requires a new committed SDK pin and matching lockfile in each web
-consumer before deployment. It does not change Flutter widgets or the server's
-authorization policy.
+The composer approval preference can be changed while a request is running or
+paused for approval. With the negotiated `resources.turnApprovalMode` capability,
+the shared web and Flutter workspaces update the exact current turn before updating
+the next-message preference. Turning it on confirms pending policy-based proposals
+for that turn and permits later policy-based changes. Turning it off requires
+approval for later changes; already approved or dispatched actions continue.
+Older pending turns are not swept into a new request's preference.
+
+The authenticated `POST /approvals/mode` route takes `conversationId` and `turnId`.
+Omit `mode` to read `{ mode, revision, active }`. To change it, supply `mode`
+(`required` or `automatic`), the read `expectedRevision`, and a unique `mutationId`.
+The server authorizes the conversation, saves the preference using CAS, attributes
+it to the authenticated user, and resumes pending work through the normal approval
+ledger. Retries are idempotent; stale changes conflict. The admitted request and
+its fingerprint stay immutable. The override survives restart. Mandatory approval
+and application permissions still apply; custom host approval policies do not
+advertise this capability. Older servers retain next-message-only behavior.
+
+Consumer adoption requires committed SDK SHAs and matching lockfiles for the
+server and web client, and the Flutter SDK for mobile. Local SDK edits alone do
+not change a deployed consumer.
 
 Run `node scripts/check-approval-progress.mjs` for synthetic browser qualification
 at 390, 667 and 1280 pixels. It exercises scrolling, successive approvals,

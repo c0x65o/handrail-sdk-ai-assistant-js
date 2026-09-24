@@ -17,7 +17,7 @@ export { createRecordFileTools, recordFileAttachmentReview, type RecordFileToolD
 import { createRecordFileTools, type RecordFileToolDestination } from "./record-file-tools.js";
 import { createRecordFileAttachments, createPostgresRecordFileAttachmentStore, type RecordFileAttachmentDestination } from "./record-file-attachments.js";
 import type { SavedFileHandles } from "./saved-file-handles.js";
-import { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
+import { assistantToolProposalId, createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime } from "./assistant-tool-runtime.js";
 import { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
 export { resumeExternalToolApprovals, type ExternalApprovalRuntimeFactory } from "./external-tool-approvals.js";
 export { createAssistantToolRuntime, assistantToolArgumentReference, type AssistantToolRuntime, type AssistantToolRuntimeOptions } from "./assistant-tool-runtime.js";
@@ -38,7 +38,7 @@ import { createAttachmentContentValidator, STANDARD_ATTACHMENT_MEDIA_TYPES } fro
 import { createAssistantConversationFiles, assistantConversationFileMaintenanceScope, type AssistantConversationFiles } from "./assistant-conversation-files.js";
 import { startPostgresConversationFileStagingCleanupWorker } from "../postgres/conversation-file-staging.js";
 export { createAssistantConversationFiles, type AssistantConversationFiles, type AssistantConversationFilesOptions } from "./assistant-conversation-files.js";
-import { composerApprovalModeFromRequest } from "../composer-approval.js";
+import { changeTurnApprovalMode, turnApprovalMode } from "./turn-approval-mode.js";
 import { createAssistantTranscription, type AssistantTranscriptionProvider } from "./transcription.js";
 import { DEFAULT_TRANSCRIPTION_HTTP_CAPABILITY } from "../transcription-http.js";
 export { openaiTranscription, createOpenAITranscriptionRequest, createOpenAIAudioTranscriber, type HandrailOpenAITranscriptionOptions } from "./openai-transcription.js";
@@ -415,17 +415,17 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             for (const admission of admissions) if ((await admission(input)).outcome !== "allow") return { outcome: "deny" as const };
             return { outcome: "allow" as const };
           } }),
-          approvalPolicy: options.approvalPolicy ?? (async ({ location, signal }) => {
-            // Read the admitted request, including during recovery. A later UI
-            // preference cannot alter an already running turn. This is only the
-            // confirmation policy; application/plugin authorization runs first.
+          approvalPolicy: options.approvalPolicy ?? (async ({ location, signal, toolCallId, definition, arguments: args }) => {
             if (!location) return "require_approval";
             signal.throwIfAborted();
             const document = await bundle.durableTurns.load(location.conversationId, location.turnId);
             signal.throwIfAborted();
-            const request = document?.record.request as ChatRequest | null | undefined;
-            return request && composerApprovalModeFromRequest(request) === "automatic"
-              ? "allow_without_approval" : "require_approval";
+            if (!document || turnApprovalMode(document.record).mode !== "automatic") return "require_approval";
+            // Saved proposals must still claim/settle their exact decision receipt,
+            // including rejected work. Never bypass them after a mode change.
+            const proposal = await approvalStoreFor(context).get({ permissionContext: context,
+              proposalId: assistantToolProposalId(location, { tool_call_id: toolCallId, name: definition.name, arguments: args }) as never });
+            return proposal ? "require_approval" : "allow_without_approval";
           }),
           ...(options.toolExecutorLimits === undefined ? {} : { executorLimits: options.toolExecutorLimits }),
           toolExecutionLedger: bundle.toolLedger,
@@ -499,6 +499,35 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "persistence", operation: "conversation_reconciliation",
       phase: "failed", conversationId, ...(turnId ? { turnId } : {}), code: "reconciliation_failed", retryable: true, cause }); }
   };
+  const approveAutomaticProposals = async (context: TContext, conversationId: string, signal?: AbortSignal) => {
+    if (options.approvalPolicy) return; // A host-owned approval policy remains authoritative.
+    const bundle = bundleFor(context), proposals = approvalStoreFor(context);
+    const application = await applicationFor(context);
+    const eligible = new Set(application.catalog({ context }).plugins.flatMap(plugin =>
+      plugin.approvals.filter(item => item.mode === "policy").map(item => item.toolName)));
+    for (const proposal of await proposals.listGroup({ permissionContext: context, groupId: conversationId as never })) {
+      signal?.throwIfAborted();
+      if (proposal.status !== "pending" || !eligible.has(proposal.tool_name)) continue;
+      const saved = await bundle.durableTurns.load(conversationId, proposal.turn_id);
+      const preference = saved?.record.approvalPreference;
+      if (!saved || !preference || preference.mode !== "automatic" || !turnApprovalMode(saved.record).active) continue;
+      const coordinator = createApprovalCoordinator<TContext>({ proposalStore: proposals, eventStore: bundle.events,
+        authorize: async () => {
+          await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
+          const current = await bundle.durableTurns.load(conversationId, proposal.turn_id);
+          return current?.record.approvalPreference?.revision === preference.revision &&
+            turnApprovalMode(current.record).active ? "allow" : "deny";
+        } });
+      const identity = `auto-approval:${proposal.proposal_id}:${preference.revision}`;
+      const result = await coordinator.decide({ permissionContext: context, conversationId: conversationId as never,
+        proposalId: proposal.proposal_id, expectedVersion: proposal.proposal_version, decision: "confirm",
+        attribution: { actor: { type: "user", id: preference.principalId as never }, source: { type: "runtime" } },
+        idempotencyKey: identity as never, idempotencyFingerprint: identity as never,
+        decisionReason: "Auto-approval enabled for this request", signal: signal ?? new AbortController().signal });
+      if (!["accepted", "already_decided", "forbidden", "conflict"].includes(result.outcome))
+        throw new Error("Automatic approval could not be saved");
+    }
+  };
   const continueApprovedTurns = async (context: TContext, conversationId: string, signal?: AbortSignal): Promise<{
     settled: boolean; started?: { conversationId: string; turnId: string };
   }> => withExecutionContext(context, async () => {
@@ -507,6 +536,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never });
     signal?.throwIfAborted();
     const bundle = bundleFor(context);
+    await approveAutomaticProposals(context, conversationId, signal);
     let settled = true;
     if (options.externalApprovalRuntimeFor) {
       try {
@@ -1112,6 +1142,13 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             },
           },
           approvals,
+          ...(!options.approvalPolicy ? { turnApprovalMode: async (input: import("../composer-approval.js").TurnApprovalModeInput, current: TContext) => {
+            if (!input || typeof input.conversationId !== "string") throw new ApprovalProposalStoreError("invalid_input", "transition");
+            await catalogFor(current).get({ authorizationContext: current, conversationId: input.conversationId as never });
+            const result = await changeTurnApprovalMode(input, current.principalId, bundleFor(current).durableTurns);
+            if (input.mode !== undefined) await continueApprovalsSafely(current, input.conversationId);
+            return result;
+          } } : {}),
           titleGeneration: { generate: generateTitle },
           handlers: { activity, ...(options.attachmentUpload === false ? {} : { attachments }), synchronization, presence,
             ...(options.attachmentDownloads === false ? {} : { attachment_download: attachmentDownload }),

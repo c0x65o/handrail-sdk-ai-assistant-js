@@ -1,3 +1,4 @@
+import { changeTurnApprovalMode } from "../src/server/turn-approval-mode.js";
 import { PGlite } from '@electric-sql/pglite';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -164,4 +165,69 @@ it.each([['confirmed', 'complete'], ['rejected', 'complete'], ['confirmed', 'run
     expect((await state()).active_turn_id).toBeNull();
     expect((await bundle.durableTurns.load('conversation', turnIds.original!))?.record).toMatchObject({ attempt: 2, approvalResumes: 1, lease: null });
   } finally { releaseComment(); await browser.dispose(); await assistant.stopBackgroundWorkers(); }
+}, 30_000);
+
+it.each(['paused', 'running'] as const)('enables automatic approval during a %s request and retains the setting after restart', async phase => {
+  const testContext = { ...context, tenantId: randomUUID() };
+  const bundle = persistence.forScope<HandrailAssistantAuthorizationContext>(testContext, {
+    createConversationId: () => 'conversation' as never, authorizeConversation: () => 'allow', authorizeApproval: () => 'allow' });
+  await bundle.catalog.create({ authorizationContext: testContext, idempotencyKey: 'new' as never });
+  const effect = vi.fn(async () => ({ saved: true }));
+  const plugin = createToolPlugin({ pluginId: 'test', version: '1.0.0', displayName: 'Test',
+    registrations: [{ definition: { name: 'save', description: 'Save', input_schema: { type: 'object', properties: {} } }, executor: effect }],
+    approvals: [{ toolName: 'save', mode: 'policy', summarize: () => 'Save change' }] });
+  let physical = 0, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const providerRequest = vi.fn(async function* () {
+    const number = ++physical;
+    if (number === 1 && phase === 'running') await gate;
+    if (number <= 2) {
+      yield { type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', id: `fc${number}`, call_id: `call${number}`, name: 'save', arguments: '' } };
+      yield { type: 'response.function_call_arguments.done', output_index: 0, item_id: `fc${number}`, arguments: '{}' };
+    } else yield { type: 'response.output_text.delta', delta: 'Saved both.' };
+    yield { type: 'response.completed', response: { usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } };
+  });
+  const create = () => createHandrailAssistant({ id: 'test', authorize: () => testContext, persistence, tools: [plugin], automaticTitles: false,
+    provider: openaiResponses({ model: 'fixture', request: providerRequest, supportsToolSearch: false, savedConversation: true }) });
+  let assistant = await create();
+  const browser = await createHandrailAiClient({ baseUrl: 'https://app.test', startActivityPolling: false,
+    fetch: (url, init) => assistant.handle(new Request(url, init)),
+    conversations: { mode: 'multiple', clientId: 'browser' as never, authorize: () => 'allow' } });
+  const runtime = await browser.workspace!.open({ authorizationContext: testContext, conversationId: 'conversation' as never });
+  let turnId = '';
+  try {
+    expect(browser.capabilities.resources?.turnApprovalMode).toBe(true);
+    const sending = runtime.sendMessage({ content: 'Save both', onAccepted: value => { turnId = value.turnId; },
+      request: { protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: null,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Save both' }] }], tools: [], tool_results: [],
+        generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {}, metadata: { handrail_approval_mode: 'required' } } });
+    await vi.waitFor(() => { expect(physical).toBe(1); expect(turnId).not.toBe(''); });
+    if (phase === 'paused') {
+      expect(JSON.stringify(await sending)).toContain('waiting_for_approval');
+      await assistant.stopBackgroundWorkers(); assistant = await create();
+    }
+    const input = { conversationId: 'conversation', turnId };
+    expect(await browser.resources.turnApprovalMode!(input)).toEqual({ mode: 'required', revision: 0, active: true });
+    const change = { ...input, mode: 'automatic' as const, expectedRevision: 0, mutationId: 'auto-on' };
+    if (phase === 'paused') {
+      // Crash after committing the preference, before deciding any proposal.
+      await assistant.stopBackgroundWorkers();
+      await changeTurnApprovalMode(change, testContext.principalId, bundle.durableTurns);
+      assistant = await create();
+      await assistant.handle(new Request('https://app.test/capabilities'));
+      await vi.waitFor(() => expect(effect).toHaveBeenCalledTimes(2), { timeout: 10_000 });
+    }
+    expect(await browser.resources.turnApprovalMode!(change)).toMatchObject({ mode: 'automatic', revision: 1 });
+    release(); await sending;
+    await vi.waitFor(() => expect(effect).toHaveBeenCalledTimes(2), { timeout: 10_000 });
+    await vi.waitFor(async () => expect((await bundle.durableTurns.load('conversation', turnId))?.record.status).toBe('completed'));
+    expect(await browser.resources.turnApprovalMode!(change)).toEqual({ mode: 'automatic', revision: 1, active: false });
+    await expect(browser.resources.turnApprovalMode!({ ...change, mode: 'required', mutationId: 'stale' })).rejects.toThrow();
+    const saved = (await bundle.durableTurns.load('conversation', turnId))!.record;
+    expect((saved.request as { metadata: object }).metadata).toEqual({ handrail_approval_mode: 'required' });
+    expect(saved.approvalPreference).toMatchObject({ mode: 'automatic', principalId: 'user' });
+    const proposals = await bundle.approvals.listGroup({ permissionContext: testContext, groupId: 'conversation' as never });
+    expect(proposals).toHaveLength(phase === 'paused' ? 1 : 0);
+    if (proposals.length) expect(proposals[0]).toMatchObject({ status: 'executed', decision_attribution: { actor: { type: 'user', id: 'user' } } });
+  } finally { release(); await browser.dispose(); await assistant.stopBackgroundWorkers(); }
 }, 30_000);

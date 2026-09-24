@@ -51,6 +51,12 @@ function digest(value: string): string {
 
 
 
+export function assistantToolProposalId(location: Location, call: Call): string {
+  const reference = assistantToolArgumentReference(call.arguments as JsonObject);
+  const identity = digest(`${location.conversationId}\u001f${location.turnId}\u001f${call.tool_call_id}\u001f${call.name}\u001f${reference}`);
+  return `proposal-${identity.slice(0, 48)}`;
+}
+
 function approvalError(call: Pick<ResponseToolCallEvent, "tool_call_id" | "name">, message: string): BoundedToolExecutionOutcome {
   const content = [{ type: "text" as const, text: message }];
   const result: ApplicationToolResult = Object.freeze({ tool_call_id: call.tool_call_id, name: call.name,
@@ -194,7 +200,7 @@ export function createAssistantToolRuntime<TContext extends { readonly scopeId: 
       const rawArguments = call.arguments as JsonObject;
       const reference = assistantToolArgumentReference(rawArguments);
       const identity = digest(`${conversationId}\u001f${turnId}\u001f${call.tool_call_id}\u001f${call.name}\u001f${reference}`);
-      const proposalId = `proposal-${identity.slice(0, 48)}` as never;
+      const proposalId = assistantToolProposalId({ conversationId, turnId }, call) as never;
       const proposalStore = options.proposalStore;
       const load = () => proposalStore.get({ permissionContext: context, proposalId });
       let proposal = await load();

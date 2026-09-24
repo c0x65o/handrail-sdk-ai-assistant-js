@@ -22,9 +22,13 @@ export interface ComposerApprovalControlProps {
   readonly onApprovalModeChange?: (mode: ComposerApprovalMode) => void;
   /** Presentation only: hiding the badge never changes the approval mode. */
   readonly showApprovalControl?: boolean;
+  readonly approvalModeAppliesToCurrentRequest?: boolean;
+  readonly approvalModeSaving?: boolean;
+  readonly approvalModeError?: string;
 }
 
-export function ComposerApprovalControl({ approvalMode = "required", onApprovalModeChange, disabled = false }:
+export function ComposerApprovalControl({ approvalMode = "required", onApprovalModeChange, disabled = false,
+  approvalModeAppliesToCurrentRequest = false, approvalModeSaving = false, approvalModeError }:
   ComposerApprovalControlProps & { readonly disabled?: boolean }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -42,10 +46,14 @@ export function ComposerApprovalControl({ approvalMode = "required", onApprovalM
       aria-expanded={open} data-mode={approvalMode} onClick={() => setOpen(!open)}><ComposerIcon name="shield"/></button>
     {open && <div className="hr-composer__approval-panel" role="group" aria-label="Approval settings">
       <label><span>Auto-approve changes</span><input type="checkbox" role="switch" checked={approvalMode === "automatic"}
-        disabled={disabled || !onApprovalModeChange} onChange={(event) => onApprovalModeChange?.(event.target.checked ? "automatic" : "required")}/></label>
+        disabled={disabled || approvalModeSaving || !onApprovalModeChange} onChange={(event) => onApprovalModeChange?.(event.target.checked ? "automatic" : "required")}/></label>
       <p>{approvalMode === "automatic" ? "Add, edit, and delete without asking each time, within your account permissions."
         : "Review and approve additions, edits, and deletions before they run."}</p>
-      <p>{onApprovalModeChange ? "Applies to your next message. Running requests and pending approvals keep their original setting."
+      {approvalModeSaving && <p role="status">Updating approval setting…</p>}
+      {approvalModeError && <p role="alert">{approvalModeError}</p>}
+      <p>{onApprovalModeChange ? approvalModeAppliesToCurrentRequest
+        ? "Applies immediately to this request and future messages. Turning it on approves pending changes for this request. Turning it off asks before later changes; work already approved or started continues."
+        : "Applies to your next message. Running requests and pending approvals keep their original setting."
         : "Approval settings are managed by this application."}</p>
     </div>}
   </div>;

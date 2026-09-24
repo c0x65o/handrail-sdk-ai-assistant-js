@@ -1,3 +1,4 @@
+import type { TurnApprovalModeInput, TurnApprovalModeResult } from "../composer-approval.js";
 import { approvalDisplayProposalBinding, parseConversationApprovalDisplayDecision, type ConversationApprovalDisplayDecisionInput } from "../conversation/approval-display-review.js";
 import { parseServerSentEvents } from "./sse.js";
 import { parseConversationApprovalDisplayReview, type ConversationApprovalDisplayReviewInput } from "../conversation/approval-display-review.js";
@@ -81,6 +82,7 @@ export interface ApplicationGatewayCapabilities {
     /** Detailed lifecycle capabilities are returned by v1 servers when available. */
     readonly conversations: boolean | ConversationCatalogCapabilities;
     readonly approvals: boolean;
+    readonly turnApprovalMode?: true;
     readonly titleGeneration: boolean;
   };
   /** Present for high-level assistants; older gateways omit this compatibly. */
@@ -148,6 +150,7 @@ export interface ApplicationGatewayOptions<TEvent, TRequest, TContext extends Ap
   /** Scoped store supports pending_approvals and approval display views. */
   readonly displayPendingApprovals?: true;
   readonly approvals?: ApprovalProposalStore<TContext>;
+  readonly turnApprovalMode?: (input: TurnApprovalModeInput, context: TContext) => Promise<TurnApprovalModeResult>;
   readonly titleGeneration?: ApplicationGatewayTitleGeneration<TContext>;
   readonly handlers?: ApplicationGatewayResourceHandlers<TContext>;
   readonly diagnostics?: AiDiagnosticSink;
@@ -407,6 +410,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
     ...(options.capabilities?.documentInput === undefined ? {} : { documentInput: options.capabilities.documentInput }),
     ...(options.capabilities?.assistant === undefined ? {} : { assistant: options.capabilities.assistant }),
     resources: Object.freeze({ conversations: options.conversations?.capabilities ?? false,
+      ...(options.turnApprovalMode ? { turnApprovalMode: true as const } : {}),
       approvals: options.approvals !== undefined, titleGeneration: options.titleGeneration !== undefined }),
   });
   return Object.freeze({
@@ -484,6 +488,12 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
             : operation === "permanent-delete" ? await options.conversations.permanentlyDelete({ ...input, authorizationContext } as unknown as PermanentlyDeleteConversationInput<TContext>)
             : null;
           return value === null ? new Response(null, { status: 404 }) : json({ ok: true, value });
+        }
+        if (action === "approvals" && pathname.endsWith("/approvals/mode")) {
+          if (!options.turnApprovalMode) return new Response(null, { status: 501 });
+          const input = await body<TurnApprovalModeInput>(request, Math.min(maximumBytes, 8192));
+          const response = json({ ok: true, value: await options.turnApprovalMode(input, authorizationContext) });
+          response.headers.set("cache-control", "private, no-store"); return response;
         }
         if (action === "approvals") {
           if (!options.approvals) return new Response(null, { status: 501 });
@@ -701,6 +711,7 @@ export interface ApplicationGatewayResourceClient {
   createApproval(input: WithoutAuthorization<CreateApprovalProposalInput<unknown>>): Promise<ConversationApprovalProposalRecord>;
   getApproval(input: WithoutAuthorization<GetApprovalProposalInput<unknown>>): Promise<ConversationApprovalProposalRecord | null>;
   listApprovalGroup(input: WithoutAuthorization<ListApprovalProposalGroupInput<unknown>>): Promise<readonly ConversationApprovalProposalRecord[]>;
+  turnApprovalMode?(input: TurnApprovalModeInput): Promise<TurnApprovalModeResult>;
   transitionApproval(input: ApplicationGatewayApprovalTransitionInput): Promise<ConversationApprovalProposalRecord>;
   generateTitle(input: { readonly conversationId: string; readonly idempotencyKey: string }): Promise<string>;
   pullSnapshot(input: PullSnapshotInput): Promise<PullSnapshotResult>;
@@ -890,6 +901,7 @@ export function createApplicationGatewayResourceClient(
     createApproval: (input) => invoke<ConversationApprovalProposalRecord>("/approvals/create", input),
     getApproval: (input) => invoke<ConversationApprovalProposalRecord | null>("/approvals/get", input),
     listApprovalGroup: (input) => invoke<readonly ConversationApprovalProposalRecord[]>("/approvals/list-group", input),
+    turnApprovalMode: (input) => invoke<TurnApprovalModeResult>("/approvals/mode", input),
     transitionApproval: (input) => invoke<ConversationApprovalProposalRecord>("/approvals/transition", input),
     generateTitle: (input) => invoke<string>("/titles/generate", input),
     pullSnapshot: (input) => invoke<PullSnapshotResult>("/synchronization", { operation: "pull_snapshot", input }),

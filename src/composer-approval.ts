@@ -15,3 +15,17 @@ export function composerApprovalModeFromRequest(request: Pick<ChatRequest, "meta
   if (mode !== "required" && mode !== "automatic") throw new TypeError("Invalid composer approval mode");
   return mode;
 }
+
+/** Exact turn scope; mode omitted reads the current preference. */
+export interface TurnApprovalModeInput {
+  readonly conversationId: string;
+  readonly turnId: string;
+  readonly mode?: ComposerApprovalMode;
+  readonly expectedRevision?: number;
+  readonly mutationId?: string;
+}
+export interface TurnApprovalModeResult {
+  readonly mode: ComposerApprovalMode;
+  readonly revision: number;
+  readonly active: boolean;
+}

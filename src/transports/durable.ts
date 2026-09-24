@@ -40,6 +40,14 @@ export interface DurableApplicationTurnRecord<TStoredRequest = unknown, TEvent =
   readonly attempt: number;
   /** Human decisions restart execution without spending crash recovery attempts. */
   readonly approvalResumes?: number;
+  /** Authenticated mid-turn preference. Original request/fingerprint remain immutable. */
+  readonly approvalPreference?: {
+    readonly mode: "required" | "automatic";
+    readonly revision: number;
+    readonly mutationId: string;
+    readonly principalId: string;
+    readonly changedAt: string;
+  };
   readonly events: readonly DurableApplicationTurnEvent<TEvent>[];
   readonly terminal: TurnObservationResult | null;
   readonly cancellation: DurableApplicationTurnCancellation | null;

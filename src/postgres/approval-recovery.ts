@@ -28,6 +28,20 @@ export const postgresApprovalRecoverySchema = Object.freeze([
           ON CONFLICT (tenant_id,conversation_id) DO UPDATE SET wake_id=gen_random_uuid(),available_at=now(),after_proposal='';
       END IF;
     END; $$`,
+  `CREATE OR REPLACE FUNCTION handrail_ai_approval_recovery_preference() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      PERFORM handrail_ai_wake_approval_recovery(NEW.tenant_id,NEW.scope_id);
+      RETURN NEW;
+    END; $$`,
+  `DO $$ BEGIN
+    IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='handrail_ai_approval_recovery_preference_trigger'
+      AND tgrelid='handrail_ai_documents'::regclass) THEN
+      CREATE TRIGGER handrail_ai_approval_recovery_preference_trigger AFTER UPDATE OF payload ON handrail_ai_documents
+        FOR EACH ROW WHEN (NEW.kind='durable_turn' AND NEW.payload->'approvalPreference'->>'mode'='automatic'
+          AND NEW.payload->'approvalPreference' IS DISTINCT FROM OLD.payload->'approvalPreference')
+        EXECUTE FUNCTION handrail_ai_approval_recovery_preference();
+    END IF;
+  EXCEPTION WHEN duplicate_object THEN NULL; END; $$`,
   `CREATE OR REPLACE FUNCTION handrail_ai_approval_recovery_proposal() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
       PERFORM handrail_ai_wake_approval_recovery(NEW.tenant_id,NEW.group_id);

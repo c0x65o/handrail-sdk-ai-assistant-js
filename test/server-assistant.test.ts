@@ -62,7 +62,9 @@ describe("createHandrailAssistant", () => {
       createConversationId: () => "policy-conversation" as never });
     await catalog.create({ authorizationContext: context, idempotencyKey: "policy-new" as never });
     const modes: Record<string, unknown> = { automatic: "automatic", required: "required", invalid: "yes", missing: undefined };
+    const overrides: Record<string, "required" | "automatic"> = {};
     const load = vi.fn(async (_conversation: string, turn: string) => ({ record: {
+      ...(overrides[turn] ? { approvalPreference: { mode: overrides[turn] } } : {}),
       request: { metadata: { handrail_approval_mode: modes[turn] } },
     } }));
     const bundle = { events, catalog, durableTurns: { load },
@@ -104,7 +106,18 @@ describe("createHandrailAssistant", () => {
     expect((await run("automatic", "mandatory_review")).status).toBe("external_approval_required");
     expect(await run("automatic", "forbidden_write")).toMatchObject({ status: "completed", result: { is_error: true } });
     expect(await run("invalid")).toMatchObject({ status: "completed", result: { is_error: true } });
-    expect(execute).toHaveBeenCalledTimes(1);
+    overrides.required = "automatic";
+    expect(await run("required", "forbidden_write")).toMatchObject({ status: "completed", result: { is_error: true } });
+    expect((await run("required", "mandatory_review")).status).toBe("external_approval_required");
+    // Use a new call identity after toggling; completed calls retain their receipts.
+    expect(await exposed.execute({ name: "write_record", tool_call_id: "after-on", arguments: {} },
+      new AbortController().signal, { conversationId: "policy-conversation", turnId: "required" }))
+      .toMatchObject({ status: "completed", result: { is_error: false } });
+    overrides.required = "required";
+    expect((await exposed.execute({ name: "write_record", tool_call_id: "after-off", arguments: {} },
+      new AbortController().signal, { conversationId: "policy-conversation", turnId: "required" })).status)
+      .toBe("external_approval_required");
+    expect(execute).toHaveBeenCalledTimes(2);
     for (const turn of ["automatic", "required", "missing", "invalid"]) {
       expect(load).toHaveBeenCalledWith("policy-conversation", turn);
     }

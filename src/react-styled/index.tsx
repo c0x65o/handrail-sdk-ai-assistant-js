@@ -1,3 +1,5 @@
+import { useTurnApprovalMode } from "../react/use-turn-approval-mode.js";
+import type { TurnApprovalModeInput, TurnApprovalModeResult } from "../composer-approval.js";
 import { ConversationPagedApprovalReview } from "../react/paged-approval-review.js";
 import type { ConversationPresentationRuntime as ConversationRuntime } from "../conversation/presentation.js";
 import type { ConversationPresentationState as ConversationState } from "../conversation/presentation.js";
@@ -188,6 +190,7 @@ export interface StyledChatPresetProps extends ComposerApprovalControlProps, Con
   readonly approvals?: ReactNode;
   /** Protected proposal resources; supplied automatically by the client workspace. */
   readonly approvalResources?: ConversationApprovalResources;
+  readonly changeTurnApprovalMode?: (input: TurnApprovalModeInput) => Promise<TurnApprovalModeResult>;
   readonly renderApproval?: (proposal: ConversationApprovalProposalRecord, context: StyledApprovalRenderContext) => ReactNode;
   readonly renderConversationMessage?: (message: ConversationMessageRecord, state: ConversationState) => ReactNode;
   readonly renderCompletedTool?: (call: ConversationToolCallRecord, state: ConversationState) => ReactNode;
@@ -295,6 +298,18 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
   const resolvedState = useResolvedState(props.state) ?? EMPTY_CHAT_STATE;
   const session = useContext(ConversationContext)?.runtime?.displaySession;
   const approvalReview = useConversationApprovals(props.approvalResources ?? null, resolvedState?.conversation_id ?? null, session);
+  const turnApproval = useTurnApprovalMode({ scope: session ?? resolvedState.conversation_id,
+    ...(props.changeTurnApprovalMode ? { change: props.changeTurnApprovalMode } : {}),
+    ...(props.onApprovalModeChange ? { onChange: props.onApprovalModeChange } : {}),
+    target: () => {
+      const control = session?.getSnapshot().control;
+      if (session && control?.status !== "ready") throw new Error("Conversation is loading");
+      const turn = control?.activeTurn ?? (control?.latestTurn?.status === "waiting_for_approval" ? control.latestTurn : null);
+      if (control) return turn ? { conversationId: control.conversationId, turnId: turn.turnId } : null;
+      const latest = resolvedState.turns.at(-1);
+      const target = resolvedState.active_turn_id ?? (latest?.status === "waiting_for_approval" ? latest.turn_id : null);
+      return target && resolvedState.conversation_id ? { conversationId: resolvedState.conversation_id, turnId: target } : null;
+    } });
   const proposals = props.proposals ?? (props.approvalResources ? approvalReview.proposals : resolvedState?.approval_proposals);
   const statusRoot = useRef<HTMLDivElement>(null);
   const subscribeApprovals = useCallback((notify: () => void) => session?.subscribe(notify) ?? (() => undefined), [session]);
@@ -408,7 +423,9 @@ export function StyledChatPreset(props: StyledChatPresetProps): ReactNode {
       {...(props.includeStyles === undefined ? {} : { includeStyles: props.includeStyles })}
       {...(props.attachmentsEnabled === undefined ? {} : { attachmentsEnabled: props.attachmentsEnabled })}
       {...(props.approvalMode === undefined ? {} : { approvalMode: props.approvalMode })}
-      {...(props.onApprovalModeChange === undefined ? {} : { onApprovalModeChange: props.onApprovalModeChange })}
+      {...(turnApproval.onChange ? { onApprovalModeChange: turnApproval.onChange } : {})}
+      approvalModeAppliesToCurrentRequest={Boolean(props.changeTurnApprovalMode)}
+      approvalModeSaving={turnApproval.busy} approvalModeError={turnApproval.error}
       {...(props.showApprovalControl === undefined ? {} : { showApprovalControl: props.showApprovalControl })}
       {...(props.voiceControls === undefined ? {} : { voiceControls: props.voiceControls })}/>}
     {props.footer}
@@ -1065,6 +1082,8 @@ function ClientAssistantWorkspace(props: HandrailAssistantWorkspaceProps & {
     transcription: props.transcription ?? (client.transcription && client.capabilities.transcription
       ? { transcribe: client.transcription, capability: client.capabilities.transcription } : false),
     ...(props.approvals === undefined ? { approvalResources: client.resources } : {}),
+    ...(client.capabilities.resources?.turnApprovalMode && client.resources.turnApprovalMode
+      ? { changeTurnApprovalMode: client.resources.turnApprovalMode } : {}),
     getThreadLabel: (id) => generatedTitles.get(id) ?? props.getThreadLabel?.(id),
     onConversationRead: props.onConversationRead ?? ((id, observed) => client.markActivityRead(id, observed)),
     createConversation: async (input?: { readonly idempotencyKey: ConversationCatalogIdempotencyKey }) => {
