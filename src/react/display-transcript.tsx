@@ -135,7 +135,7 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       setAway(!following.current);
     }
     const windowChanged = previousVersion.current !== state.version;
-    if ((!windowChanged && previousContentVersion.current === contentVersion && previousActivityRequest.current === currentActivityRequest) || !state.records.length) return;
+    if (!windowChanged && previousContentVersion.current === contentVersion && previousActivityRequest.current === currentActivityRequest) return;
     if (anchor.current && anchor.current.generation !== state.generation) {
       anchor.current = undefined; following.current = true; setAway(false);
     }

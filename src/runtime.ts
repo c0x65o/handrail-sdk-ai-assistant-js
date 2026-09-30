@@ -1,3 +1,4 @@
+import { streamBatches, isTextFrame } from "./stream-batches.js";
 import { jsonValuesEqual } from "./json-equality.js";
 import type { ConversationDraftOrigin } from "./client/draft-origin.js";
 import {
@@ -27,6 +28,7 @@ import {
   normalizeCitationRecords,
   type Citation,
   type CitationRecordSet,
+  type CitationMessageId,
   type CitationSource,
 } from "./citations.js";
 import {
@@ -159,6 +161,8 @@ export interface ConversationRuntimeOptions<TRequest> {
   /** Back off unchanged, inactive conversations up to this interval. Defaults to the polling interval. */
   readonly idleSynchronizationIntervalMilliseconds?: number;
   readonly onSynchronizationError?: (cause: unknown) => void;
+  /** Server projection may persist consecutive text frames in one canonical append. */
+  readonly batchTextFrames?: boolean;
   /** Observer notification after a protocol frame's canonical writes have
    * settled (or its duplicate was verified). Terminal settlement still awaits
    * the transport outcome. Callback errors never alter canonical execution. */
@@ -580,6 +584,18 @@ export async function createConversationRuntime<TRequest>(
         }
         return draft.payload.type !== "citation.records_linked" ||
           !toolLoopEventAlreadyRecorded(store.getSnapshot(), draft.payload);
+      }).map((draft): EventDraft => {
+        // A concurrent projector may have assigned the first text frame a
+        // different message ID. Rebind the rest of this batch after CAS catch-up.
+        const metadata = runtimeMetadata(draft.metadata);
+        const messageId = metadata?.turnId && streamedAssistantMessageId(store.getSnapshot(), metadata.turnId);
+        if (!messageId) return draft;
+        if (draft.payload.type === "message.text_appended") return { ...draft, payload: { ...draft.payload, message_id: messageId } };
+        if (draft.payload.type === "citation.records_linked" && draft.payload.target.type === "assistant_message") return { ...draft, payload: { ...draft.payload,
+          target: { ...draft.payload.target, message_id: messageId },
+          citations: draft.payload.citations.map(citation => citation.target.type === "assistant_message"
+            ? { ...citation, target: { ...citation.target, message_id: messageId as string as CitationMessageId } } : citation) } };
+        return draft;
       }));
 
   const persistAdmittedTurn = async (
@@ -744,33 +760,30 @@ export async function createConversationRuntime<TRequest>(
 
     try {
       try {
-        for await (const rawFrame of observation.events) {
-          assertUsable();
-          const frame = parseStreamEvent(rawFrame);
-          const disposition = acceptFrame(
-            frameState,
-            frame,
-            durableFrameKeys,
-            durableFrameFingerprints,
-            liveFrameFingerprints,
-          );
-          if (disposition === "duplicate") { reportApplied(frame); continue; }
-
-          const drafts = draftsForNonterminalFrame(
-            frameState,
-            frame,
-            createId,
-            runtimeSource(),
-          );
-          if (drafts.length > 0) {
-            await persistFrameDrafts(drafts);
-            // Another projector can win this frame's append with its own message ID.
-            frameState.assistantMessageId = streamedAssistantMessageId(store.getSnapshot(), turnId) ?? frameState.assistantMessageId;
-            if (drafts.some((draft) => runtimeMetadata(draft.metadata)?.resumeSafe)) {
-              protocol.safeSequence = frame.sequence;
+        for await (const batch of streamBatches(observation.events, options.batchTextFrames ? isTextFrame : () => false)) {
+          const applied: StreamEvent[] = [], drafts: EventDraft[] = [];
+          let safeSequence: number | undefined;
+          try {
+            for (const rawFrame of batch) {
+              assertUsable();
+              const frame = parseStreamEvent(rawFrame);
+              const disposition = acceptFrame(frameState, frame, durableFrameKeys, durableFrameFingerprints, liveFrameFingerprints);
+              if (disposition !== "duplicate") {
+                const next = draftsForNonterminalFrame(frameState, frame, createId, runtimeSource());
+                drafts.push(...next);
+                if (next.some(draft => runtimeMetadata(draft.metadata)?.resumeSafe)) safeSequence = frame.sequence;
+              }
+              applied.push(frame);
             }
+          } finally {
+            // Preserve a valid prefix even if the next frame is malformed.
+            if (drafts.length) {
+              await persistFrameDrafts(drafts);
+              frameState.assistantMessageId = streamedAssistantMessageId(store.getSnapshot(), turnId) ?? frameState.assistantMessageId;
+              if (safeSequence !== undefined) protocol.safeSequence = safeSequence;
+            }
+            for (const frame of applied) reportApplied(frame);
           }
-          reportApplied(frame);
         }
       } catch (cause) {
         if (cause instanceof ConversationRuntimeDestroyedError) throw cause;

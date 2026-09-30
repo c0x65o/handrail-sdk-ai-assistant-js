@@ -105,3 +105,44 @@ it("rejects changed duplicate frames and never fabricates a provider execution",
     expect((await f.state()).active_turn_id).toBe("turn");
   } finally { await projection.disconnect(); }
 });
+
+it("persists a burst of tiny text frames together and replays their original identities exactly once", async () => {
+  const f = await fixture(), projection = (await createLiveConversationProjection(f.input))!;
+  const append = vi.spyOn(f.input.events, "append");
+  const text = Array.from({ length: 64 }, (_, index): StreamEvent => ({ ...envelope, type: "response.text.delta", sequence: index + 1, delta: String(index % 10) }));
+  try {
+    await projection.push(frames[0]!); append.mockClear();
+    await projection.pushBatch(text);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append.mock.calls[0]![0].events).toHaveLength(64);
+    const expected = text.map(frame => frame.type === "response.text.delta" ? frame.delta : "").join("");
+    expect((await f.state()).messages.at(-1)?.content).toEqual([{ type: "text", text: expected }]);
+    await projection.pushBatch(text);
+    expect(append).toHaveBeenCalledTimes(1);
+    await projection.push({ ...envelope, type: "response.completed", sequence: 65, outcome: "stop" });
+    expect(await projection.finish({ status: "completed", checkpoint })).toMatchObject({ status: "completed" });
+  } finally { await projection.disconnect(); }
+});
+
+it("keeps the valid text prefix if a later batched frame conflicts", async () => {
+  const f = await fixture(), projection = (await createLiveConversationProjection(f.input))!;
+  try {
+    await projection.push(frames[0]!);
+    await expect(projection.pushBatch([frames[1]!, { ...envelope, type: "response.text.delta", sequence: 1, delta: "conflict" }])).rejects.toThrow();
+    expect((await f.state()).messages.at(-1)?.content).toEqual([{ type: "text", text: "Visible while running" }]);
+  } finally { await projection.disconnect(); }
+});
+
+it("rebinds the rest of a text batch when another projector already saved its first frame", async () => {
+  const f = await fixture();
+  const first = (await createLiveConversationProjection(f.input))!;
+  const second = (await createLiveConversationProjection(f.input))!;
+  try {
+    await first.push(frames[0]!); await second.push(frames[0]!);
+    await first.push(frames[1]!);
+    await second.pushBatch([frames[1]!, { ...envelope, type: "response.text.delta", sequence: 2, delta: " and more" }]);
+    const state = await f.state();
+    expect(state.messages.filter(message => message.role === "assistant")).toHaveLength(1);
+    expect(state.messages.at(-1)?.content).toEqual([{ type: "text", text: "Visible while running and more" }]);
+  } finally { await first.disconnect(); await second.disconnect(); }
+});

@@ -1,3 +1,4 @@
+import { isTextFrame } from "../stream-batches.js";
 export { createAttachmentContentValidator, AttachmentContentError, STANDARD_ATTACHMENT_MEDIA_TYPES,
   type AttachmentContentFailure, type AttachmentContentInput, type AttachmentContentPolicy, type StandardAttachmentMediaType } from "./attachment-content.js";
 export { createTrackedOpenAIResponsesRequest, type TrackedOpenAIResponsesRequestOptions, type OpenAIResponsesExecutionContext } from "./openai-responses-request.js";
@@ -673,6 +674,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             fingerprint: (request: ChatRequest) => createHash("sha256").update(JSON.stringify(request)).digest("hex"),
           },
           checkpointForEvent,
+          batchEvent: isTextFrame,
           // Each trusted context owns a distinct transport. A refreshed session
           // or role must not claim another transport's live lease merely because
           // both belong to this assistant host. Its cancellation still reaches
@@ -706,9 +708,9 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
               // On a worker restart the canonical runtime verifies the saved
               // prefix; steady-state delivery indexes only newly persisted frames.
               while (entry.delivered < document.record.events.length) {
-                const item = document.record.events[entry.delivered]!;
-                if (item.sequence !== entry.delivered + 1) throw new Error("Durable frame order is invalid");
-                await projection.push(item.event); entry.delivered++;
+                const batch = document.record.events.slice(entry.delivered, entry.delivered + 64);
+                if (batch.some((item, index) => item.sequence !== entry!.delivered + index + 1)) throw new Error("Durable frame order is invalid");
+                await projection.pushBatch(batch.map(item => item.event)); entry.delivered += batch.length;
               }
             } catch (cause) {
               // Do not repeatedly replay history for every subsequent token

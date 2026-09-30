@@ -1,3 +1,4 @@
+import type { ConversationMessageRecord } from "../conversation/state.js";
 import type { ConversationApprovalDisplayDecision, ConversationApprovalDisplayDecisionInput, ConversationApprovalDisplayReview, ConversationApprovalDisplayReviewInput } from "../conversation/approval-display-review.js";
 import type { ConversationClientId, ConversationId, ConversationTurnCancellationReason } from "../conversation/events.js";
 import type { ConversationDisplayControl, ConversationDisplayControlInput, ConversationDisplayTurnControl } from "../conversation/display-control.js";
@@ -31,6 +32,7 @@ export interface ApplicationConversationSessionSnapshot {
   readonly loading: boolean;
   readonly submitting: boolean;
   readonly hasPendingSubmission: boolean;
+  readonly outgoingMessage?: { readonly message: ConversationMessageRecord; readonly status: "sending" | "sent" | "unconfirmed" } | null;
   readonly error: ApplicationConversationSessionError | null;
 }
 export interface ApplicationConversationSessionOptions<TRequest> {
@@ -122,6 +124,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   private poll: ReturnType<typeof setTimeout> | undefined;
   private wake: ReturnType<typeof setTimeout> | undefined;
   private followingLatest = true;
+  private preparingSend = false;
+  private outgoing: Exclude<ApplicationConversationSessionSnapshot["outgoingMessage"], undefined> = null;
   private admitted: ApplicationConversationSubmission<TRequest> | null = null;
   private callbacks: NonNullable<ConversationRuntimeSendMessageInput<TRequest>["onAccepted"]>[] = [];
 
@@ -156,7 +160,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   }
   private publish(patch: Partial<ApplicationConversationSessionSnapshot> = {}) {
     if (this.lifetime.signal.aborted) return;
-    this.state = Object.freeze({ ...this.state, control: this.control, window: this.window.getSnapshot(),
+    if (this.outgoing && this.window.getSnapshot().records.some(record => record.id === this.outgoing!.message.message_id)) this.outgoing = null;
+    this.state = Object.freeze({ ...this.state, outgoingMessage: this.followingLatest ? this.outgoing : null, control: this.control, window: this.window.getSnapshot(),
       related: this.related, hasMoreRelated: this.relatedCursor !== null || this.relatedGroup + 1 < this.relatedGroups.length,
       relatedTruncated: this.relatedTruncated, ...patch });
     for (const listener of this.listeners) { try { listener(); } catch { /* Observers do not own admission or reads. */ } }
@@ -179,7 +184,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
     if (this.wake || this.lifetime.signal.aborted || this.state.error && !this.state.error.retryable) return;
     this.wake = setTimeout(() => { this.wake = undefined; void this.refresh().catch(() => undefined); }, 100);
   }
-  setFollowingLatest(value: boolean): void { this.followingLatest = value; }
+  setFollowingLatest(value: boolean): void { this.followingLatest = value; this.publish(); }
   get supportsPendingApprovals(): boolean { return this.options.pendingApprovals === true; }
   /** Explicit inbox/review reads share account and selection cancellation. They
    * never hydrate the message window or become provider context. */
@@ -333,7 +338,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
         if (denied(cause)) {
           this.observation?.disconnect(); this.observation = null;
           clearTimeout(this.wake); this.wake = undefined;
-          this.control = null; this.clearRelated();
+          this.control = null; this.outgoing = null; this.clearRelated();
           await this.window.select(null);
         }
         const error = normalize(cause); this.publish({ error }); throw error;
@@ -378,7 +383,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
     return this.relatedPending = this.readRelated(signal).then(() => this.publish({ error: null })).catch(async cause => {
       if (signal.aborted) return;
       if (denied(cause)) {
-        this.control = null; this.clearRelated();
+        this.control = null; this.outgoing = null; this.clearRelated();
         this.observation?.disconnect(); this.observation = null;
         await this.window.select(null);
       }
@@ -391,22 +396,48 @@ export class ApplicationConversationSession<TRequest = unknown> {
     this.relatedKey = ""; this.relatedViewKey = "";
     await this.refresh();
   }
-  async prepare(input: ConversationRuntimeSendMessageInput<TRequest>): Promise<ApplicationConversationSubmission<TRequest>> {
+  async prepare(input: ConversationRuntimeSendMessageInput<TRequest>, operationId = this.options.createId?.() ?? crypto.randomUUID()): Promise<ApplicationConversationSubmission<TRequest>> {
     const captured = captureApplicationConversationInput(input);
     await this.refresh(); this.assertOpen();
     if (!this.control || this.control.status !== "ready") throw new ApplicationConversationSessionError("history_preparing", "Preparing saved conversation…", true);
     if (this.submission || this.control.activeTurnId) throw new ApplicationConversationSessionError("turn_active", "Wait for the active response or stop it before sending.");
     return prepareApplicationConversationSubmission({ conversationId: this.options.conversationId,
       clientId: this.options.clientId, revision: this.control.canonicalRevision,
-      operationId: this.options.createId?.() ?? crypto.randomUUID(), now: this.options.now?.() ?? new Date().toISOString(), input: captured });
+      operationId, now: this.options.now?.() ?? new Date().toISOString(), input: captured });
   }
   async sendMessage(input: ConversationRuntimeSendMessageInput<TRequest>): Promise<ConversationDisplayTurnControl> {
     this.assertOpen();
+    if (this.preparingSend || this.submission || this.state.hasPendingSubmission) throw new ApplicationConversationSessionError("pending_send_exists", "Retry the saved message before sending another one.");
     const captured = captureApplicationConversationInput(input), onAccepted = input.onAccepted;
-    const saved = await this.options.pendingStore.load(this.options.conversationId); this.assertOpen();
-    if (saved) throw new ApplicationConversationSessionError("pending_send_exists", "Retry the saved message before sending another one.");
-    return this.submit(await this.prepare(captured), onAccepted);
+    const operationId = this.options.createId?.() ?? crypto.randomUUID();
+    const preview = prepareApplicationConversationSubmission({ conversationId: this.options.conversationId,
+      clientId: this.options.clientId, revision: this.control?.canonicalRevision ?? 0,
+      operationId, now: this.options.now?.() ?? new Date().toISOString(), input: captured });
+    this.preparingSend = true;
+    this.showOutgoing(preview);
+    this.publish({ submitting: true, error: null });
+    let submitted = false;
+    try {
+      const saved = await this.options.pendingStore.load(this.options.conversationId); this.assertOpen();
+      if (saved) throw new ApplicationConversationSessionError("pending_send_exists", "Retry the saved message before sending another one.");
+      const prepared = await this.prepare(captured, operationId);
+      submitted = true;
+      return await this.submit(prepared, onAccepted);
+    } finally {
+      this.preparingSend = false;
+      if (!submitted) { this.outgoing = null; this.publish({ submitting: false }); }
+    }
   }
+  private showOutgoing(saved: ApplicationConversationSubmission<TRequest>) {
+    const payload = saved.admission.mutations[0]!.events[0]!.payload;
+    if (payload.type !== "message.created") return;
+    this.outgoing = { status: this.outgoing?.message.message_id === saved.messageId && this.outgoing.status === "sent" ? "sent" : "sending",
+      message: { message_id: saved.messageId, role: "user", content: payload.content,
+        attachments: saved.admission.mutations.flatMap(mutation => mutation.events.flatMap(event =>
+          event.payload.type === "message.attachment_referenced" ? [event.payload.attachment] : [])),
+        attribution: null, created_at: saved.admission.mutations[0]!.events[0]!.occurred_at } };
+  }
+
   async retryPending(onAccepted?: ConversationRuntimeSendMessageInput<TRequest>["onAccepted"]): Promise<ConversationDisplayTurnControl | null> {
     const saved = await this.options.pendingStore.load(this.options.conversationId); this.assertOpen();
     return saved ? this.submit(saved, onAccepted) : null;
@@ -418,14 +449,18 @@ export class ApplicationConversationSession<TRequest = unknown> {
       if (this.submission.json !== json) return Promise.reject(new ApplicationConversationSessionError("pending_send_exists", "Another message is being submitted."));
       this.acceptCallback(onAccepted); return this.submission.promise;
     }
+    this.showOutgoing(saved);
     this.admitted = null; this.callbacks = []; this.acceptCallback(onAccepted);
+    let retained = false;
     const promise = Promise.resolve().then(async () => {
       await this.options.pendingStore.retain(saved); this.assertOpen();
+      retained = true;
       this.publish({ hasPendingSubmission: true });
       const result = await this.options.resources.appendMutations(saved.admission); this.assertOpen();
       if (result.status === "rejected") {
         // This response certifies that nothing was admitted. Release only the
         // exact send journal; the editable text and files remain for correction.
+        this.outgoing = null;
         const rejection = new ConversationSyncMutationRejectedError(result.code);
         await this.options.pendingStore.acknowledge(saved); this.assertOpen();
         this.publish({ hasPendingSubmission: false });
@@ -436,10 +471,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
         saved.admission.mutations.some(mutation => result.acknowledgements.filter(ack => ack.mutationId === mutation.mutationId && ["accepted", "duplicate"].includes(ack.status)).length !== 1)) {
         throw new ApplicationConversationSessionError("admission_unconfirmed", "The saved message could not be confirmed. Retry its original submission.", true);
       }
-      const control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId: saved.start.conversationTurnId }, this.lifetime.signal);
-      this.assertOpen();
-      if (control.status !== "ready" || !control.requestedTurn) throw new ApplicationConversationSessionError("admission_unconfirmed", "The saved turn is not visible yet.", true);
-      await this.refresh(); this.assertOpen();
+      if (this.outgoing) this.outgoing = { ...this.outgoing, status: "sent" };
+      this.publish();
       if (saved.localDraft) {
         try {
           if (saved.localDraft.textVersion !== undefined) {
@@ -458,6 +491,10 @@ export class ApplicationConversationSession<TRequest = unknown> {
       this.assertOpen(); this.admitted = saved;
       for (const callback of this.callbacks.splice(0)) this.acceptCallback(callback);
       this.assertOpen();
+      const control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId: saved.start.conversationTurnId }, this.lifetime.signal);
+      this.assertOpen();
+      if (control.status !== "ready" || !control.requestedTurn) throw new ApplicationConversationSessionError("admission_unconfirmed", "The saved turn is not visible yet.", true);
+      this.scheduleRefresh();
       if (!terminal(control.requestedTurn)) {
         const started = await this.options.transport.startTurn(saved.start);
         if (!started.ok) throw new ApplicationConversationSessionError(started.error.code, started.error.message, started.error.retryable);
@@ -470,7 +507,10 @@ export class ApplicationConversationSession<TRequest = unknown> {
       await this.options.pendingStore.acknowledge(saved); this.assertOpen();
       this.publish({ hasPendingSubmission: false });
       return terminal(control.requestedTurn) ? control.requestedTurn : this.waitForTurn(saved.start.conversationTurnId);
-    }).catch((cause: unknown) => { const error = normalize(cause); this.publish({ error }); throw error; })
+    }).catch((cause: unknown) => {
+      if (!retained || denied(cause)) this.outgoing = null;
+      if (this.outgoing?.status === "sending") this.outgoing = { ...this.outgoing, status: "unconfirmed" };
+      const error = normalize(cause); this.publish({ error }); throw error; })
       .finally(() => { this.submission = null; this.callbacks = []; this.admitted = null; this.publish({ submitting: false }); });
     this.submission = { json, promise }; this.publish({ submitting: true }); return promise;
   }
@@ -542,7 +582,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
       ? this.options.draftWorkspace.release(this.draft) : this.draft.dispose()), this.flushPosition()]).then(() => { this.position = null; });
     this.options.onLocalStateFlush?.(flushed);
     this.observation?.disconnect(); this.observation = null; this.observationTurnId = null; this.unsubscribeWindow(); this.window.dispose();
-    this.control = null; this.clearRelated();
+    this.control = null; this.outgoing = null; this.clearRelated();
     this.admitted = null; this.submission = null; this.callbacks = []; this.cancellationIds.clear();
     this.state = Object.freeze({ kind: "display", conversationId: this.options.conversationId, control: null,
       window: this.window.getSnapshot(), related: this.related, hasMoreRelated: false, relatedTruncated: false, loading: false, submitting: false, hasPendingSubmission: false, error: null });

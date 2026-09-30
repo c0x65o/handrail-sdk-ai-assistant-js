@@ -13,13 +13,15 @@ export interface LiveConversationProjection {
    * Terminal settlement still waits for finish and its authoritative outcome.
    * Call sequentially and only after the durable writer has saved the frame. */
   push(frame: StreamEvent): Promise<void>;
+  /** At most 64 retained frames; resolves after every frame is applied. */
+  pushBatch(frames: readonly StreamEvent[]): Promise<void>;
   finish(result: TurnObservationResult): Promise<ConversationRuntimeTurnResult>;
   disconnect(): Promise<void>;
 }
 
 /** One canonical runtime per active durable writer, independent of browser views.
  * Reuses the protocol/CAS/deduplication machinery used by legacy clients. The
- * input channel retains at most one frame. No display page seeds this runtime.
+ * input channel retains at most 64 frames. No display page seeds this runtime.
  * Runtime hydration is still canonical; this is not a bounded display read. */
 export async function createLiveConversationProjection(input: {
   readonly conversationId: string;
@@ -29,7 +31,7 @@ export async function createLiveConversationProjection(input: {
   readonly usageReceiptSink?: { capture(receipt: NormalizedUsageReceipt): Promise<void> };
 }): Promise<LiveConversationProjection | null> {
   await input.authorize();
-  type FrameSlot = { frame: StreamEvent; accept: () => void; reject: (cause: unknown) => void };
+  type FrameSlot = { frames: readonly StreamEvent[]; remaining: number; accept: () => void; reject: (cause: unknown) => void };
   let slot: FrameSlot | null = null, inFlight: FrameSlot | null = null;
   let wake: (() => void) | null = null, closed = false, writing = false;
   let resolveResult!: (result: TurnObservationResult) => void;
@@ -47,7 +49,7 @@ export async function createLiveConversationProjection(input: {
         if (!slot) await new Promise<void>(resolve => { wake = resolve; });
         if (closed) return;
         const current = slot!; slot = null; inFlight = current;
-        yield current.frame;
+        yield* current.frames;
       }
     })(), result,
     disconnect: () => close({ status: "disconnected", checkpoint: emptyCheckpoint }),
@@ -66,7 +68,8 @@ export async function createLiveConversationProjection(input: {
   const conversationId = input.conversationId as ConversationId;
   const runtime = await createConversationRuntime({ conversationId, clientId: "server-live-projection" as never,
     eventStore: events, transport, retryPolicy: createRetryPolicy({ maximumAttempts: 1 }),
-    onFrameApplied: () => { inFlight?.accept(); inFlight = null; },
+    batchTextFrames: true,
+    onFrameApplied: () => { if (inFlight && --inFlight.remaining === 0) { inFlight.accept(); inFlight = null; } },
     ...(input.usageReceiptSink ? { usageReceiptSink: input.usageReceiptSink } : {}) });
   const bindingId = `live-binding:${createHash("sha256").update(JSON.stringify([input.conversationId, input.turnId])).digest("hex")}`;
   try {
@@ -98,19 +101,23 @@ export async function createLiveConversationProjection(input: {
     observation.disconnect(); runtime.destroy();
   });
   void completion.catch(() => {});
-  return {
-    async push(frame) {
+  const projection: LiveConversationProjection = {
+    push(frame) { return projection.pushBatch([frame]); },
+    async pushBatch(frames) {
+      if (frames.length === 0) return;
+      if (frames.length > 64) throw new Error("Live projection batch exceeds 64 frames");
       if (closed) throw failure ?? new Error("Live projection is closed");
-      if (writing) throw new Error("Live projection accepts one frame at a time");
+      if (writing) throw new Error("Live projection accepts one batch at a time");
       writing = true;
       try {
         await input.authorize();
         if (closed) throw failure ?? new Error("Live projection is closed");
-        await new Promise<void>((accept, reject) => { slot = { frame, accept, reject }; wake?.(); wake = null; });
+        await new Promise<void>((accept, reject) => { slot = { frames: [...frames], remaining: frames.length, accept, reject }; wake?.(); wake = null; });
         if (closed) throw failure ?? new Error("Live projection stopped before applying the frame");
       } finally { writing = false; }
     },
     async finish(outcome) { close(outcome); return completion; },
     async disconnect() { observation.disconnect(); runtime.destroy(); await completion.catch(() => {}); },
   };
+  return projection;
 }

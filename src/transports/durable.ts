@@ -1,3 +1,4 @@
+import { streamBatches } from "../stream-batches.js";
 import type { AiDiagnosticSink } from "../diagnostics.js";
 import { emitAiDiagnostic } from "../diagnostics.js";
 import { jsonValuesEqual } from "../json-equality.js";
@@ -111,6 +112,8 @@ export interface DurableApplicationTransportOptions<TEvent, TRequest, TStoredReq
   readonly store: DurableApplicationTurnStore<TStoredRequest, TEvent>;
   readonly requestCodec: DurableApplicationTurnRequestCodec<TRequest, TStoredRequest>;
   readonly checkpointForEvent: (event: TEvent) => TurnResumePoint;
+  /** Consecutive eligible frames share a durable write; original frames/checkpoints remain intact. */
+  readonly batchEvent?: (event: TEvent) => boolean;
   readonly workerId: string;
   readonly leaseMilliseconds?: number;
   readonly pollMilliseconds?: number;
@@ -470,13 +473,12 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
       // is quiet. The finally block still joins the actual monitor promise.
       void monitoring.catch(() => undefined);
       try {
-        for await (const event of started.value.observation.events) {
-          const eventCheckpoint = normalizeCheckpoint(options.checkpointForEvent(event));
+        for await (const batch of streamBatches(started.value.observation.events, options.batchEvent ?? (() => false))) {
+          const items = batch.map(event => ({ checkpoint: normalizeCheckpoint(options.checkpointForEvent(event)), event: clone(event) }));
           const persisted = await update(conversationId, turnId, (record) => {
             if (record.lease?.ownerId !== workerId) throw new LeaseLostError();
             const currentTime = now();
-            return { ...record, events: [...record.events, { sequence: record.events.length + 1,
-              checkpoint: eventCheckpoint, event: clone(event) }],
+            return { ...record, events: [...record.events, ...items.map((item, index) => ({ ...item, sequence: record.events.length + index + 1 }))],
               lease: { ownerId: workerId, expiresAt: timestamp(currentTime + leaseMilliseconds) }, updatedAt: timestamp(currentTime) };
           });
           if (persisted && options.onEventPersisted) {

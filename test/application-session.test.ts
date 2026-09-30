@@ -456,3 +456,44 @@ it("aborts and discards a late display read when switching away", async () => {
   gate.resolve(f.page(f.records.slice(-30))); await loading;
   expect(f.session.getSnapshot().window.records).toEqual([]); expect(f.session.getSnapshot().related).toEqual([]);
 });
+
+it("shows the exact outgoing message synchronously while preflight is stalled and blocks double sends", async () => {
+  const f = fixture(); await f.session.initialize();
+  const held = deferred<ApplicationConversationSubmission<{ text: string }> | null>();
+  vi.mocked(f.pendingStore.load).mockReturnValueOnce(held.promise);
+  const sending = f.session.sendMessage({ content: "Immediate feedback", request: { text: "Immediate feedback" } });
+  expect(f.session.getSnapshot()).toMatchObject({ submitting: true, outgoingMessage: {
+    status: "sending", message: { message_id: "message_op1", content: [{ type: "text", text: "Immediate feedback" }] },
+  } });
+  expect(f.resources.appendMutations).not.toHaveBeenCalled();
+  await expect(f.session.sendMessage({ content: "Duplicate", request: { text: "Duplicate" } })).rejects.toMatchObject({ code: "pending_send_exists" });
+  held.resolve(null); await sending;
+  expect(f.session.getSnapshot().outgoingMessage?.status).toBe("sent");
+  expect(f.saved()).toBeNull();
+  const message = f.session.getSnapshot().outgoingMessage!.message;
+  f.records.push({ kind: "message", id: message.message_id, revision: 1, bytes: 200, deferred: false, turnId: "turn_op1", value: message });
+  // Refresh the latest window once projection catches up.
+  await f.session.window.jumpToLatest();
+  expect(f.session.getSnapshot().outgoingMessage).toBeNull();
+});
+
+it("notifies acceptance before a slow post-admission control read", async () => {
+  const f = fixture(); await f.session.initialize();
+  const original = f.reader.control;
+  const held = deferred<ConversationDisplayControl>();
+  f.reader.control = vi.fn((input, signal) => input.turnId ? held.promise : original(input, signal));
+  const accepted = vi.fn();
+  const sending = f.session.sendMessage({ content: "hello", request: { text: "hello" }, onAccepted: accepted });
+  await vi.waitFor(() => expect(accepted).toHaveBeenCalledOnce());
+  expect(f.transport.startTurn).not.toHaveBeenCalled();
+  expect(f.session.getSnapshot().outgoingMessage?.status).toBe("sent");
+  f.reader.control = original; held.resolve(f.control("turn_op1")); await sending;
+});
+
+it("removes local feedback when preflight fails before a submission is retained", async () => {
+  const f = fixture(); await f.session.initialize();
+  vi.mocked(f.pendingStore.load).mockRejectedValueOnce(new Error("Device storage unavailable"));
+  await expect(f.session.sendMessage({ content: "keep draft", request: { text: "keep draft" } })).rejects.toThrow();
+  expect(f.session.getSnapshot()).toMatchObject({ submitting: false, outgoingMessage: null });
+  expect(f.resources.appendMutations).not.toHaveBeenCalled();
+});

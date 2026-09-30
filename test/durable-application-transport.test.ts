@@ -342,3 +342,27 @@ it("does not recover or poll approval waits, and human resumes do not exhaust th
   }
   expect((await store.load("paused", "paused"))?.record).toMatchObject({ attempt: 5, approvalResumes: 4 });
 });
+
+it("saves bounded text batches with unchanged frames and resumable checkpoints before projecting", async () => {
+  const store = new InMemoryDurableApplicationTurnStore<Request, Event>();
+  const emitted = Array.from({ length: 140 }, (_, index) => ({ id: String(index + 1), text: "x" }));
+  const projected: number[] = [];
+  const transport = createDurableApplicationTransport({ delegate: delegate(emitted, { status: "completed", checkpoint: checkpoint("140") }).transport,
+    store, workerId: "batch-writer", pollMilliseconds: 25, batchEvent: () => true,
+    async onEventPersisted(document) {
+      expect((await store.load(input.conversationId, input.conversationTurnId))!.record.events).toEqual(document.record.events);
+      projected.push(document.record.events.length);
+    },
+    requestCodec: { encode: (request: Request) => request, decode: request => request, fingerprint: request => request.ref },
+    checkpointForEvent: event => checkpoint(event.id) });
+  try {
+    const started = await transport.startTurn(input);
+    if (!started.ok) throw new Error(started.error.message);
+    expect(await collect(started.value.observation.events)).toEqual(emitted);
+    expect(await started.value.observation.result).toMatchObject({ status: "completed" });
+    expect(projected).toEqual([64, 128, 140]);
+    const saved = (await store.load(input.conversationId, input.conversationTurnId))!.record.events;
+    expect(saved.map(item => item.sequence)).toEqual(emitted.map((_, index) => index + 1));
+    expect(saved.map(item => item.checkpoint)).toEqual(emitted.map(event => checkpoint(event.id)));
+  } finally { await transport.stopWorkers(); }
+});

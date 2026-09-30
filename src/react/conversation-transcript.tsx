@@ -44,15 +44,20 @@ function PagedConversationTranscript({ session, state, proposals, includeToolRes
         <strong>Request failed</strong><p>{entry.turn.error?.message ?? "The assistant could not complete this request."}</p></article>;
     pending.push(<Fragment key={key}>{node}</Fragment>);
   }
+  const contentVersion = useMemo(() => [snapshot.related, snapshot.outgoingMessage], [snapshot.related, snapshot.outgoingMessage]);
   return <ConversationDisplayTranscript {...props} controller={session.window} conversationId={snapshot.conversationId}
     manageSelection={false} positions={positions} pollingMilliseconds={0} onFollowingLatestChange={value => session.setFollowingLatest(value)}
     {...(session.supportsMessageText ? { readMessageText: session.readMessageText } : {})}
     {...(snapshot.hasMoreRelated ? { olderActivity: { load: () => session.loadMoreRelated(), disabled: snapshot.loading, error: snapshot.error !== null } } : {})}
-    contentVersion={snapshot.related} renderBeforeMessage={record => before.get(record.id)}
-    emptyState={emptyState} renderMessage={record => {
+    contentVersion={contentVersion} renderBeforeMessage={record => before.get(record.id)}
+    emptyState={snapshot.outgoingMessage ? null : emptyState} renderMessage={record => {
       const message = state.messages.find(message => message.message_id === record.id) ?? record.value;
       return message ? renderMessage?.(message) ?? <Message message={message}/> : null;
     }}>
+    {snapshot.outgoingMessage && <article data-outgoing-message={snapshot.outgoingMessage.message.message_id}>
+      {renderMessage?.(snapshot.outgoingMessage.message) ?? <Message message={snapshot.outgoingMessage.message}/>}
+      <p role="status">{snapshot.outgoingMessage.status === "sending" ? "Sending…" : snapshot.outgoingMessage.status === "sent" ? "Sent" : "Send unconfirmed — retry saved message"}</p>
+    </article>}
     {pending}{snapshot.loading && snapshot.window.status === "empty" && <p role="status">Loading conversation…</p>}
     {snapshot.error && <div role="alert"><p>{snapshot.error.message}</p>
       {snapshot.error.retryable && <button type="button" onClick={() => { void session.refresh().catch(() => undefined); }}>Retry conversation</button>}</div>}
