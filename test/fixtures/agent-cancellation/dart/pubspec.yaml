@@ -1,0 +1,10 @@
+name: handrail_projection_fixture
+publish_to: none
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+dependencies:
+  handrail_ai_client:
+    git:
+      url: https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter.git
+      ref: 5b75c071f2926ca6b34e887088987b2d98c0662c
+      path: packages/handrail_ai_client

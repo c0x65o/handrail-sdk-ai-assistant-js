@@ -484,6 +484,8 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     if (!running) {
       await reconcileDurableConversationTurn({ conversationId, turnId, events: bundle.events,
         turns: bundle.durableTurns as never, attribution: context.attribution,
+        authorize: async () => { await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never }); },
+        ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
         ...(bundle.usageReceiptSink ? { usageReceiptSink: bundle.usageReceiptSink } : {}) });
     }
     // Title work is independent of the observing browser and never delays the answer.
@@ -749,6 +751,9 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
               const result = await cancellation.capability.cancelTurn(input);
               if (result.ok || result.error.code !== "not_found") return result;
               try {
+                // not_found also represents denied recovery authority. The
+                // pre-start fallback must not read or settle that user's turn.
+                await catalogFor(context).get({ authorizationContext: context, conversationId: input.conversationId as never });
                 const replay = await replayConversation({ conversationId: input.conversationId as never,
                   eventStore: bundleFor(context).events, checkpointPolicy: false });
                 try {
@@ -761,7 +766,8 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
                   if (replay.state.active_turn_id !== input.turnId) return result;
                   return await durable.cancelTurnBeforeStart(input);
                 } finally { replay.store.destroy(); }
-              } catch {
+              } catch (cause) {
+                if (cause instanceof ConversationCatalogError && (cause.code === "not_found" || cause.code === "forbidden")) return result;
                 return { ok: false as const, error: { code: "unavailable" as const,
                   message: "The admitted turn could not be cancelled.", retryable: true } };
               }
@@ -1097,6 +1103,31 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
             };
             const history = new PostgresConversationDisplayHistory(options.persistence.persistence.client,
               current.tenantId, current.scopeId, authorize);
+            const reconcileDisplay = async (input: { conversationId: string; turnId?: string }) => {
+              const control = await history.control(input); // authorizes before any durable lookup
+              if (control.status !== "ready") return control;
+              const pending = new Map([control.activeTurn, control.latestTurn, control.requestedTurn]
+                .filter(turn => turn && !["completed", "cancelled", "failed"].includes(turn.status))
+                .map(turn => [turn!.turnId, turn!.status]));
+              if (pending.size === 0) return control;
+              // At most three scalar identities. Ordinary display polling must
+              // not hydrate requests, stream frames or the canonical event log.
+              const settled = await options.persistence.persistence.client.query<{ record_id: string; durable_status: string }>(
+                `SELECT record_id,durable_status FROM handrail_ai_documents
+                 WHERE tenant_id=$1 AND kind='durable_turn' AND scope_id=$2 AND record_id=ANY($3::text[])
+                 AND durable_status IN ('completed','cancelled','failed','waiting_for_approval')`,
+                [current.tenantId, input.conversationId, [...pending.keys()]]);
+              let repaired = false;
+              for (const row of settled.rows) {
+                if (row.durable_status === pending.get(row.record_id)) continue;
+                // A terminal worker may have lost its projection callback. The
+                // existing authorized reconciler owns canonical writes; display
+                // records are still derived only from that canonical event log.
+                await reconcileSafely(current, input.conversationId, row.record_id);
+                repaired = true;
+              }
+              return repaired ? history.control(input) : control;
+            };
             const prepare = <T extends Pick<ConversationDisplayPage, "status" | "conversationId">>(page: T): T => {
                 if (page.status === "preparing" && historyRequest) {
                   const key = JSON.stringify(["history-backfill", identity, page.conversationId]);
@@ -1113,9 +1144,16 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
                 return page;
             };
             return {
-              control: async input => prepare(await history.control(input)),
-              page: async input => prepare(await history.page(input)),
-              changes: async input => prepare(await history.changes(input)),
+              control: async input => prepare(await reconcileDisplay(input)),
+              page: async input => {
+                await reconcileDisplay({ conversationId: input.conversationId,
+                  ...(input.view && "turnId" in input.view && input.view.turnId ? { turnId: input.view.turnId } : {}) });
+                return prepare(await history.page(input));
+              },
+              changes: async input => {
+                await reconcileDisplay({ conversationId: input.conversationId });
+                return prepare(await history.changes(input));
+              },
               content: input => history.content(input),
               approvalReview: async input => prepare(await history.approvalReview(input)),
             };

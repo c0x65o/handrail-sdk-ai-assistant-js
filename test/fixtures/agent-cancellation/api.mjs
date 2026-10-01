@@ -4,5 +4,5 @@ export { createAgentConversationTransport, createAgentCheckpointReader } from 'h
 export { createJobAdmission } from 'handrail-agent-sdk/server';
 export { default as pg } from 'pg';
 export { z } from 'zod';
-// Baseline reproduction uses the frozen public AI dependency of this Agent pin.
+// Baseline reproduction uses the assigned public AI pin, also enforced for Agent.
 export { createHandrailAssistant as baselineAssistant } from '@handrail/ai-assistant/server/assistant';

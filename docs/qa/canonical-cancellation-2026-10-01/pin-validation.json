@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "manifestAndBothNpmLocks": {
+    "@handrail/ai-assistant": "git+https://github.com/c0x65o/handrail-sdk-ai-assistant-js.git#79c1d5644845630b74d347874acb13b27ca7c873",
+    "handrail-agent-sdk": "git+https://github.com/c0x65o/handrail-agent-sdk.git#4b10d0156e4337fbcba95fe91520ec41aaf6eb58"
+  },
+  "nestedAIResolution": "one deduplicated AI 0.2.63",
+  "flutterClient": {
+    "repository": "https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter.git",
+    "ref": "5b75c071f2926ca6b34e887088987b2d98c0662c",
+    "path": "packages/handrail_ai_client"
+  },
+  "candidateAI": "built root public exports, intentionally unpublished source"
+}

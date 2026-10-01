@@ -1,0 +1,105 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ✓ test/server-approval-pause.integration.test.ts (11 tests) 17476ms
+   ✓ HTTP decisions resume an external confirmed proposal after restart without reopening its provider  310ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=complete)  2587ms
+   ✓ rests across comments and restart, then resumes rejected once (comment=complete)  2476ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=running)  2220ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=none)  1354ms
+   ✓ rests across comments and restart, then resumes rejected once (comment=none)  1364ms
+   ✓ enables automatic approval during a paused request and retains the setting after restart  1412ms
+   ✓ enables automatic approval during a running request and retains the setting after restart  1100ms
+   ✓ Stop on the supported Responses delegate survives restart and a later confirmed decision  1230ms
+   ✓ Stop on the supported Responses delegate survives restart and a later rejected decision  1211ms
+ ✓ test/postgres-display-history.integration.test.ts (21 tests) 3462ms
+   ✓ indexed display history > reviews oversized bound arguments in authorized sections and rejects mismatched or changed bindings  316ms
+   ✓ indexed display history > discovers old pending approvals without loading their messages and pages decisions independently  416ms
+ ❯ test/durable-canonical-start.test.ts (21 tests | 1 failed) 3729ms
+   ✓ qualifies an attachment-only message with an empty saved text placeholder: matching 13ms
+   ✓ qualifies an attachment-only message with an empty saved text placeholder: changed-text 2ms
+   ✓ qualifies an attachment-only message with an empty saved text placeholder: changed-attachment 2ms
+   ✓ qualifies an attachment-only message with an empty saved text placeholder: changed-admission 2ms
+   ✓ starts a follow-up after 999 history events and never replays completed work 113ms
+   ✓ starts a follow-up after 1000 history events and never replays completed work 83ms
+   ✓ starts a follow-up after 1166 history events and never replays completed work 91ms
+   ✓ starts a follow-up after 2001 history events and never replays completed work 160ms
+   ✓ admits a saved follow-up at PostgreSQL revision 1167 after a failed action  2819ms
+   ✓ still rejects mismatched identity after the first history page 57ms
+   ✓ still rejects mismatched message after the first history page 53ms
+   ✓ still rejects mismatched attachments after the first history page 58ms
+   ✓ still rejects mismatched conversation after the first history page 33ms
+   ✓ does not execute a delayed start after canonical cancelled 27ms
+   ✓ does not execute a delayed start after canonical completed 26ms
+   ✓ does not execute a delayed start after canonical failed 26ms
+   ✓ does not execute a delayed start after canonical cancellation_requested 26ms
+   ✓ still replays retained completed work without executing again 26ms
+   ✓ atomically reserves cancellation before a delayed start without decoding input 1ms
+   ✓ uses ordinary cancellation when a start wins creation 79ms
+   × cancels an admitted turn through the high-level HTTP gateway before start exists 30ms
+     → expected { ok: false, error: { …(3) } } to match object { ok: true, …(1) }
+(4 matching properties omitted from actual)
+ ✓ test/postgres-durable-recovery.integration.test.ts (2 tests) 4100ms
+   ✓ pages on immutable tenant keys, retains the scan boundary, and recovers behind denied rows without claiming them  2414ms
+   ✓ discovers large retained histories through scalar metadata and authorizes before loading any body  1685ms
+ ✓ test/server-reconcile-conversation.test.ts (30 tests) 3752ms
+   ✓ server stored-output reconciliation > repairs legacy snapshot clients without rerunning work; completes before reload: true, history events: 0  801ms
+   ✓ server stored-output reconciliation > repairs legacy snapshot clients without rerunning work; completes before reload: false, history events: 0  986ms
+   ✓ server stored-output reconciliation > repairs legacy snapshot clients without rerunning work; completes before reload: true, history events: 120  808ms
+   ✓ server stored-output reconciliation > repairs legacy snapshot clients without rerunning work; completes before reload: false, history events: 120  1056ms
+ ✓ test/server-live-gateway.test.ts (3 tests) 2832ms
+   ✓ runs the negotiated JS session through the protected gateway and PostgreSQL projection without client canonical hydration  2650ms
+ ✓ test/durable-stop-recovery.test.ts (15 tests) 2536ms
+   ✓ keeps timeout cancellation discoverable beyond execution retry exhaustion  1104ms
+ ✓ test/durable-execution-identity.test.ts (6 tests) 2483ms
+   ✓ durable execution identity > retains the old claim after takeover and never re-executes terminal replay (postgres)  2173ms
+ ✓ test/server-assistant-worker-ownership.test.ts (4 tests) 1070ms
+ ✓ test/durable-application-transport.test.ts (17 tests) 991ms
+ ✓ test/runtime-cancellation.test.ts (14 tests) 965ms
+ ✓ test/server-assistant.test.ts (9 tests) 771ms
+ ✓ test/application-display-history.test.ts (10 tests) 722ms
+   ✓ returns bounded idempotent decision receipts and refuses mismatched review bindings before mutation  547ms
+ ✓ test/server-assistant-recovery-authorization.test.ts (4 tests) 513ms
+ ✓ test/durable-recovery-page.test.ts (4 tests) 382ms
+ ✓ test/server-live-conversation-projection.test.ts (8 tests) 242ms
+ ✓ test/application-gateway-synchronization.test.ts (2 tests) 113ms
+ ✓ test/application-gateway.test.ts (10 tests) 43ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/durable-canonical-start.test.ts > cancels an admitted turn through the high-level HTTP gateway before start exists
+AssertionError: expected { ok: false, error: { …(3) } } to match object { ok: true, …(1) }
+(4 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "ok": true,
+-   "value": {
+-     "status": "already_terminal",
+-   },
++   "ok": false,
+  }
+
+ ❯ test/durable-canonical-start.test.ts:258:33
+    256|   expect(await turns.load(conversationId, "unknown")).toBeNull();
+    257|   const response = await post("turns/cancel", cancel);
+    258|   expect(await response.json()).toMatchObject({ ok: true, value: { sta…
+       |                                 ^
+    259|   const replay = await replayConversation({ conversationId, eventStore…
+    260|   try {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 17 passed (18)
+      Tests  1 failed | 190 passed (191)
+   Start at  22:35:35
+   Duration  55.86s (transform 1.89s, setup 0ms, collect 5.26s, tests 46.18s, environment 3ms, prepare 1.13s)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

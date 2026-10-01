@@ -6,7 +6,7 @@ import { InMemoryApprovalProposalStore } from "../src/conversation/approval-prop
 import { InMemoryToolExecutionLedger } from "../src/tools/executor.js";
 import { InMemoryDurableApplicationTurnStore } from "../src/transports/durable.js";
 import { createApplicationTurnTransport, type ApplicationTurnExecutionContext } from "../src/transports/application-turn.js";
-import { createApplicationGatewayTransport } from "../src/transports/application-gateway.js";
+import { createApplicationGatewayTransport, createApplicationGatewayDisplayHistory } from "../src/transports/application-gateway.js";
 import { parseConversationEvent } from "../src/conversation/events.js";
 import { replayConversation } from "../src/conversation/replay.js";
 import { AI_RUNTIME_PROTOCOL_VERSION, type AuthoritativeAttribution, type ChatRequest, type StreamEvent } from "../src/protocol.js";
@@ -26,8 +26,10 @@ const attribution: AuthoritativeAttribution = {
 
 it("runs the negotiated JS session through the protected gateway and PostgreSQL projection without client canonical hydration", async () => {
   const db = new PGlite();
+  let pollingQueries: { statement: string; values: readonly unknown[] }[] | undefined;
   const adapt = (connection: Pick<PGlite, "query">): PostgresSqlClient => {
     const sql: PostgresSqlClient = { query: async <T extends Record<string, unknown>>(statement: string, values: readonly unknown[] = []) => {
+      pollingQueries?.push({ statement, values });
       const result = await connection.query<T>(statement, [...values]); return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
     }, transaction: work => work(sql) }; return sql;
   };
@@ -74,6 +76,19 @@ it("runs the negotiated JS session through the protected gateway and PostgreSQL 
         continuation_of: null, tools: [], tool_results: [], generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} } });
     await vi.waitFor(() => expect(client.conversation!.getSnapshot().messages.at(-1)?.content).toEqual([{ type: "text", text: "Live bounded reply" }]), { timeout: 5000 });
     expect(client.conversation!.getSnapshot().active_turn_id).not.toBeNull(); expect(accepted).toHaveBeenCalledOnce();
+    // Running controls must not load durable request/output bodies or replay
+    // canonical payloads just to discover whether reconciliation is needed.
+    const controls = createApplicationGatewayDisplayHistory({ baseUrl: "https://test.local",
+      fetch: (url, init) => assistant.handle(new Request(url, init)) });
+    pollingQueries = [];
+    const control = await controls.control!({ conversationId: "bounded-chat" });
+    const observedQueries = pollingQueries;
+    pollingQueries = undefined;
+    expect(control.activeTurn?.status).toBe("running");
+    expect(observedQueries.some(({ statement }) => statement.includes("SELECT record_id,durable_status"))).toBe(true);
+    expect(observedQueries.filter(({ statement, values }) =>
+      statement.includes("SELECT payload FROM handrail_ai_events") ||
+      values.includes("durable_turn") && statement.includes("payload"))).toEqual([]);
     release(); expect((await sending).status).toBe("completed");
     const replay = await replayConversation({ conversationId: "bounded-chat" as never, eventStore: bundle.events });
     try { expect(replay.state.messages).toHaveLength(2); expect(replay.state.turns).toHaveLength(1); expect(replay.state.turns[0]!.status).toBe("completed"); }

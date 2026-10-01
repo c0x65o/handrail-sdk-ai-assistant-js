@@ -1,0 +1,88 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+TAP version 13
+# Subtest: canonical projection after native approval and restart (quota-stop)
+not ok 1 - canonical projection after native approval and restart (quota-stop)
+  ---
+  duration_ms: 1404.53943
+  type: 'test'
+  location: '/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-projection.test.mjs:29:159'
+  failureType: 'testCodeFailure'
+  error: 'Expected "actual" to be strictly unequal to: 200'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 200
+  actual: 200
+  operator: 'notStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-projection.test.mjs:168:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: canonical projection after native approval and restart (interrupted-quota-stop)
+not ok 2 - canonical projection after native approval and restart (interrupted-quota-stop)
+  ---
+  duration_ms: 1213.677507
+  type: 'test'
+  location: '/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-projection.test.mjs:29:159'
+  failureType: 'testCodeFailure'
+  error: 'Expected "actual" to be strictly unequal to: 200'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 200
+  actual: 200
+  operator: 'notStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-projection.test.mjs:168:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: canonical projection after native approval and restart (completed)
+not ok 3 - canonical projection after native approval and restart (completed)
+  ---
+  duration_ms: 1192.440819
+  type: 'test'
+  location: '/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-projection.test.mjs:29:159'
+  failureType: 'testCodeFailure'
+  error: 'Expected "actual" to be strictly unequal to: 200'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 200
+  actual: 200
+  operator: 'notStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-projection.test.mjs:168:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: canonical projection after native approval and restart (unknown-stop)
+not ok 4 - canonical projection after native approval and restart (unknown-stop)
+  ---
+  duration_ms: 1187.030722
+  type: 'test'
+  location: '/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-projection.test.mjs:29:159'
+  failureType: 'testCodeFailure'
+  error: 'Expected "actual" to be strictly unequal to: 200'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 200
+  actual: 200
+  operator: 'notStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-projection.test.mjs:168:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 0
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6073.602564
+Owned temporary PostgreSQL cluster stopped.

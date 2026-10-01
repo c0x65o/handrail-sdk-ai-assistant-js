@@ -35,7 +35,7 @@ try {
   const env = { ...process.env, HANDRAIL_TEST_POSTGRES_URL: `postgresql://fixture_role:${password}@127.0.0.1:${port}/sdk_disposable?sslmode=disable`, HANDRAIL_TEST_POSTGRES_DISPOSABLE: '1' };
   for (const key of Object.keys(env)) if (key.startsWith('PG') || key === 'NODE_PG_FORCE_NATIVE') delete env[key];
   console.log('Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.');
-  result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=tap', 'test/agent-durable-stop.test.mjs'], { env, stdio: 'inherit' });
+  result = spawnSync(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=tap', ...(process.env.HANDRAIL_PROJECTION_TEST === '1' ? ['test/agent-projection.test.mjs'] : ['test/agent-durable-stop.test.mjs'])], { env, stdio: 'inherit' });
   if (result.status !== 0) process.exitCode = 1;
 
 } catch (error) {

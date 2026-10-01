@@ -1,0 +1,71 @@
+{
+  "baseCommit": "79c1d5644845630b74d347874acb13b27ca7c873",
+  "branch": "main",
+  "committed": false,
+  "files": [
+    {
+      "path": "docs/canonical-cancellation-projection.md",
+      "sha256": "743d53fa316c3528fd848d14facc53939c1b7b08ac726e1af44ff4c8c3d68568"
+    },
+    {
+      "path": "src/server/assistant.ts",
+      "sha256": "081ed502b44a7d58a46e3f0d85772c544785bcf5052781d021721e2c5a0c1004"
+    },
+    {
+      "path": "src/server/reconcile-conversation.ts",
+      "sha256": "b0d5627c561ecefe3ac599ea3d113aabae3046079976d9cd7ad04160bbd0cb94"
+    },
+    {
+      "path": "test/agent-projection-client.mjs",
+      "sha256": "4eda7589c9c34dab94d58559873bc42bbd856ced3ece4577e28823b527c5d82e"
+    },
+    {
+      "path": "test/agent-projection.test.mjs",
+      "sha256": "6361affee23487bc9647dade03da4d195dc46dfe64fea3fdf88c3ba270b4fb24"
+    },
+    {
+      "path": "test/durable-canonical-start.test.ts",
+      "sha256": "8b94953f9f48d09e8d4108d098c64e2af36fb2ab5f19ed97c5df0f598ede6709"
+    },
+    {
+      "path": "test/fixtures/agent-cancellation/README.md",
+      "sha256": "4abee721c47d639a5eef0c30ae0f8d37c4ae75bb65379f56a1c8337d18368fa1"
+    },
+    {
+      "path": "test/fixtures/agent-cancellation/api.mjs",
+      "sha256": "39b1ee85751354a01b1195aee77c41bddb075b8022e76cf2b171961098e58e0d"
+    },
+    {
+      "path": "test/fixtures/agent-cancellation/dart/projection.dart",
+      "sha256": "cd8c83f9c8e3732d2c05a919909e9e2637e7cccdfeac4a6ba653f2d53c42c056"
+    },
+    {
+      "path": "test/fixtures/agent-cancellation/dart/pubspec.lock",
+      "sha256": "562e818f03fb3463af0799b4f2bafbfc608581f36df87734c8a22a150e16452f"
+    },
+    {
+      "path": "test/fixtures/agent-cancellation/dart/pubspec.yaml",
+      "sha256": "a3e3028d0c0e919772f189c7aa35348511b87908169879a0dbe55484da762b25"
+    },
+    {
+      "path": "test/fixtures/agent-cancellation/package-lock.json",
+      "sha256": "80301d20035db4d383bc52a8ab14daac8078e1815ced09a10e588de467903406"
+    },
+    {
+      "path": "test/fixtures/agent-cancellation/package.json",
+      "sha256": "ff4744cc457a3811fcd70982de583e30a1a147d0fa683a7a442fd844852843eb"
+    },
+    {
+      "path": "test/run-agent-stop-postgres.mjs",
+      "sha256": "caf2d3c21a97588dda834e3ca7c9dc70852b0721b652cc9773ec74e4187b4f9c"
+    },
+    {
+      "path": "test/server-live-gateway.test.ts",
+      "sha256": "fe24d7b4b2a6c877b05cdffd59b43e34a296dcd63fb1702461adac89a9ba5e92"
+    },
+    {
+      "path": "test/server-reconcile-conversation.test.ts",
+      "sha256": "e8d3b0ffe5284f6d50fb215152d2ddcf91154dd1d68b809ffcf3bbc1adf053cc"
+    }
+  ]
+}

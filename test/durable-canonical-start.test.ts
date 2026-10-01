@@ -232,9 +232,13 @@ it("cancels an admitted turn through the high-level HTTP gateway before start ex
       automation: { id: null, source: "server_derived", trust: "authoritative" },
     } };
   const records: import("../src/conversation/activity.js").ConversationActivityRecord[] = [];
+  let denied = false;
+  const catalog = new InMemoryConversationCatalog<HandrailAssistantAuthorizationContext>({
+    authorize: () => denied ? "deny" : "allow", createConversationId: () => conversationId });
+  await catalog.create({ authorizationContext: context, idempotencyKey: "create" as never });
   const bundle = { events, durableTurns: turns, toolLedger: new InMemoryToolExecutionLedger(),
     approvals: new InMemoryApprovalProposalStore({ authorize: () => "allow" }),
-    catalog: new InMemoryConversationCatalog({ authorize: () => "allow" }),
+    catalog,
     activity: { async list() { return records; }, async upsert(record: typeof records[number]) { records.push(record); return record; } },
     usageReceiptSink: null, usageAdmissions: null,
   } as unknown as PostgresAssistantPersistenceBundle<HandrailAssistantAuthorizationContext>;
@@ -254,6 +258,12 @@ it("cancels an admitted turn through the high-level HTTP gateway before start ex
   const unknown = await post("turns/cancel", { ...cancel, turnId: "unknown" });
   expect(await unknown.json()).toMatchObject({ ok: false, error: { code: "not_found" } });
   expect(await turns.load(conversationId, "unknown")).toBeNull();
+  denied = true;
+  const beforeDenied = await events.getLatestRevision(conversationId);
+  expect(await (await post("turns/cancel", cancel)).json()).toMatchObject({ ok: false, error: { code: "not_found" } });
+  expect(await turns.load(conversationId, turnId)).toBeNull();
+  expect(await events.getLatestRevision(conversationId)).toBe(beforeDenied);
+  denied = false;
   const response = await post("turns/cancel", cancel);
   expect(await response.json()).toMatchObject({ ok: true, value: { status: "already_terminal" } });
   const replay = await replayConversation({ conversationId, eventStore: events, checkpointPolicy: false });

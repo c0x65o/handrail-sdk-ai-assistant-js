@@ -9,6 +9,7 @@ import { AI_RUNTIME_PROTOCOL_VERSION, parseStreamEvent, type AuthoritativeAttrib
 import type { DurableApplicationTurnStore, DurableApplicationTurnRecord } from "../transports/durable.js";
 import type { ConversationTransport, TurnObservationResult } from "../transports/types.js";
 import { parseNormalizedUsageReceipt, type NormalizedUsageReceipt } from "../usage.js";
+import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 
 const emptyCheckpoint = { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null };
 const terminalFrame = (frame: StreamEvent) => ["response.completed", "response.cancelled", "response.error"].includes(frame.type);
@@ -48,8 +49,11 @@ export async function reconcileDurableConversationTurn(input: {
   readonly events: ConversationEventStore;
   readonly turns: DurableApplicationTurnStore<ChatRequest, StreamEvent>;
   readonly attribution: AuthoritativeAttribution;
+  readonly authorize?: () => Promise<void>;
+  readonly diagnostics?: AiDiagnosticSink;
   readonly usageReceiptSink?: { capture(receipt: NormalizedUsageReceipt): Promise<void> };
 }): Promise<boolean> {
+  await input.authorize?.();
   const document = await input.turns.load(input.conversationId, input.turnId);
   if (!document || document.record.status === "pending" || document.record.status === "running") return false;
   const record = document.record;
@@ -66,17 +70,53 @@ export async function reconcileDurableConversationTurn(input: {
       throw new Error("The stored approval pause has been superseded");
     }
   };
-  const events: ConversationEventStore = record.status === "waiting_for_approval" ? {
+  const events: ConversationEventStore = {
     ...(input.events.checkpoints ? { checkpoints: input.events.checkpoints } : {}),
     read: value => input.events.read(value),
     getLatestRevision: id => input.events.getLatestRevision(id),
     append: async value => {
+      await input.authorize?.();
       await verifyPausedSnapshot();
       // The canonical CAS closes the race after verification. Every rebased
       // append is checked again, including the runtime's final pause event.
       return input.events.append(value);
     },
-  } : input.events;
+  };
+  const settleAcknowledgedCancellation = async (): Promise<boolean> => {
+    // Output validation and execution settlement are separate facts. A corrupt
+    // replay must remain rejected, but cannot undo the durable writer's receipt
+    // that the admitted delegate accepted Stop. Never infer this from a request,
+    // an expired lease, or an observation failure.
+    if (record.status !== "cancelled" || record.terminal?.status !== "cancelled" ||
+      !record.cancellation?.acceptedAt || record.lease !== null) return false;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await input.authorize?.();
+      const current = await input.turns.load(input.conversationId, input.turnId);
+      if (!current || current.version !== document.version) return false;
+      const replay = await replayConversation({ conversationId: input.conversationId as ConversationId,
+        eventStore: events, checkpointPolicy: false });
+      const state = replay.state;
+      replay.store.destroy();
+      if (state.replay_error) throw new Error("Cancellation settlement requires valid canonical history");
+      const turn = state.turns.find(candidate => candidate.turn_id === input.turnId);
+      if (!turn || turn.started_at === null) return false;
+      if (turn.status === "cancelled") return true;
+      if (turn.status === "completed" || turn.status === "failed") throw new TypeError("Canonical and durable terminal outcomes disagree");
+      try {
+        await events.append({ conversationId: input.conversationId as ConversationId, expectedRevision: state.revision,
+          events: [parseConversationEvent({ version: 1,
+            event_id: `durable-cancelled:${createHash("sha256").update(JSON.stringify([input.conversationId, input.turnId])).digest("hex")}`,
+            conversation_id: input.conversationId, revision: (state.revision ?? 0) + 1,
+            occurred_at: record.updatedAt, actor: { type: "system" }, source: { type: "runtime" },
+            payload: { type: "turn.cancelled", turn_id: input.turnId, reason: record.cancellation.reason },
+          })] });
+        return true;
+      } catch (cause) {
+        if (!(cause instanceof ConversationEventStoreConflictError)) throw cause;
+      }
+    }
+    return false;
+  };
   try { await verifyPausedSnapshot(); } catch (cause) { if (superseded) return false; throw cause; }
   const receipt = record.terminal && record.terminal.status !== "disconnected" && record.terminal.usageReceipt
     ? parseNormalizedUsageReceipt(record.terminal.usageReceipt) : null;
@@ -165,6 +205,15 @@ export async function reconcileDurableConversationTurn(input: {
       if (superseded) return false;
       if (outcome.status === record.status) return true;
       if (outcome.status !== "interrupted") throw new Error("Stored turn output did not reach its durable outcome");
+      if (outcome.error?.retryable === false) {
+        emitAiDiagnostic(input.diagnostics, { domain: "persistence", operation: "conversation_output_projection",
+          phase: "failed", conversationId: input.conversationId, turnId: input.turnId,
+          code: "invalid_stored_output", retryable: false, cause: outcome.error });
+        if (await settleAcknowledgedCancellation()) return true;
+        // A protocol conflict is not a concurrent-write retry. Preserve it for
+        // diagnosis; in particular, never fabricate successful output from it.
+        throw new Error("Stored turn output failed protocol validation");
+      }
     } catch (cause) {
       if (superseded) return false;
       // A browser or another reconciler may have finalized during our CAS rebase.

@@ -1,0 +1,84 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+TAP version 13
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic live_conversation_projection projection_failed
+# gateway fixture diagnostic conversation_output_projection invalid_stored_output
+# Fresh JS process: cancelled, remoteMayBeRunning=false
+# Fresh Dart process: cancelled, remoteMayBeRunning=false
+# {"scenario":"quota-stop","status":"cancelled","remoteMayBeRunning":false,"effects":1,"dispatches":2,"durableEvents":3,"canonicalEvents":25,"acknowledged":true,"unknownEffects":0}
+# gateway fixture diagnostic conversations ConversationCatalogError
+# Subtest: canonical projection after native approval and restart (quota-stop)
+ok 1 - canonical projection after native approval and restart (quota-stop)
+  ---
+  duration_ms: 4150.069861
+  type: 'test'
+  ...
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic live_conversation_projection projection_failed
+# gateway fixture diagnostic conversation_output_projection invalid_stored_output
+# gateway fixture diagnostic conversation_reconciliation reconciliation_failed
+# Fresh gateway process recovered interrupted projection without provider execution.
+# Fresh JS process: cancelled, remoteMayBeRunning=false
+# Fresh Dart process: cancelled, remoteMayBeRunning=false
+# {"scenario":"interrupted-quota-stop","status":"cancelled","remoteMayBeRunning":false,"effects":1,"dispatches":2,"durableEvents":3,"canonicalEvents":27,"acknowledged":true,"unknownEffects":0}
+# Subtest: canonical projection after native approval and restart (interrupted-quota-stop)
+ok 2 - canonical projection after native approval and restart (interrupted-quota-stop)
+  ---
+  duration_ms: 4162.650709
+  type: 'test'
+  ...
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# Fresh JS process: completed, remoteMayBeRunning=false
+# Fresh Dart process: completed, remoteMayBeRunning=false
+# {"scenario":"completed","status":"completed","remoteMayBeRunning":false,"effects":1,"dispatches":2,"durableEvents":5,"canonicalEvents":27,"acknowledged":false,"unknownEffects":0}
+# Subtest: canonical projection after native approval and restart (completed)
+ok 3 - canonical projection after native approval and restart (completed)
+  ---
+  duration_ms: 3549.187913
+  type: 'test'
+  ...
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic live_conversation_projection projection_failed
+# gateway fixture diagnostic conversation_reconciliation reconciliation_failed
+# Fresh gateway process recovered interrupted projection without provider execution.
+# Fresh JS process: completed, remoteMayBeRunning=false
+# Fresh Dart process: completed, remoteMayBeRunning=false
+# {"scenario":"interrupted-completed","status":"completed","remoteMayBeRunning":false,"effects":1,"dispatches":2,"durableEvents":5,"canonicalEvents":29,"acknowledged":false,"unknownEffects":0}
+# Subtest: canonical projection after native approval and restart (interrupted-completed)
+ok 4 - canonical projection after native approval and restart (interrupted-completed)
+  ---
+  duration_ms: 3953.996811
+  type: 'test'
+  ...
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic cancel not_found
+# gateway fixture diagnostic live_conversation_projection projection_failed
+# gateway fixture diagnostic conversation_output_projection invalid_stored_output
+# Fresh JS process: cancelled, remoteMayBeRunning=false
+# Fresh Dart process: cancelled, remoteMayBeRunning=false
+# {"scenario":"unknown-stop","status":"cancelled","remoteMayBeRunning":false,"effects":1,"dispatches":2,"durableEvents":2,"canonicalEvents":25,"acknowledged":true,"unknownEffects":1}
+# Subtest: canonical projection after native approval and restart (unknown-stop)
+ok 5 - canonical projection after native approval and restart (unknown-stop)
+  ---
+  duration_ms: 3460.512714
+  type: 'test'
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 20313.344315
+Owned temporary PostgreSQL cluster stopped.

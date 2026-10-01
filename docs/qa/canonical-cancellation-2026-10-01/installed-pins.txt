@@ -1,0 +1,5 @@
+handrail-durable-stop-fixture@ /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/fixtures/agent-cancellation
+├── @handrail/ai-assistant@0.2.63 overridden (git+https://github.com/c0x65o/handrail-sdk-ai-assistant-js.git#79c1d5644845630b74d347874acb13b27ca7c873)
+└─┬ handrail-agent-sdk@0.1.7 overridden (git+https://github.com/c0x65o/handrail-agent-sdk.git#4b10d0156e4337fbcba95fe91520ec41aaf6eb58)
+  └── @handrail/ai-assistant@0.2.63 deduped
+

@@ -333,6 +333,72 @@ describe("server stored-output reconciliation", () => {
     await expect(reconcileDurableConversationTurn(input)).rejects.toThrow();
     expect((await state()).turns[0]?.status).not.toBe("completed");
   });
+
+  const conflictingStart = { ...frames[0]!, attribution: { ...attribution,
+    session: { ...attribution.session, id: "refreshed-session" } } } as StreamEvent;
+  const acknowledgedConflict = async () => {
+    const fixture = await setup("cancelled", [frames[0]!, frames[1]!, conflictingStart]);
+    const saved = (await fixture.input.turns.load("conversation", "turn"))!;
+    await fixture.input.turns.compareAndSet({ conversationId: "conversation", turnId: "turn", expectedVersion: saved.version,
+      record: { ...saved.record, cancellation: { ...saved.record.cancellation!, acceptedAt: saved.record.updatedAt } } });
+    return fixture;
+  };
+  it("settles acknowledged Stop independently of a rejected replay without rewriting retained evidence", async () => {
+    const { input, state } = await acknowledgedConflict();
+    const durable = await input.turns.load("conversation", "turn");
+    const diagnostics = vi.fn();
+    await Promise.all([reconcileDurableConversationTurn({ ...input, diagnostics }), reconcileDurableConversationTurn({ ...input, diagnostics })]);
+    const settled = await state();
+    expect(settled.turns[0]).toMatchObject({ status: "cancelled", remote_may_still_be_running: false, cancellation_reason: "user" });
+    expect(settled.messages[0]?.content).toEqual([{ type: "text", text: "Stored answer" }]);
+    expect(settled.active_turn_id).toBeNull();
+    expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({ code: "invalid_stored_output", retryable: false }));
+    expect(await input.turns.load("conversation", "turn")).toEqual(durable);
+    const log = await input.events.read({ conversationId: "conversation" as never });
+    expect(log.entries.filter(({ event }) => event.payload.type === "turn.cancelled")).toHaveLength(1);
+    expect(log.entries.map(({ event }) => event.revision)).toEqual(log.entries.map((_, index) => index + 1));
+    await reconcileDurableConversationTurn(input);
+    expect((await state()).revision).toBe(settled.revision);
+  });
+  it("recovers an interrupted cancellation append, including a lost successful reply", async () => {
+    const { input, state } = await acknowledgedConflict();
+    const append = input.events.append.bind(input.events);
+    let interruption: "before" | "after" | null = "before";
+    vi.spyOn(input.events, "append").mockImplementation(async request => {
+      if (!request.events.some(event => event.payload.type === "turn.cancelled")) return append(request);
+      if (interruption === "before") { interruption = "after"; throw new Error("Projection unavailable"); }
+      const saved = await append(request);
+      if (interruption === "after") { interruption = null; throw new Error("Projection reply lost"); }
+      return saved;
+    });
+    await expect(reconcileDurableConversationTurn(input)).rejects.toThrow("Projection unavailable");
+    expect((await state()).turns[0]?.remote_may_still_be_running).toBe(true);
+    await expect(reconcileDurableConversationTurn(input)).rejects.toThrow("Projection reply lost");
+    await reconcileDurableConversationTurn(input);
+    expect((await state()).turns[0]?.status).toBe("cancelled");
+    const log = await input.events.read({ conversationId: "conversation" as never });
+    expect(log.entries.filter(({ event }) => event.payload.type === "turn.cancelled")).toHaveLength(1);
+  });
+  it.each(["unacknowledged", "completed", "changed-document", "revoked"] as const)(
+    "does not turn uncertain, successful, stale or unauthorized work into cancellation (%s)", async mode => {
+      const { input, state } = mode === "completed"
+        ? await setup("completed", [frames[0]!, frames[1]!, conflictingStart, frames[2]!])
+        : mode === "unacknowledged" ? await setup("cancelled", [frames[0]!, conflictingStart]) : await acknowledgedConflict();
+      let revoked = false;
+      const authorize = async () => { if (revoked) throw new Error("Access revoked"); };
+      // Change the durable generation just before the separate settlement read.
+      const load = input.turns.load.bind(input.turns);
+      let reads = 0;
+      vi.spyOn(input.turns, "load").mockImplementation(async (...args) => {
+        const saved = await load(...args);
+        return mode === "changed-document" && ++reads > 1 && saved ? { ...saved, version: saved.version + 1 } : saved;
+      });
+      await expect(reconcileDurableConversationTurn({ ...input, authorize,
+        diagnostics: () => { if (mode === "revoked") revoked = true; } })).rejects.toThrow();
+      expect((await state()).turns[0]?.remote_may_still_be_running).toBe(true);
+      expect((await input.events.read({ conversationId: "conversation" as never })).entries
+        .some(({ event }) => event.payload.type === "turn.cancelled")).toBe(false);
+    });
 });
 
 it.each(['before-replay', 'during-pause-append'] as const)("does not overwrite an approved turn admission with an old pause (%s)", async timing => {

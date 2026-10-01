@@ -3,8 +3,20 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "handrail-agent-sdk": "git+https://git@github.com/c0x65o/handrail-agent-sdk.git#f6eb0ef10af89a8ecaea0707610d7709483eaa49",
+    "handrail-agent-sdk": "git+https://github.com/c0x65o/handrail-agent-sdk.git#4b10d0156e4337fbcba95fe91520ec41aaf6eb58",
     "pg": "8.23.0",
-    "zod": "4.3.6"
+    "zod": "4.3.6",
+    "@handrail/ai-assistant": "git+https://github.com/c0x65o/handrail-sdk-ai-assistant-js.git#79c1d5644845630b74d347874acb13b27ca7c873"
+  },
+  "overrides": {
+    "handrail-agent-sdk": {
+      "@handrail/ai-assistant": "$@handrail/ai-assistant"
+    }
+  },
+  "packageManager": "npm@12.0.2",
+  "allowScripts": {
+    "git+https://github.com/c0x65o/handrail-sdk-ai-assistant-js.git#79c1d5644845630b74d347874acb13b27ca7c873": true,
+    "git+https://github.com/c0x65o/handrail-agent-sdk.git#4b10d0156e4337fbcba95fe91520ec41aaf6eb58": true,
+    "git+https://github.com/c0x65o/handrail-mcp.git#eb879d767d05c7c2e15748f6fe7838294b980d82": true
   }
 }
