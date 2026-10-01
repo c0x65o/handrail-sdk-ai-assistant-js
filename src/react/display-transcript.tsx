@@ -113,6 +113,9 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
   const [activityRequest, setActivityRequest] = useState<ActivityRequest | null>(null);
   const currentActivityRequest = activityRequest?.controller === controller && activityRequest.conversationId === conversationId ? activityRequest : null;
   const loadingActivity = currentActivityRequest?.status === "loading";
+  // Changes synchronize the current window; Jump can queue behind that read.
+  // Paging/navigation still disables duplicate interaction and exposes busy.
+  const navigating = state.loading !== null && state.loading !== "changes";
   const previousActivityRequest = useRef(currentActivityRequest);
   useEffect(() => {
     activityRequestRef.current = null; setActivityRequest(null);
@@ -280,7 +283,7 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       {state.hasNewer && <button type="button" disabled={state.loading !== null || loadingActivity} onClick={() => load("newer")}>Load newer messages</button>}
       {children}
     </div>
-    {(state.hasNewer || away) && <button type="button" className="hr-chat__jump" disabled={state.loading !== null}
+    {(state.hasNewer || away) && <button type="button" className="hr-chat__jump" disabled={navigating} aria-busy={navigating}
       onClick={() => { following.current = true; onFollowingLatestChange?.(true); void controller.jumpToLatest(); }}>Jump to latest</button>}
   </div>;
 }

@@ -50,6 +50,8 @@ export class ConversationDisplayWindow {
   private readonly listeners = new Set<() => void>();
   private selection = new AbortController();
   private pending: Promise<void> | null = null;
+  private pendingOperation: DisplayWindowOperation | null = null;
+  private queuedLatest: Promise<void> | null = null;
   private disposed = false;
   private changesCursor: string | null = null;
   private changesAfter = 0;
@@ -82,6 +84,7 @@ export class ConversationDisplayWindow {
     if (this.disposed) return Promise.reject(new Error("Display window is disposed"));
     if (conversationId !== null && (!conversationId || conversationId.length > 512)) return Promise.reject(new TypeError("Invalid conversation"));
     this.selection.abort(); this.selection = new AbortController(); this.pending = null;
+    this.pendingOperation = null; this.queuedLatest = null;
     this.changesCursor = null; this.changesAfter = 0; this.initialAnchor = anchor;
     this.state = { ...initial(), version: this.state.version + 1 };
     this.publish({ conversationId, status: conversationId ? "loading" : "empty" });
@@ -89,13 +92,24 @@ export class ConversationDisplayWindow {
   }
   loadOlder = (): Promise<void> => this.state.hasOlder ? this.read("older") : Promise.resolve();
   loadNewer = (): Promise<void> => this.state.hasNewer ? this.read("newer") : Promise.resolve();
-  jumpToLatest = (): Promise<void> => this.read("latest");
+  jumpToLatest = (): Promise<void> => {
+    if (this.queuedLatest) return this.queuedLatest;
+    if (!this.pending || this.pendingOperation !== "changes") return this.read("latest");
+    // Background synchronization must not swallow navigation. Coalesce clicks
+    // behind the read, retaining its error/generation handling and scope guard.
+    const signal = this.selection.signal;
+    const work = this.pending.then(() => {
+      if (this.current(signal) && this.state.status === "ready" && !this.state.error) return this.read("latest");
+    }).finally(() => { if (this.queuedLatest === work) this.queuedLatest = null; });
+    this.queuedLatest = work; return work;
+  };
   refresh = (): Promise<void> => this.read(this.state.status === "ready" ? "changes" : "initial");
   retry = (): Promise<void> => this.read(this.state.error?.operation ?? (this.state.status === "ready" ? "changes" : "initial"));
 
   private read(operation: DisplayWindowOperation): Promise<void> {
     if (this.disposed) return Promise.reject(new Error("Display window is disposed"));
     if (this.pending) return this.pending;
+    if (this.queuedLatest && operation !== "latest") return this.queuedLatest;
     const conversationId = this.state.conversationId;
     if (!conversationId) return Promise.resolve();
     const signal = this.selection.signal;
@@ -170,10 +184,10 @@ export class ConversationDisplayWindow {
             error: { operation: "initial", cause } });
         } else this.publish({ status: this.state.records.length ? "ready" : "error", error: { operation, cause } });
       } finally {
-        if (this.current(signal)) { this.pending = null; this.publish({ loading: null }); }
+        if (this.current(signal)) { this.pending = null; this.pendingOperation = null; this.publish({ loading: null }); }
       }
     });
-    this.pending = work; return work;
+    this.pending = work; this.pendingOperation = operation; return work;
   }
   private preparing() {
     this.initialAnchor = undefined; this.changesCursor = null;
@@ -199,6 +213,7 @@ export class ConversationDisplayWindow {
   dispose() {
     if (this.disposed) return;
     this.selection.abort(); this.pending = null; this.disposed = true;
+    this.pendingOperation = null; this.queuedLatest = null;
     this.publish({ ...initial(), version: this.state.version + 1 }); this.listeners.clear();
   }
 }

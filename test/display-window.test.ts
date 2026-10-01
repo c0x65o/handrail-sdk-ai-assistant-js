@@ -30,6 +30,59 @@ function fixture(textSize = 0) {
 }
 const ids = (window: ConversationDisplayWindow) => window.getSnapshot().records.map(row => row.id);
 
+it("queues one latest navigation behind changes, including a click before loading publishes", async () => {
+  const { window, reader } = fixture(); await window.select("a"); await window.loadOlder(); await window.loadOlder();
+  let finish!: () => void;
+  vi.mocked(reader.changes).mockImplementationOnce(async () => {
+    await new Promise<void>(resolve => { finish = resolve; });
+    return { ...page("a", []), throughRevision: 100 };
+  });
+  const refreshing = window.refresh(), jumping = window.jumpToLatest();
+  expect(window.jumpToLatest()).toBe(jumping);
+  // A synchronous observer cannot steal the slot when changes publishes idle.
+  const unsubscribe = window.subscribe(() => {
+    if (window.getSnapshot().loading === null && window.getSnapshot().change === "changes") void window.refresh();
+  });
+  await Promise.resolve();
+  expect(window.getSnapshot().loading).toBe("changes");
+  expect(reader.page).toHaveBeenCalledTimes(3);
+  finish(); await Promise.all([refreshing, jumping]);
+  expect(reader.page).toHaveBeenCalledTimes(4);
+  expect(reader.changes).toHaveBeenCalledOnce(); unsubscribe();
+  expect(ids(window)).toEqual([18, 19, 20].map(id => `message-${id}`));
+  expect(window.getSnapshot()).toMatchObject({ loading: null, hasNewer: false, change: "latest" }); window.dispose();
+});
+
+for (const interruption of ["select", "dispose", "stale_cursor", "forbidden", "offline"] as const) {
+  it(`does not run queued navigation after ${interruption}; errors remain retryable through the existing path`, async () => {
+    const { window, reader } = fixture(); await window.select("a");
+    let finish!: () => void;
+    vi.mocked(reader.changes).mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { finish = resolve; });
+      if (interruption === "stale_cursor") throw new ConversationDisplayHistoryError(interruption, interruption);
+      if (interruption === "forbidden") throw { resourceCode: "forbidden" };
+      if (interruption === "offline") throw new Error("offline");
+      return { ...page("a", []), throughRevision: 100 };
+    });
+    const refreshing = window.refresh(); await Promise.resolve();
+    const jumping = window.jumpToLatest();
+    if (interruption === "select") await window.select("b");
+    if (interruption === "dispose") window.dispose();
+    const reads = vi.mocked(reader.page).mock.calls.length;
+    finish(); await Promise.all([refreshing, jumping]);
+    expect(reader.page).toHaveBeenCalledTimes(reads);
+    if (interruption === "select") expect(window.getSnapshot().conversationId).toBe("b");
+    else if (interruption === "dispose") expect(ids(window)).toEqual([]);
+    else {
+      expect(window.getSnapshot().error).not.toBeNull();
+      expect(ids(window)).toHaveLength(interruption === "offline" ? 3 : 0);
+      await window.retry(); expect(window.getSnapshot().error).toBeNull();
+      await window.jumpToLatest(); expect(window.getSnapshot().change).toBe("latest");
+    }
+    window.dispose();
+  });
+}
+
 it("keeps a bounded window while scrolling up and down, deduplicates simultaneous reads, and jumps to latest", async () => {
   const { reader, window } = fixture();
   await window.select("a"); expect(ids(window)).toEqual([18, 19, 20].map(id => `message-${id}`));

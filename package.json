@@ -1,6 +1,6 @@
 {
   "name": "@handrail/ai-assistant",
-  "version": "0.2.68",
+  "version": "0.2.69",
   "description": "Provider-neutral TypeScript primitives and runtime tooling for building AI applications with Handrail.",
   "license": "UNLICENSED",
   "type": "module",
@@ -162,7 +162,8 @@
     "lint": "eslint .",
     "prepack": "npm run build",
     "pack:dry-run": "npm pack --dry-run --json",
-    "check:markdown-layout": "npm run build && node scripts/check-markdown-layout.mjs"
+    "check:markdown-layout": "npm run build && node scripts/check-markdown-layout.mjs",
+    "check:jump-polling": "npm run build && node scripts/check-jump-polling-browser.mjs"
   },
   "publishConfig": {
     "access": "public",
