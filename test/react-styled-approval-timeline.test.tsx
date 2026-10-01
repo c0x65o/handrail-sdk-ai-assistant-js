@@ -53,6 +53,8 @@ it("retains saved decided cards and failures and prevents decisions for archived
   const f = fixture();
   f.resources.listApprovalGroup.mockResolvedValue([{ ...f.proposal, status: "rejected" }]);
   const view = render(<StyledChatPreset state={f.state} approvalResources={f.resources} readOnly includeStyles={false} transcription={false}/>);
+  const history = (await screen.findByText("Action history (1)")).closest("details")!;
+  fireEvent.click(history.querySelector("summary")!);
   expect(await screen.findByText("Rejected")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
   expect(screen.queryByRole("textbox")).toBeNull();
@@ -103,10 +105,51 @@ it("rests at a pending approval with no Stop button or decision from typing a co
   f.resources.listApprovalGroup.mockResolvedValue([{ ...f.proposal, expires_at: null }]);
   const view = render(<StyledChatPreset state={state} approvalResources={f.resources} includeStyles={false} transcription={false}/>);
   await screen.findByRole("button", { name: "Confirm" });
-  expect(screen.getAllByText("Waiting for approval", { selector: "strong" })).toHaveLength(2);
+  // The current preset uses one persistent activity heading.
+  expect(screen.getAllByText("Waiting for approval", { selector: "strong" })).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   expect(view.container.querySelector('[data-busy="true"]')).toBeNull();
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "I need more time." } });
   expect(f.resources.transitionApproval).not.toHaveBeenCalled();
   expect(screen.getByRole("button", { name: "Confirm" })).toBeTruthy();
+});
+
+it("collapses settled vehicle/review and invoice cards while preserving canonical history and unresolved work", async () => {
+  const f = fixture();
+  const settled = ["Review proposed change", "Update a vehicle or boat", "Send invoice"].map((tool_name, i) =>
+    ({ ...f.proposal, proposal_id: `settled-${i}`, tool_name, status: "executed" }) as ConversationApprovalProposalRecord);
+  const active = ["pending", "confirmed", "executing", "failed"].map((status, i) =>
+    ({ ...f.proposal, proposal_id: `active-${i}`, tool_name: `Unresolved ${i}`, status }) as ConversationApprovalProposalRecord);
+  const props = { state: f.state, includeStyles: false, transcription: false as const, readOnly: true };
+  const view = render(<StyledChatPreset {...props} proposals={[...settled, ...active]}/>);
+  expect(screen.getAllByRole("listitem", { name: "Assistant action" })).toHaveLength(4);
+  expect(screen.queryByText("Update a vehicle or boat")).toBeNull();
+  const history = screen.getByText("Action history (3)").closest("details")!;
+  fireEvent.click(history.querySelector("summary")!);
+  await waitFor(() => expect(screen.getByText("Update a vehicle or boat")).toBeTruthy());
+  expect(screen.getAllByRole("listitem", { name: "Assistant action" })).toHaveLength(7);
+  for (const button of screen.queryAllByRole("button", { name: "Confirm" })) expect((button as HTMLButtonElement).disabled).toBe(true);
+  view.rerender(<StyledChatPreset {...props} state={{ ...f.state, conversation_id: "other" as never }} proposals={settled}/>);
+  expect(screen.queryByText("Update a vehicle or boat")).toBeNull();
+  view.unmount();
+  render(<StyledChatPreset {...props} proposals={settled}/>);
+  expect(screen.queryByText("Update a vehicle or boat")).toBeNull();
+  expect(settled.every(p => p.status === "executed")).toBe(true);
+  expect(f.resources.transitionApproval).not.toHaveBeenCalled();
+});
+
+it.each(["executed", "rejected", "expired"] as const)("moves canonical %s to history on repeated delivery while retaining uncertain failure evidence", async status => {
+  const f = fixture();
+  const props = { state: f.state, includeStyles: false, transcription: false as const, readOnly: true };
+  const view = render(<StyledChatPreset {...props} proposals={[f.proposal]}/>);
+  expect(screen.getByRole("listitem", { name: "Assistant action" })).toBeTruthy();
+  const settled = { ...f.proposal, status };
+  for (let delivery = 0; delivery < 2; delivery++) {
+    view.rerender(<StyledChatPreset {...props} proposals={[{ ...settled }]}/>);
+    expect(screen.queryByRole("listitem", { name: "Assistant action" })).toBeNull();
+    expect(screen.getByText("Action history (1)")).toBeTruthy();
+  }
+  view.rerender(<StyledChatPreset {...props} proposals={[{ ...settled, failure_reason: "Outcome needs reconciliation" }]}/>);
+  expect(screen.getByRole("listitem", { name: "Assistant action" })).toBeTruthy();
+  expect(f.resources.transitionApproval).not.toHaveBeenCalled();
 });

@@ -1,0 +1,62 @@
+{
+  "work_request": "6fbeac6e-8144-5474-949d-c990acd55a84",
+  "worker_run": "bad099c0-d4cb-4bed-a6cd-024d6f2b9a49",
+  "recorded_utc": "2026-10-01T17:19:26.679946+00:00",
+  "delivery": "Source uncommitted; Handrail owns version bump, commit and push. No deployment or live business writes.",
+  "acceptance_boundary": "Synthetic SDK qualification only. Avery must adopt the published revisions and verify the original Mills native behavior through the existing delivery workflow.",
+  "base_sha": "f2c591f630fdbb547ebfb94859f4acdd6a77b55e",
+  "version_before_pipeline": "0.2.65",
+  "checks": [
+    {
+      "command": "On unmodified source: npm test -- --maxWorkers=1 --minWorkers=1 test/react-styled-approval-timeline.test.tsx -t \"rests at a pending approval\"",
+      "exit_code": 1,
+      "log_sha256": "c601d12bec764dfeb72e0b22830f8fbbde42e741929916e2bfbc0c1bd4cc5ff2",
+      "output": "\n> @handrail/ai-assistant@0.2.65 test\n> vitest run --maxWorkers=1 --minWorkers=1 test/react-styled-approval-timeline.test.tsx -t rests at a pending approval\n\n\n RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js\n\n \u276f test/react-styled-approval-timeline.test.tsx (7 tests | 1 failed | 6 skipped) 230ms\n   \u2193 shows bound action details in chronological context before a versioned decision\n   \u2193 disables confirmation for mismatched arguments while retaining rejection\n   \u2193 retains saved decided cards and failures and prevents decisions for archived conversations\n   \u2193 keeps a large pending approval compact without losing its exact review or decisions\n   \u2193 requires a successful refresh before another decision after an uncertain response\n   \u00d7 rests at a pending approval with no Stop button or decision from typing a comment 229ms\n     \u2192 expected [ <strong></strong> ] to have a length of 2 but got 1\n   \u2193 collapses settled vehicle/review and invoice cards while preserving canonical history and unresolved work\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af\n\n FAIL  test/react-styled-approval-timeline.test.tsx > rests at a pending approval with no Stop button or decision from typing a comment\nAssertionError: expected [ <strong></strong> ] to have a length of 2 but got 1\n\n- Expected\n+ Received\n\n- 2\n+ 1\n\n \u276f test/react-styled-approval-timeline.test.tsx:108:79\n    106|   const view = render(<StyledChatPreset state={state} approvalResource\u2026\n    107|   await screen.findByRole(\"button\", { name: \"Confirm\" });\n    108|   expect(screen.getAllByText(\"Waiting for approval\", { selector: \"stro\u2026\n       |                                                                               ^\n    109|   expect(screen.queryByRole(\"button\", { name: \"Stop\" })).toBeNull();\n    110|   expect(view.container.querySelector('[data-busy=\"true\"]')).toBeNull(\u2026\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n\n Test Files  1 failed (1)\n      Tests  1 failed | 6 skipped (7)\n   Start at  12:05:48\n   Duration  2.82s (transform 1.26s, setup 0ms, collect 1.82s, tests 230ms, environment 491ms, prepare 84ms)\n\nnpm notice\nnpm notice New major version of npm available! 10.9.8 -> 12.2.0\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0\nnpm notice To update run: npm install -g npm@12.2.0\nnpm notice\n",
+      "output_scope": "complete"
+    },
+    {
+      "command": "npm test -- --maxWorkers=1 --minWorkers=1 test/react-transcript-follow.test.tsx test/react-display-transcript.test.tsx test/react-styled-approval-timeline.test.tsx test/react-styled-approvals.test.tsx test/react-transcript-presentation.test.tsx test/react-pending-approvals.test.tsx test/react-approval-review.test.tsx test/react-bound-approval-review.test.tsx test/react-paged-approval-review.test.tsx",
+      "exit_code": 0,
+      "log_sha256": "953e912b73292544042e663c21730a0c3c1fc7e40665e5dcf63c4a01deee5e6e",
+      "output": "\n> @handrail/ai-assistant@0.2.65 test\n> vitest run --maxWorkers=1 --minWorkers=1 test/react-transcript-follow.test.tsx test/react-display-transcript.test.tsx test/react-styled-approval-timeline.test.tsx test/react-styled-approvals.test.tsx test/react-transcript-presentation.test.tsx test/react-pending-approvals.test.tsx test/react-approval-review.test.tsx test/react-bound-approval-review.test.tsx test/react-paged-approval-review.test.tsx\n\n\n RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js\n\n \u2713 test/react-approval-review.test.tsx (16 tests) 662ms\n \u2713 test/react-styled-approval-timeline.test.tsx (10 tests) 769ms\n \u2713 test/react-transcript-presentation.test.tsx (4 tests) 508ms\n \u2713 test/react-display-transcript.test.tsx (6 tests) 318ms\n \u2713 test/react-pending-approvals.test.tsx (4 tests) 320ms\n \u2713 test/react-transcript-follow.test.tsx (12 tests) 219ms\n \u2713 test/react-paged-approval-review.test.tsx (3 tests) 225ms\n \u2713 test/react-bound-approval-review.test.tsx (5 tests) 189ms\n \u2713 test/react-styled-approvals.test.tsx (6 tests) 170ms\n\n Test Files  9 passed (9)\n      Tests  66 passed (66)\n   Start at  12:15:11\n   Duration  12.65s (transform 1.55s, setup 0ms, collect 4.15s, tests 3.38s, environment 3.27s, prepare 597ms)\n\nnpm notice\nnpm notice New major version of npm available! 10.9.8 -> 12.2.0\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0\nnpm notice To update run: npm install -g npm@12.2.0\nnpm notice\n",
+      "output_scope": "complete"
+    },
+    {
+      "command": "npm run typecheck",
+      "exit_code": 0,
+      "log_sha256": "c93e78b04d4281bd8245b4de63155b7e1ccddac208b72182b92a85c5299e4755",
+      "output": "\n> @handrail/ai-assistant@0.2.65 typecheck\n> tsc -p tsconfig.json\n\n",
+      "output_scope": "complete"
+    },
+    {
+      "command": "npm run build",
+      "exit_code": 0,
+      "log_sha256": "e369cbd5cd79b4a2aff6889dfde3e319a2b10c17e8e8b6676e3a67c4770757ae",
+      "output": "\n> @handrail/ai-assistant@0.2.65 build\n> node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json\n\nnpm notice\nnpm notice New major version of npm available! 10.9.8 -> 12.2.0\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0\nnpm notice To update run: npm install -g npm@12.2.0\nnpm notice\n",
+      "output_scope": "complete"
+    },
+    {
+      "command": "npx eslint src/react/conversation-transcript.tsx src/react/display-transcript.tsx src/react/transcript-follow.ts test/react-display-transcript.test.tsx test/react-styled-approval-timeline.test.tsx test/react-transcript-follow.test.tsx test/fixtures/settled-transcript-browser.tsx scripts/check-settled-transcript-browser.mjs",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "output": "",
+      "output_scope": "complete"
+    },
+    {
+      "command": "TMPDIR=/opt/handrail/.handrail/node-toolchain/corepack-cache/.git/tmp HANDRAIL_TEST_CHROMIUM=/opt/handrail/.handrail/flutter-sdk/bin/cache/mock-authority-playwright/chromium-1234/chrome-linux64/chrome node scripts/check-settled-transcript-browser.mjs",
+      "exit_code": 0,
+      "log_sha256": "a8c64b3f7b0b66beee70c6c44dfb4d1d4d6b5bcef13e4a0ee3f004c05848d857",
+      "output": "{\n  \"result\": \"passed\",\n  \"environment\": \"Chromium, synthetic data, production SDK/Vite build\",\n  \"historyReload\": \"collapsed\",\n  \"evidence\": [\n    {\n      \"surface\": \"full\",\n      \"awayFrames\": 27,\n      \"pinnedFrames\": 24,\n      \"tailDistance\": 0\n    },\n    {\n      \"surface\": \"paged\",\n      \"awayFrames\": 27,\n      \"pinnedFrames\": 24,\n      \"tailDistance\": 0\n    }\n  ]\n}\n",
+      "output_scope": "complete"
+    }
+  ],
+  "baseline_note": "Existing pending-approval test expected two headings; original source renders one. Corrected stale assertion. Rejected-card test now explicitly opens history.",
+  "browser_boundary": "Production SDK compiled by normal build, bundled by Vite, Chromium layout with synthetic read-only data. Establish paused state, then sample each successive frame of layout/streaming changes; no show/hide churn. Includes history disclosure/reload, threshold offsets, viewport resize, streaming and exact return-to-tail. Not Mills production or native QA.",
+  "source_sha256": {
+    "src/react/conversation-transcript.tsx": "f12590ec6584808089b97d12e34ca52f5442ffc2c3a72d90e502e9723564672f",
+    "src/react/display-transcript.tsx": "b98a6282aadf44dae58b66a34a07277c2bd66ee6d23a2e16546ff51c534e0ddc",
+    "src/react/transcript-follow.ts": "49f87aa7d2240789a8265b7b43cc76994801a0cf741082dc010a7d9bc0433545",
+    "scripts/check-settled-transcript-browser.mjs": "279b3a2d2105919cb26b208fa2e0af2b5f5281a47c5f99e905c98bc65cb482cd",
+    "test/fixtures/settled-transcript-browser.tsx": "10bd005b6ac74446fb994ba7b103e2f184f7762195e78edffd98c0989a530e54"
+  }
+}

@@ -206,3 +206,21 @@ describe("smart transcript following", () => {
     expect(screen.queryByLabelText("Jump to latest message")).toBeNull();
   });
 });
+
+it("keeps the jump control mounted through threshold oscillation and layout changes until the reader reaches the tail", () => {
+  render(<Harness/>);
+  const { transcript, size } = geometry();
+  size.top = 700; fireEvent.scroll(transcript);
+  const jump = screen.getByLabelText("Jump to latest message");
+  for (const distance of [49, 47, 41, 39, 42, 20, 5]) {
+    size.top = size.height - size.viewport - distance; fireEvent.scroll(transcript);
+    expect(screen.getByLabelText("Jump to latest message")).toBe(jump);
+  }
+  for (let frame = 0; frame < 5; frame++) {
+    size.height += 30; size.viewport -= 5;
+    fireEvent.scroll(transcript); fireEvent.click(screen.getByText("Append"));
+    expect(screen.getByLabelText("Jump to latest message")).toBe(jump);
+  }
+  size.top = size.height - size.viewport; fireEvent.scroll(transcript);
+  expect(screen.queryByLabelText("Jump to latest message")).toBeNull();
+});

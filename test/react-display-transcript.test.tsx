@@ -101,3 +101,43 @@ it("keeps a completed activity request from changing the next conversation's pag
   expect((view.getByRole("button", { name: "Load more activity" }) as HTMLButtonElement).disabled).toBe(false);
   view.unmount(); controller.dispose();
 });
+
+it("keeps paged jump visibility stable through resize and threshold oscillation", async () => {
+  const controller = new ConversationDisplayWindow({ reader: { page: async () => page("a"), changes: vi.fn() } });
+  const following = vi.fn();
+  const props = { controller, conversationId: "a", pollingMilliseconds: 0,
+    onFollowingLatestChange: following, renderMessage: (record: ConversationDisplayRecord) => <p>{record.id}</p> };
+  const view = render(<ConversationDisplayTranscript {...props} contentVersion={0}/>);
+  await view.findByText("a-message");
+  const transcript = view.getByRole("log");
+  const size = { height: 1200, viewport: 400, top: 800 };
+  Object.defineProperties(transcript, {
+    scrollHeight: { configurable: true, get: () => size.height },
+    clientHeight: { configurable: true, get: () => size.viewport },
+    scrollTop: { configurable: true, get: () => size.top, set: (v: number) => { size.top = Math.max(0, Math.min(v, size.height - size.viewport)); } },
+  });
+  fireEvent.scroll(transcript);
+  // A keyboard/viewport layout correction while pinned is not reader intent.
+  size.viewport = 250; fireEvent.scroll(transcript);
+  expect(view.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+  view.rerender(<ConversationDisplayTranscript {...props} contentVersion={1}/>);
+  expect(size.top).toBe(950);
+  size.top -= 90; fireEvent.scroll(transcript);
+  const jump = view.getByRole("button", { name: "Jump to latest" });
+  for (const distance of [49, 47, 50, 46, 20, 5]) {
+    size.top = size.height - size.viewport - distance; fireEvent.scroll(transcript);
+    expect(view.getByRole("button", { name: "Jump to latest" })).toBe(jump);
+  }
+  for (let frame = 2; frame < 7; frame++) {
+    size.height += 40; size.viewport += 10;
+    fireEvent.scroll(transcript);
+    view.rerender(<ConversationDisplayTranscript {...props} contentVersion={frame}/>);
+    fireEvent.scroll(transcript); // asynchronous scroll from anchor correction
+    expect(view.getByRole("button", { name: "Jump to latest" })).toBe(jump);
+    expect(following).toHaveBeenLastCalledWith(false);
+  }
+  size.top = size.height - size.viewport; fireEvent.scroll(transcript);
+  expect(view.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+  expect(following).toHaveBeenLastCalledWith(true);
+  view.unmount(); controller.dispose();
+});

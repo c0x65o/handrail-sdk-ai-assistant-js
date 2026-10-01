@@ -100,6 +100,10 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
   const viewport = useRef<HTMLDivElement>(null);
   const anchor = useRef<ConversationDisplayPosition | undefined>(undefined);
   const following = useRef(true);
+  const scrollPosition = useRef({ top: 0, height: 0, viewport: 0 });
+  const captureScroll = (element: HTMLElement) => {
+    scrollPosition.current = { top: element.scrollTop, height: element.scrollHeight, viewport: element.clientHeight };
+  };
   const [away, setAway] = useState(false);
   const selected = useRef<{ controller: ConversationDisplayWindow; id: string | null } | null>(null);
   const previousVersion = useRef(-1);
@@ -153,6 +157,7 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
         .find(item => item.dataset.displayMessage === anchor.current!.messageId);
       if (item) element.scrollTop += item.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.current.offset;
     }
+    captureScroll(element);
     capture();
     onFollowingLatestChange?.(following.current);
   });
@@ -181,6 +186,31 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
     }
   }, [controller, state.hasNewer, state.loading, state.error, state.status, loadingActivity]);
   useEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const pause = () => { following.current = false; setAway(true); onFollowingLatestChange?.(false); };
+    const wheel = (event: WheelEvent) => { if (event.deltaY < 0 && !event.ctrlKey) pause(); };
+    let touchY: number | undefined;
+    const touchStart = (event: TouchEvent) => { touchY = event.touches[0]?.clientY; };
+    const touchMove = (event: TouchEvent) => {
+      const next = event.touches[0]?.clientY;
+      if (next !== undefined && touchY !== undefined && next > touchY) pause();
+      touchY = next;
+    };
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLElement && event.target.closest("input,textarea,select,[contenteditable=true]")) return;
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key) || event.key === " " && event.shiftKey) pause();
+    };
+    element.addEventListener("wheel", wheel, { passive: true });
+    element.addEventListener("touchstart", touchStart, { passive: true });
+    element.addEventListener("touchmove", touchMove, { passive: true });
+    element.addEventListener("keydown", keyDown);
+    return () => {
+      element.removeEventListener("wheel", wheel); element.removeEventListener("touchstart", touchStart);
+      element.removeEventListener("touchmove", touchMove); element.removeEventListener("keydown", keyDown);
+    };
+  }, [controller, conversationId, onFollowingLatestChange]);
+  useEffect(() => {
     const element = viewport.current, view = element?.ownerDocument.defaultView;
     if (!element || !view || typeof ResizeObserver === "undefined") return;
     let frame: number | undefined;
@@ -194,6 +224,7 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
             .find(item => item.dataset.displayMessage === anchor.current!.messageId);
           if (item) element.scrollTop += item.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.current.offset;
         }
+        captureScroll(element);
         capture();
       });
     });
@@ -209,7 +240,16 @@ export function ConversationDisplayTranscript({ controller, conversationId, posi
       aria-busy={state.loading !== null || loadingActivity || state.status === "preparing"} onScroll={event => {
         onScroll?.(event); if (event.defaultPrevented) return;
         const element = event.currentTarget;
-        following.current = !state.hasNewer && element.scrollHeight - element.scrollTop - element.clientHeight <= 48;
+        const previous = scrollPosition.current;
+        const layoutChanged = previous.height !== element.scrollHeight || previous.viewport !== element.clientHeight;
+        const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+        // Scroll events also come from viewport resizing and anchor restoration.
+        // Preserve intent through those events and the old near-bottom threshold.
+        if (!layoutChanged && element.scrollTop !== previous.top) {
+          if (element.scrollTop < previous.top && distance > 2) following.current = false;
+          else if (element.scrollTop > previous.top && distance <= 2 && !state.hasNewer) following.current = true;
+        }
+        captureScroll(element);
         onFollowingLatestChange?.(following.current);
         setAway(!following.current);
         capture();

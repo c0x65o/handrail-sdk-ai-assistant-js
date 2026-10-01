@@ -12,7 +12,7 @@ export interface SmartTranscriptFollowOptions {
   readonly conversationId?: string | null;
   /** Changes whenever transcript content or streaming state changes. */
   readonly contentVersion: unknown;
-  /** Distance from the bottom still considered pinned. Defaults to 48px. */
+  /** Outer bottom tolerance (48px). Paused readers resume only at the tail (up to 2px). */
   readonly thresholdPixels?: number;
 }
 
@@ -72,7 +72,7 @@ export function useSmartTranscriptFollow(
     if (top < previous.top && !layoutChanged) {
       smoothScrollRef.current = false;
       updateFollowing(false);
-    } else if (top > previous.top && nearBottom) {
+    } else if (!layoutChanged && top > previous.top && element.scrollHeight - top - element.clientHeight <= Math.min(2, threshold)) {
       updateFollowing(true);
     } else if (!layoutChanged && !smoothScrollRef.current && top !== previous.top && !nearBottom) {
       updateFollowing(false);
@@ -89,7 +89,11 @@ export function useSmartTranscriptFollow(
 
   useLayoutEffect(() => {
     if (followingRef.current) scrollToLatest("auto");
-    else if (elementRef.current) setHasNewContent(true);
+    else if (elementRef.current) {
+      const element = elementRef.current;
+      positionRef.current = { top: element.scrollTop, height: element.scrollHeight, viewport: element.clientHeight };
+      setHasNewContent(true);
+    }
   }, [options.contentVersion, scrollToLatest]);
 
   useEffect(() => {
@@ -103,7 +107,10 @@ export function useSmartTranscriptFollow(
       const contentGrew = element.scrollHeight > height;
       height = element.scrollHeight;
       if (followingRef.current) scrollToLatest("auto");
-      else if (contentGrew) setHasNewContent(true);
+      else {
+        positionRef.current = { top: element.scrollTop, height: element.scrollHeight, viewport: element.clientHeight };
+        if (contentGrew) setHasNewContent(true);
+      }
     };
     const schedule = () => {
       if (frame !== undefined || disposed) return;
