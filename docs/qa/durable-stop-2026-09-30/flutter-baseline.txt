@@ -1,0 +1,26 @@
+00:00 +0: loading test/submission_gateway_test.dart
+00:00 +0: (setUpAll)
+00:02 +0: admission is atomic, concurrent submit deduplicates, reload resumes and completed retries never restart
+00:02 +0 -1: admission is atomic, concurrent submit deduplicates, reload resumes and completed retries never restart [E]
+  Expected: an object with length of <1>
+    Actual: WhereIterable<Map<String, Object?>>:[]
+     Which: has length of <0>
+  
+  package:matcher                          expect
+  test/submission_gateway_test.dart 857:5  main.<fn>
+  
+00:02 +0 -1: attachment references are admitted with their message before execution
+00:02 +0 -2: attachment references are admitted with their message before execution [E]
+  Bad state: No element
+  dart:collection                           ListBase.singleWhere
+  test/submission_gateway_test.dart 926:33  main.<fn>
+  
+00:02 +0 -2: (tearDownAll)
+00:03 +0 -2: Some tests failed.
+
+Failing tests:
+  test/submission_gateway_test.dart: admission is atomic, concurrent submit deduplicates, reload resumes and completed retries never restart
+  test/submission_gateway_test.dart: attachment references are admitted with their message before execution
+
+Consider enabling the flag chain-stack-traces to receive more detailed exceptions.
+For example, 'dart test --chain-stack-traces'.

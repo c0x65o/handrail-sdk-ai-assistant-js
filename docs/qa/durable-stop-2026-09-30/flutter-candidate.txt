@@ -1,0 +1,69 @@
+00:00 +0: loading test/submission_gateway_test.dart
+00:00 +0: test/submission_gateway_test.dart: (setUpAll)
+00:02 +0: test/submission_gateway_test.dart: headless file receipt recovery uses metadata only after interrupted byte cleanup
+00:03 +1: test/submission_gateway_test.dart: exact draft cleanup recovers partial device failure through the real gateway
+00:03 +2: test/submission_gateway_test.dart: deletion replays a lost real-gateway receipt after controller restart
+00:03 +3: test/submission_gateway_test.dart: approval lost reply recovers exact decision after execution advances through the real JS gateway
+00:03 +4: test/submission_gateway_test.dart: shared assistant controller creates, sends, archives and restores through the real gateway
+00:04 +5: test/submission_gateway_test.dart: real indexed history pages stay bounded and do not replace canonical context
+00:05 +6: test/submission_gateway_test.dart: oversized review uses compact durable receipts through the real JS gateway
+00:05 +7: test/submission_gateway_test.dart: large message reader uses bounded plaintext HTTP and rejects content after deletion
+00:05 +8: test/submission_gateway_test.dart: Stop queued before admission targets its original chat; failed cancel=false
+00:05 +9: test/submission_gateway_test.dart: Stop queued before admission targets its original chat; failed cancel=true
+00:06 +10: test/submission_gateway_test.dart: cancelling a completion wait leaves the server turn running and reusable
+00:06 +11: test/submission_gateway_test.dart: closing the account settles terminal observers without cancelling server work
+00:06 +12: test/submission_gateway_test.dart: file-only draft admits durable attachment metadata without an empty content violation
+00:07 +13: test/submission_gateway_test.dart: admission is atomic, concurrent submit deduplicates, reload resumes and completed retries never restart
+00:07 +13 -1: test/submission_gateway_test.dart: admission is atomic, concurrent submit deduplicates, reload resumes and completed retries never restart [E]
+  Expected: an object with length of <1>
+    Actual: WhereIterable<Map<String, Object?>>:[]
+     Which: has length of <0>
+  
+  package:matcher                          expect
+  test/submission_gateway_test.dart 857:5  main.<fn>
+  
+00:07 +13 -1: test/submission_gateway_test.dart: independent threads finish unread after disconnect and read acknowledgement survives reload
+00:07 +14 -1: test/submission_gateway_test.dart: attachment references are admitted with their message before execution
+00:07 +14 -2: test/submission_gateway_test.dart: attachment references are admitted with their message before execution [E]
+  Bad state: No element
+  dart:collection                           ListBase.singleWhere
+  test/submission_gateway_test.dart 926:33  main.<fn>
+  
+00:07 +14 -2: test/submission_gateway_test.dart: pending journal is saved before admission and recovered after lost start acknowledgement
+00:08 +15 -2: test/submission_gateway_test.dart: lost local journal acknowledgement cannot replace the saved request
+00:08 +16 -2: test/submission_gateway_test.dart: lost admission response reuses persisted intent after session recreation
+00:08 +17 -2: test/submission_gateway_test.dart: lost start response reuses persisted intent after session recreation
+00:09 +18 -2: test/submission_gateway_test.dart: changed payload under a reused identity is refused before a second execution
+00:09 +19 -2: test/submission_gateway_test.dart: (tearDownAll)
+00:09 +19 -2: loading test/assistant_observation_test.dart
+00:09 +19 -2: test/assistant_observation_test.dart: one account cycle coalesces activity and skips idle unselected sessions
+00:09 +20 -2: test/assistant_observation_test.dart: failed activity retains unread evidence and late disposal replies stay discarded
+00:09 +21 -2: loading test/approval_decisions_test.dart
+00:09 +21 -2: test/approval_decisions_test.dart: review gates confirmation and exact receipt is not execution
+00:09 +22 -2: test/approval_decisions_test.dart: lost reply retains exact decision across restart; opposite choice blocked
+00:09 +23 -2: test/approval_decisions_test.dart: version conflict discards review, never silently retries new version
+00:09 +24 -2: test/approval_decisions_test.dart: mismatched receipt remains uncertain and blocks conversation deletion
+00:09 +25 -2: test/approval_decisions_test.dart: opaque arguments require trusted complete host review
+00:10 +26 -2: test/approval_decisions_test.dart: late review cannot cross selection or sign out
+00:10 +27 -2: test/approval_decisions_test.dart: changed arguments invalidate a cached review even at the same version
+00:10 +28 -2: test/approval_decisions_test.dart: domain permission veto cannot be overridden by complete review
+00:10 +29 -2: test/approval_decisions_test.dart: failed durable write prevents dispatch
+00:10 +30 -2: test/approval_decisions_test.dart: two stores sharing an account atomically reject opposite saved decisions
+00:10 +31 -2: test/approval_decisions_test.dart: concurrent controller adopts the original durable choice before retry
+00:10 +32 -2: test/approval_decisions_test.dart: sign out while saving intent prevents dispatch; saved choice resumes only in that account
+00:10 +33 -2: test/approval_decisions_test.dart: pending approvals have no deadline, including older timestamped proposals
+00:10 +34 -2: test/approval_decisions_test.dart: historical expired or unavailable approval capability never dispatches
+00:10 +35 -2: loading test/turn_approval_mode_test.dart
+00:10 +35 -2: test/turn_approval_mode_test.dart: negotiated binding updates the exact running turn with the server revision
+00:10 +36 -2: loading test/pending_turn_store_test.dart
+00:10 +36 -2: test/pending_turn_store_test.dart: version-two origins survive storage and malformed or downgraded receipts fail
+00:10 +37 -2: test/pending_turn_store_test.dart: restores account-scoped intent and rejects replacement until acknowledgement
+00:10 +38 -2: test/pending_turn_store_test.dart: separate adapters sharing an account serialize overlapping writes
+00:10 +39 -2: Some tests failed.
+
+Failing tests:
+  test/submission_gateway_test.dart: admission is atomic, concurrent submit deduplicates, reload resumes and completed retries never restart
+  test/submission_gateway_test.dart: attachment references are admitted with their message before execution
+
+Consider enabling the flag chain-stack-traces to receive more detailed exceptions.
+For example, 'dart test --chain-stack-traces'.

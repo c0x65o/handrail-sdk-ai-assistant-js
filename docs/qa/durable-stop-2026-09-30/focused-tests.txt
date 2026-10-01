@@ -1,0 +1,47 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ✓ test/server-approval-pause.integration.test.ts (11 tests) 17179ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=complete)  2510ms
+   ✓ rests across comments and restart, then resumes rejected once (comment=complete)  2397ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=running)  2200ms
+   ✓ rests across comments and restart, then resumes confirmed once (comment=none)  1384ms
+   ✓ rests across comments and restart, then resumes rejected once (comment=none)  1339ms
+   ✓ enables automatic approval during a paused request and retains the setting after restart  1455ms
+   ✓ enables automatic approval during a running request and retains the setting after restart  1110ms
+   ✓ Stop on the supported Responses delegate survives restart and a later confirmed decision  1215ms
+   ✓ Stop on the supported Responses delegate survives restart and a later rejected decision  1198ms
+ ✓ test/postgres-durable-recovery.integration.test.ts (2 tests) 4222ms
+   ✓ pages on immutable tenant keys, retains the scan boundary, and recovers behind denied rows without claiming them  2468ms
+   ✓ discovers large retained histories through scalar metadata and authorizes before loading any body  1753ms
+ ✓ test/durable-canonical-start.test.ts (21 tests) 4232ms
+   ✓ admits a saved follow-up at PostgreSQL revision 1167 after a failed action  3062ms
+ ✓ test/postgres-approval-recovery.integration.test.ts (5 tests) 3385ms
+   ✓ recovers a confirmed decision saved before its audit event, without a browser or duplicate effect  449ms
+   ✓ resumes a partially repaired audit after recreation, using a durable 25-proposal cursor  722ms
+ ✓ test/durable-execution-identity.test.ts (6 tests) 2371ms
+   ✓ durable execution identity > retains the old claim after takeover and never re-executes terminal replay (postgres)  2060ms
+ ✓ test/durable-stop-recovery.test.ts (15 tests) 2548ms
+   ✓ keeps timeout cancellation discoverable beyond execution retry exhaustion  1104ms
+ ✓ test/durable-application-transport.test.ts (17 tests) 998ms
+ ✓ test/server-assistant.test.ts (9 tests) 820ms
+ ✓ test/runtime-cancellation.test.ts (14 tests) 959ms
+ ✓ test/durable-recovery-page.test.ts (4 tests) 377ms
+ ✓ test/client-bootstrap.test.ts (12 tests) 178ms
+ ✓ test/application-gateway-synchronization.test.ts (2 tests) 119ms
+ ✓ test/application-gateway.test.ts (10 tests) 50ms
+ ✓ test/sse-cancellation.test.ts (2 tests) 12ms
+ ✓ test/turn-approval-mode.test.ts (2 tests) 7ms
+ ✓ test/assistant-activity-transport.test.ts (1 test) 5ms
+ ✓ test/application-turn-transport.test.ts (1 test) 6ms
+
+ Test Files  17 passed (17)
+      Tests  134 passed (134)
+   Start at  20:33:37
+   Duration  45.31s (transform 1.86s, setup 0ms, collect 4.34s, tests 37.47s, environment 3ms, prepare 1.08s)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

@@ -40,6 +40,29 @@ const input = { conversationId: "conversation-1", conversationTurnId: "turn-1" a
 async function collect(events: AsyncIterable<Event>) { const output: Event[] = []; for await (const event of events) output.push(event); return output; }
 
 describe("createDurableApplicationTransport", () => {
+  it("delivers Stop to an admitted approval wait after its observer and worker ended", async () => {
+    const store = new InMemoryDurableApplicationTurnStore<Request, Event>();
+    const inner = delegate([], { status: "waiting_for_approval", pendingToolCallIds: ["effect-1"], checkpoint: checkpoint(null) });
+    const cancelTurn = vi.fn(async () => ({ ok: true as const, value: { status: "cancellation_requested" as const } }));
+    const cancellable = { ...inner.transport, capabilities: { ...inner.transport.capabilities,
+      authoritativeCancellation: { supported: true as const, capability: { cancelTurn } } } };
+    const first = durable(store, cancellable, "before-restart");
+    const started = await first.startTurn(input);
+    if (!started.ok) throw new Error(started.error.message);
+    await collect(started.value.observation.events);
+    expect((await started.value.observation.result).status).toBe("waiting_for_approval");
+    await first.stopWorkers();
+    const second = durable(store, cancellable, "after-restart");
+    const cancellation = second.capabilities.authoritativeCancellation;
+    if (!cancellation.supported) throw new Error("Missing Stop");
+    expect(await cancellation.capability.cancelTurn({ conversationId: input.conversationId, turnId: input.conversationTurnId,
+      mutationId: "stop", idempotencyKey: "stop", reason: "user" })).toMatchObject({ ok: true, value: { status: "cancellation_requested" } });
+    await vi.waitFor(() => expect(cancelTurn).toHaveBeenCalledWith({ conversationId: input.conversationId,
+      turnId: "provider-turn-1", mutationId: "stop", idempotencyKey: "stop", reason: "user" }));
+    await vi.waitFor(async () => expect((await store.load(input.conversationId, input.conversationTurnId))?.record.status).toBe("cancelled"));
+    expect(inner.startTurn).toHaveBeenCalledOnce();
+    await second.stopWorkers();
+  });
   it("backpressures projection after durability and releases worker resources when it fails", async () => {
     const store = new InMemoryDurableApplicationTurnStore<Request, Event>();
     const emitted = [{ id: "1", text: "hello" }, { id: "2", text: " world" }];

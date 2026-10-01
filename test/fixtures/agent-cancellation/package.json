@@ -1,0 +1,10 @@
+{
+  "name": "handrail-durable-stop-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "handrail-agent-sdk": "git+https://git@github.com/c0x65o/handrail-agent-sdk.git#f6eb0ef10af89a8ecaea0707610d7709483eaa49",
+    "pg": "8.23.0",
+    "zod": "4.3.6"
+  }
+}

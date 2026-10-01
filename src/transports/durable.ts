@@ -23,6 +23,8 @@ export interface DurableApplicationTurnCancellation {
   readonly fingerprint: string;
   readonly reason: CancelTurnInput["reason"];
   readonly requestedAt: string;
+  /** Stop acknowledged by the delegate, or proven to precede any dispatch. */
+  readonly acceptedAt?: string;
 }
 
 /** TStoredRequest may be an opaque reference instead of prompt-bearing input. */
@@ -37,6 +39,8 @@ export interface DurableApplicationTurnRecord<TStoredRequest = unknown, TEvent =
   readonly request: TStoredRequest | null;
   readonly cancelledBeforeStart?: true;
   readonly delegateTurnId: string | null;
+  /** Written before dispatch. Undefined on older records means admission is uncertain. */
+  readonly delegateStartAttempted?: boolean;
   readonly status: DurableApplicationTurnStatus;
   readonly attempt: number;
   /** Human decisions restart execution without spending crash recovery attempts. */
@@ -287,6 +291,8 @@ implements DurableApplicationTurnStore<TStoredRequest, TEvent> {
 }
 
 class LeaseLostError extends Error {}
+class CancellationPendingError extends Error {}
+class CancellationConflictError extends Error {}
 class PreparationCancelledError extends Error {}
 
 /** Durable idempotency, replay, cross-process cancellation and lease recovery wrapper. */
@@ -328,12 +334,19 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
     }
     throw new Error("Durable turn state conflicted repeatedly");
   };
-  const settle = async (conversationId: string, turnId: string, result: TurnObservationResult) =>
+  const settle = async (conversationId: string, turnId: string, attempt: number, result: TurnObservationResult) =>
     update(conversationId, turnId, (record) => {
       if (terminalStatus(record.status)) return null;
-      if (record.lease?.ownerId !== workerId) throw new LeaseLostError();
-      const status = record.cancellation !== null || result.status === "cancelled" ? "cancelled" :
-        result.status === "completed" ? "completed" : result.status === "waiting_for_approval" ? "waiting_for_approval" : "failed";
+      if (record.lease?.ownerId !== workerId || record.attempt !== attempt) throw new LeaseLostError();
+      // A requested Stop is not evidence that the delegate accepted it. Keep
+      // unsuccessful delivery discoverable by the existing recovery scanner.
+      if (record.cancellation && !record.cancellation.acceptedAt &&
+        result.status !== "cancelled" && result.status !== "completed") {
+        return { ...record, status: "pending", terminal: null, lease: null, updatedAt: timestamp(now()) };
+      }
+      const status = result.status === "completed" ? "completed" :
+        record.cancellation?.acceptedAt || result.status === "cancelled" ? "cancelled" :
+        result.status === "waiting_for_approval" ? "waiting_for_approval" : "failed";
       const checkpoint = record.events.at(-1)?.checkpoint ?? result.checkpoint ?? EMPTY_CHECKPOINT;
       const usage = result.status === "disconnected" ? {} : result.usageReceipt === undefined ? {} : { usageReceipt: result.usageReceipt };
       const terminal: TurnObservationResult = status === "cancelled" ? { status: "cancelled", checkpoint, ...usage } :
@@ -391,95 +404,136 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
   };
 
   const run = async (conversationId: string, turnId: string): Promise<void> => {
-    let claimed: DurableApplicationTurnDocument<TStoredRequest, TEvent> | null;
+    let attempt = 0;
+    let stopped = false, timer: ReturnType<typeof setTimeout> | undefined, wake: (() => void) | undefined;
+    let observation: TurnObservation<TEvent> | undefined;
+    let monitoring: Promise<void> | undefined;
+    let cancellationDelivery: Promise<void> | undefined;
+    let interrupt!: (cause: unknown) => void;
+    const interrupted = new Promise<never>((_resolve, reject) => { interrupt = reject; });
+    void interrupted.catch(() => undefined);
+    const authorized = async () => {
+      if (options.authorizeRecovery && !await options.authorizeRecovery({ conversationId, turnId })) throw new LeaseLostError();
+    };
+    const owned = (record: DurableApplicationTurnRecord<TStoredRequest, TEvent>) => {
+      if (stopped || terminalStatus(record.status) || record.lease?.ownerId !== workerId || record.attempt !== attempt) {
+        throw new LeaseLostError();
+      }
+    };
+    const deliverCancellation = (): Promise<void> => {
+      if (cancellationDelivery) return cancellationDelivery;
+      cancellationDelivery = (async () => {
+        await authorized();
+        const current = await options.store.load(conversationId, turnId);
+        if (!current) throw new LeaseLostError();
+        owned(current.record);
+        const { cancellation, delegateTurnId, delegateStartAttempted } = current.record;
+        if (!cancellation || cancellation.acceptedAt) return;
+        if (delegateTurnId === null) {
+          // Never replay an uncertain start to discover its outcome. Only an
+          // explicitly retained pre-dispatch record proves no work was admitted.
+          if (delegateStartAttempted !== false) throw new CancellationPendingError("Delegate admission is uncertain");
+        } else {
+          const capability = options.delegate.capabilities.authoritativeCancellation;
+          if (!capability.supported) throw new CancellationPendingError("Delegate cancellation is unsupported");
+          let deadline: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const result = await Promise.race([
+              capability.capability.cancelTurn({ conversationId, turnId: delegateTurnId,
+                mutationId: cancellation.mutationId, idempotencyKey: cancellation.idempotencyKey, reason: cancellation.reason }),
+              new Promise<never>((_resolve, reject) => { deadline = setTimeout(() =>
+                reject(new CancellationPendingError("Delegate cancellation acknowledgement timed out")), leaseMilliseconds); }),
+            ]);
+            if (!result.ok) throw new CancellationPendingError("Delegate cancellation was not acknowledged");
+          } finally { if (deadline !== undefined) clearTimeout(deadline); }
+        }
+        await update(conversationId, turnId, record => {
+          owned(record);
+          return { ...record, cancellation: { ...record.cancellation!, acceptedAt: timestamp(now()) }, updatedAt: timestamp(now()) };
+        });
+      })();
+      return cancellationDelivery;
+    };
     try {
-      claimed = await update(conversationId, turnId, (record) => {
+      await authorized();
+      const claimed = await update(conversationId, turnId, (record) => {
         if (terminalStatus(record.status)) return null;
         const currentTime = now();
         if (record.lease && record.lease.ownerId !== workerId && Date.parse(record.lease.expiresAt) > currentTime) return null;
-        if (record.attempt - (record.approvalResumes ?? 0) >= maximumAttempts) {
+        // Delivery retries must not exhaust the execution retry budget and
+        // manufacture a terminal while the delegate still owns admitted work.
+        if (!record.cancellation && record.attempt - (record.approvalResumes ?? 0) >= maximumAttempts) {
           const checkpoint = record.events.at(-1)?.checkpoint ?? EMPTY_CHECKPOINT;
           return { ...record, status: "failed", lease: null, updatedAt: timestamp(currentTime), terminal: {
             status: "failed", checkpoint, error: { code: "unavailable",
               message: "The durable turn exhausted its recovery attempts.", retryable: false } } };
         }
-        return { ...record, status: "running", attempt: record.attempt + 1,
+        return { ...record, ...(record.attempt === 0 && record.delegateStartAttempted === undefined ? { delegateStartAttempted: false } : {}),
+          status: "running", attempt: record.attempt + 1,
           lease: { ownerId: workerId, expiresAt: timestamp(currentTime + leaseMilliseconds) }, updatedAt: timestamp(currentTime) };
       });
       if (!claimed || terminalStatus(claimed.record.status) || claimed.record.lease?.ownerId !== workerId) return;
-      if (claimed.record.cancellation) {
-        await settle(conversationId, turnId, { status: "cancelled",
-          checkpoint: claimed.record.events.at(-1)?.checkpoint ?? EMPTY_CHECKPOINT }); return;
-      }
-      const request = await decodeRequest(conversationId, turnId, claimed.record);
-      // Decoding may await application storage. Revalidate the attempt and
-      // renew its lease with CAS before dispatch, so an old decoder cannot run
-      // after cancellation or a takeover that occurred while it was suspended.
-      const attempt = claimed.record.attempt;
-      const ready = await update(conversationId, turnId, (record) => {
-        if (terminalStatus(record.status) || record.lease?.ownerId !== workerId || record.attempt !== attempt) return null;
-        const currentTime = now();
-        return { ...record, lease: { ownerId: workerId, expiresAt: timestamp(currentTime + leaseMilliseconds) },
-          updatedAt: timestamp(currentTime) };
-      });
-      if (!ready || terminalStatus(ready.record.status) || ready.record.lease?.ownerId !== workerId ||
-        ready.record.attempt !== attempt) return;
-      if (ready.record.cancellation) {
-        await settle(conversationId, turnId, { status: "cancelled",
-          checkpoint: ready.record.events.at(-1)?.checkpoint ?? EMPTY_CHECKPOINT }); return;
-      }
-      emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "durable_turn", phase: "started",
-        conversationId, turnId, attempt: claimed.record.attempt });
-      const started = await options.delegate.startTurn({ conversationId,
-        conversationTurnId: turnId as StartTurnInput<TRequest>["conversationTurnId"], mutationId: claimed.record.mutationId,
-        idempotencyKey: claimed.record.idempotencyKey, request }, Object.freeze({
-        durableExecution: Object.freeze({ conversationId, turnId, attempt }),
-      }));
-      if (!started.ok) { await settle(conversationId, turnId, { status: "failed", checkpoint: EMPTY_CHECKPOINT,
-        error: started.error }); return; }
-      await update(conversationId, turnId, (record) => {
-        if (record.lease?.ownerId !== workerId) throw new LeaseLostError();
-        return { ...record, delegateTurnId: started.value.turnId, updatedAt: timestamp(now()) };
-      });
-      let stopped = false, monitorTimer: ReturnType<typeof setTimeout> | undefined, wakeMonitor: (() => void) | undefined;
-      const monitor = async () => {
+      attempt = claimed.record.attempt;
+      // Keep ownership during slow admission and Stop delivery too, not just
+      // while events are being observed. A replaced claim can never settle.
+      monitoring = (async () => {
         while (!stopped) {
-          await new Promise<void>((resolve) => { wakeMonitor = resolve; monitorTimer = setTimeout(resolve, pollMilliseconds); }); if (stopped) return;
-          const current = await options.store.load(conversationId, turnId);
+          await new Promise<void>(resolve => { wake = resolve; timer = setTimeout(resolve, pollMilliseconds); });
           if (stopped) return;
-          if (!current || terminalStatus(current.record.status) || current.record.lease?.ownerId !== workerId) {
-            started.value.observation.disconnect(); return;
-          }
-          if (current.record.cancellation) {
-            const cancellation = options.delegate.capabilities.authoritativeCancellation;
-            if (cancellation.supported) await cancellation.capability.cancelTurn({ conversationId, turnId: started.value.turnId,
-              mutationId: current.record.cancellation.mutationId, idempotencyKey: current.record.cancellation.idempotencyKey,
-              reason: current.record.cancellation.reason });
-            else started.value.observation.disconnect();
-            return;
-          }
-          if (Date.parse(current.record.lease.expiresAt) - now() <= Math.max(pollMilliseconds * 2, leaseMilliseconds / 2)) {
-            await update(conversationId, turnId, (record) => {
-              if (record.lease?.ownerId !== workerId) throw new LeaseLostError();
-              const currentTime = now();
-              return { ...record, lease: { ownerId: workerId, expiresAt: timestamp(currentTime + leaseMilliseconds) },
-                updatedAt: timestamp(currentTime) };
-            });
+          await update(conversationId, turnId, record => {
+            owned(record);
+            if (Date.parse(record.lease!.expiresAt) - now() > Math.max(pollMilliseconds * 2, leaseMilliseconds / 2)) return null;
+            return { ...record, lease: { ownerId: workerId, expiresAt: timestamp(now() + leaseMilliseconds) }, updatedAt: timestamp(now()) };
+          });
+          if (observation) {
+            const current = await options.store.load(conversationId, turnId);
+            if (current?.record.cancellation) void deliverCancellation().catch(interrupt);
           }
         }
-      };
-      const monitoring = monitor();
-      // Attach the rejection handler immediately, including while a provider
-      // is quiet. The finally block still joins the actual monitor promise.
+      })();
       void monitoring.catch(() => undefined);
-      try {
-        for await (const batch of streamBatches(started.value.observation.events, options.batchEvent ?? (() => false))) {
+      const execute = async () => {
+        if (claimed.record.cancellation) {
+          await deliverCancellation();
+          await settle(conversationId, turnId, attempt, { status: "cancelled", checkpoint: EMPTY_CHECKPOINT }); return;
+        }
+        const request = await decodeRequest(conversationId, turnId, claimed.record);
+        await authorized();
+        // This CAS is the last pre-admission boundary. Stop winning it prevents
+        // start; Stop after it must wait for the actual delegate handle.
+        const ready = await update(conversationId, turnId, record => {
+          owned(record);
+          if (record.cancellation) return null;
+          return { ...record, delegateStartAttempted: true,
+            lease: { ownerId: workerId, expiresAt: timestamp(now() + leaseMilliseconds) }, updatedAt: timestamp(now()) };
+        });
+        if (!ready) throw new LeaseLostError();
+        owned(ready.record);
+        if (ready.record.cancellation) {
+          await deliverCancellation();
+          await settle(conversationId, turnId, attempt, { status: "cancelled", checkpoint: EMPTY_CHECKPOINT }); return;
+        }
+        emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "durable_turn", phase: "started",
+          conversationId, turnId, attempt });
+        const started = await options.delegate.startTurn({ conversationId,
+          conversationTurnId: turnId as StartTurnInput<TRequest>["conversationTurnId"], mutationId: claimed.record.mutationId,
+          idempotencyKey: claimed.record.idempotencyKey, request }, Object.freeze({
+          durableExecution: Object.freeze({ conversationId, turnId, attempt }),
+        }));
+        if (!started.ok) { await settle(conversationId, turnId, attempt, { status: "failed", checkpoint: EMPTY_CHECKPOINT,
+          error: started.error }); return; }
+        observation = started.value.observation;
+        if (stopped) { observation.disconnect(); throw new LeaseLostError(); }
+        await update(conversationId, turnId, record => {
+          owned(record);
+          return { ...record, delegateTurnId: started.value.turnId, updatedAt: timestamp(now()) };
+        });
+        for await (const batch of streamBatches(observation.events, options.batchEvent ?? (() => false))) {
           const items = batch.map(event => ({ checkpoint: normalizeCheckpoint(options.checkpointForEvent(event)), event: clone(event) }));
-          const persisted = await update(conversationId, turnId, (record) => {
-            if (record.lease?.ownerId !== workerId) throw new LeaseLostError();
-            const currentTime = now();
+          const persisted = await update(conversationId, turnId, record => {
+            owned(record);
             return { ...record, events: [...record.events, ...items.map((item, index) => ({ ...item, sequence: record.events.length + index + 1 }))],
-              lease: { ownerId: workerId, expiresAt: timestamp(currentTime + leaseMilliseconds) }, updatedAt: timestamp(currentTime) };
+              updatedAt: timestamp(now()) };
           });
           if (persisted && options.onEventPersisted) {
             try { await options.onEventPersisted(persisted); }
@@ -487,27 +541,41 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
               phase: "failed", conversationId, turnId, code: "projection_failed", retryable: true, cause }); }
           }
         }
-        const result = await started.value.observation.result; await settle(conversationId, turnId, result);
+        const result = await observation.result;
+        // The stream can end before the polling monitor sees Stop (especially
+        // an approval wait). Delivery is joined before settlement in that case.
+        const latest = await options.store.load(conversationId, turnId);
+        if (latest?.record.cancellation && result.status !== "completed" && result.status !== "cancelled") await deliverCancellation();
+        await settle(conversationId, turnId, attempt, result);
         emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "durable_turn",
           phase: result.status === "completed" || result.status === "waiting_for_approval" ? "succeeded" : result.status === "cancelled" ? "cancelled" : "failed",
-          conversationId, turnId, attempt: claimed.record.attempt,
+          conversationId, turnId, attempt,
           ...(result.status === "failed" ? { code: result.error.code, retryable: result.error.retryable } : {}) });
-      } finally {
-        stopped = true; if (monitorTimer !== undefined) clearTimeout(monitorTimer); wakeMonitor?.();
-        await monitoring.catch(() => undefined);
-      }
+      };
+      await Promise.race([execute(), monitoring, interrupted]);
     } catch (cause) {
       if (cause instanceof PreparationCancelledError) {
-        try { await settle(conversationId, turnId, { status: "cancelled", checkpoint: EMPTY_CHECKPOINT }); }
-        catch { /* another worker owns settlement */ }
-        return;
-      }
-      if (!(cause instanceof LeaseLostError)) {
+        try {
+          await deliverCancellation();
+          await settle(conversationId, turnId, attempt, { status: "cancelled", checkpoint: EMPTY_CHECKPOINT });
+        } catch { /* uncertain admission remains recoverable below */ }
+      } else if (!(cause instanceof LeaseLostError)) {
         emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "durable_turn", phase: "failed",
-          conversationId, turnId, code: cause instanceof Error ? cause.name : "unknown", retryable: true, cause });
-        try { await settle(conversationId, turnId, { status: "failed", checkpoint: EMPTY_CHECKPOINT,
+          conversationId, turnId, code: cause instanceof CancellationPendingError ? "cancellation_pending" : "worker_failed", retryable: true, cause });
+        try { await settle(conversationId, turnId, attempt, { status: "failed", checkpoint: EMPTY_CHECKPOINT,
           error: { code: "unavailable", message: "The durable turn worker failed.", retryable: true } }); } catch { /* lease replaced */ }
       }
+    } finally {
+      stopped = true; if (timer !== undefined) clearTimeout(timer); wake?.();
+      observation?.disconnect();
+      await monitoring?.catch(() => undefined);
+      // Includes authorization loss and decode cancellation of an older admitted
+      // turn. Keep the Stop, release only this fenced claim, and let the existing
+      // authorized recovery loop retry without decoding or starting work.
+      if (attempt) await update(conversationId, turnId, record => {
+        if (record.lease?.ownerId !== workerId || record.attempt !== attempt || !record.cancellation) return null;
+        return { ...record, status: "pending", terminal: null, lease: null, updatedAt: timestamp(now()) };
+      }).catch(() => undefined);
     }
   };
   const kick = (conversationId: string, turnId: string, release?: () => void): boolean => {
@@ -594,19 +662,39 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
     capabilities: { ...options.delegate.capabilities, authoritativeCancellation: { supported: true, capability: {
       async cancelTurn(input: CancelTurnInput): Promise<TransportResult<AuthoritativeCancelTurnResult>> {
         try {
-          const current = await options.store.load(input.conversationId, input.turnId);
+          identifier(input.conversationId, "conversationId"); identifier(input.turnId, "turnId");
+          identifier(input.mutationId, "mutationId"); identifier(input.idempotencyKey, "idempotencyKey");
+          if (options.authorizeRecovery && !await options.authorizeRecovery(input)) return safeFailure("not_found", "The durable turn was not found.", false);
+          const fingerprint = cancellationFingerprint(input);
+          const current = await update(input.conversationId, input.turnId, record => {
+            // A failed observer/worker is not proof that its admitted delegate
+            // stopped. A newly authorized Stop must still reach that work.
+            const failedAdmission = record.status === "failed" &&
+              (record.delegateTurnId !== null || record.delegateStartAttempted === true);
+            if (terminalStatus(record.status) && record.status !== "waiting_for_approval" && !failedAdmission) return null;
+            if (record.cancellation) {
+              if (record.cancellation.idempotencyKey !== input.idempotencyKey || record.cancellation.fingerprint !== fingerprint) {
+                throw new CancellationConflictError();
+              }
+              return null;
+            }
+            return { ...record, status: terminalStatus(record.status) ? "pending" : record.status, terminal: null,
+              cancellation: { mutationId: input.mutationId, idempotencyKey: input.idempotencyKey, fingerprint,
+                reason: input.reason, requestedAt: timestamp(now()) }, updatedAt: timestamp(now()) };
+          });
           if (!current) return safeFailure("not_found", "The durable turn was not found.", false);
           if (terminalStatus(current.record.status)) return { ok: true, value: { status: "already_terminal" } };
-          const fingerprint = cancellationFingerprint(input);
-          if (current.record.cancellation && (current.record.cancellation.idempotencyKey !== input.idempotencyKey ||
-            current.record.cancellation.fingerprint !== fingerprint)) return safeFailure("conflict",
-              "The cancellation conflicts with the retained request.", false);
-          if (!current.record.cancellation) await update(input.conversationId, input.turnId, (record) => ({ ...record,
-            cancellation: { mutationId: input.mutationId, idempotencyKey: input.idempotencyKey, fingerprint,
-              reason: input.reason, requestedAt: timestamp(now()) }, updatedAt: timestamp(now()) }));
-          kick(input.conversationId, input.turnId);
+          // Stop may arrive during a worker's terminal callback/cleanup. Queue
+          // the same local kick after cleanup so it cannot be lost in running.
+          const previous = running.get(key(input.conversationId, input.turnId));
+          if (previous) void previous.then(() => kick(input.conversationId, input.turnId)).catch(() => undefined);
+          else kick(input.conversationId, input.turnId);
           return { ok: true, value: { status: "cancellation_requested" } };
-        } catch { return safeFailure("unavailable", "The durable cancellation could not be recorded.", true); }
+        } catch (cause) {
+          return cause instanceof CancellationConflictError
+            ? safeFailure("conflict", "The cancellation conflicts with the retained request.", false)
+            : safeFailure("unavailable", "The durable cancellation could not be recorded.", true);
+        }
       },
     } } },
     async startTurn(input: StartTurnInput<TRequest>): Promise<TransportResult<TurnHandle<TEvent>>> {
@@ -620,7 +708,7 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         const created = await options.store.create({ schemaVersion: DURABLE_APPLICATION_TURN_SCHEMA_VERSION,
           conversationId, turnId, mutationId: identifier(input.mutationId, "mutationId"),
           idempotencyKey: identifier(input.idempotencyKey, "idempotencyKey"), requestFingerprint,
-          request: clone(storedRequest), delegateTurnId: null, status: "pending", attempt: 0, events: [], terminal: null,
+          request: clone(storedRequest), delegateTurnId: null, delegateStartAttempted: false, status: "pending", attempt: 0, events: [], terminal: null,
           cancellation: null, lease: null, createdAt: timestamp(currentTime), updatedAt: timestamp(currentTime) });
         if (created.status === "conflict") {
           const retained = created.document;

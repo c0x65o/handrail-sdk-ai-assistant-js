@@ -1,0 +1,65 @@
+{
+  "observedAt": "2026-10-01T01:37:10.639Z",
+  "jsBaseHead": "97cb53daa35a0ce1bb06c3563e795e94371b17d2",
+  "sourceUncommitted": true,
+  "flutterHead": "94c44925d78e3b3479a8039597984be3b0f95ec6",
+  "flutterBranch": "fix/preview-composer-accessible-name",
+  "flutterModified": false,
+  "candidatePublicResolution": "file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/dist/server/assistant.js",
+  "agentPin": "git+https://git@github.com/c0x65o/handrail-agent-sdk.git#f6eb0ef10af89a8ecaea0707610d7709483eaa49",
+  "agentLock": "git+https://git@github.com/c0x65o/handrail-agent-sdk.git#f6eb0ef10af89a8ecaea0707610d7709483eaa49",
+  "agentInstalledLock": "git+https://git@github.com/c0x65o/handrail-agent-sdk.git#f6eb0ef10af89a8ecaea0707610d7709483eaa49",
+  "baselineAiLock": "git+https://git@github.com/c0x65o/handrail-sdk-ai-assistant-js.git#97cb53daa35a0ce1bb06c3563e795e94371b17d2",
+  "finalPublishedAiSha": null,
+  "publicationQualification": "Pending Handrail publication and ordinary full-SHA consumer adoption",
+  "files": {
+    "src/transports/durable.ts": "2a2fddc40809396e1c0b9145c692a85513acfb9843765097b1fdebc1bdc40567",
+    "test/durable-application-transport.test.ts": "6bc0f99bcb8b6ac15934edceba9736ae5857706ed38e11e6c29451ac8df37913",
+    "test/durable-stop-recovery.test.ts": "cefd91821668178fe67d2d6c5142400ae101b6dc1481d945cb858ed92703efe2",
+    "test/server-approval-pause.integration.test.ts": "06f63ac35ba6a18a1f83ca8e902eaf49ffd2cbe7d64c9463a2239b8ddf4f8875",
+    "test/agent-durable-stop.test.mjs": "da049a307e7d6a26914fe945be4d7200cfce1f4a7e97ff95dd75a6f4e975b4dc",
+    "test/agent-stop-process.mjs": "7b4bd61ac8e508a2dad7280f26a8ca2a463a2c09df74bd3a01cfa661a076bef5",
+    "test/run-agent-stop-postgres.mjs": "9553fa153e2fb608d52015ec0a2ed57bacddf7bab1bbe853f2a39b81e681517f",
+    "test/fixtures/agent-cancellation/host.mjs": "0a88776286354d78a72ac5603a38b434d81ffbe128bc83b9536b21198395fcaa",
+    "test/fixtures/agent-cancellation/database.mjs": "eb3834a2555b1f1d3539cee4ec48197db8ccdb6dfb6b42681987bd10ac4b29e6",
+    "test/fixtures/agent-cancellation/api.mjs": "268bc092613bf55dce5390f9b0603ca5f9e0a1bcbc6aa30da0f8aa237887f83c",
+    "test/fixtures/agent-cancellation/package.json": "315b93006578a6f1861e4692f5341bc0d743bb43078f555a2aa28adb21ecc87b",
+    "test/fixtures/agent-cancellation/package-lock.json": "f5d795d9da4d65a42c66dec9b69e38c43fb3b214c427ed55a88868f101cd0746"
+  },
+  "verification": {
+    "typecheck": {
+      "exitCode": 0,
+      "command": "npm run typecheck"
+    },
+    "build": {
+      "exitCode": 0,
+      "command": "npm run build"
+    },
+    "focusedJs": {
+      "exitCode": 0,
+      "files": 17,
+      "passed": 134
+    },
+    "actualAgentPostgres": {
+      "exitCode": 0,
+      "passed": 3,
+      "includesSeparateProcess": true
+    },
+    "focusedLint": {
+      "exitCode": 0
+    },
+    "flutterBaseline": {
+      "exitCode": 1,
+      "failed": 2
+    },
+    "deployment": "Not requested; none performed",
+    "futurePublicInstall": "Unverified until Handrail publishes",
+    "flutterCandidate": {
+      "exitCode": 1,
+      "passed": 39,
+      "failed": 2,
+      "baselineReproduced": true,
+      "fixtureOverride": "HANDRAIL_TEST_JS_SDK_DIST points to candidate dist"
+    }
+  }
+}

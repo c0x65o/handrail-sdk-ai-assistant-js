@@ -1,0 +1,29 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+TAP version 13
+# gateway fixture diagnostic live_conversation_projection projection_failed
+# Subtest: native Stop reaches the same waiting Agent after observation ends (restart=false)
+not ok 1 - native Stop reaches the same waiting Agent after observation ends (restart=false)
+  ---
+  duration_ms: 13487.900944
+  type: 'test'
+  location: '/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-durable-stop.test.mjs:25:95'
+  failureType: 'testCodeFailure'
+  error: 'Timed out waiting for persisted state'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    eventually (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-durable-stop.test.mjs:19:65)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async TestContext.<anonymous> (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/test/agent-durable-stop.test.mjs:139:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 14583.799092
+Owned temporary PostgreSQL cluster stopped.

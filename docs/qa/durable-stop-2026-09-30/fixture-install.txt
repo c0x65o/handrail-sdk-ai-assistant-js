@@ -1,0 +1,6 @@
+
+up to date in 39s
+npm warn skipping integrity check for git dependency https://git@github.com/c0x65o/handrail-agent-sdk.git
+npm warn skipping integrity check for git dependency https://git@github.com/c0x65o/handrail-sdk-ai-assistant-js.git
+
+added 48 packages in 40s

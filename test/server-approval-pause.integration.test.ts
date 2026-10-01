@@ -231,3 +231,46 @@ it.each(['paused', 'running'] as const)('enables automatic approval during a %s 
     if (proposals.length) expect(proposals[0]).toMatchObject({ status: 'executed', decision_attribution: { actor: { type: 'user', id: 'user' } } });
   } finally { release(); await browser.dispose(); await assistant.stopBackgroundWorkers(); }
 }, 30_000);
+
+it.each(['confirmed', 'rejected'] as const)('Stop on the supported Responses delegate survives restart and a later %s decision', async decision => {
+  const testContext = { ...context, tenantId: randomUUID() };
+  const bundle = persistence.forScope<HandrailAssistantAuthorizationContext>(testContext, {
+    createConversationId: () => 'conversation' as never, authorizeConversation: () => 'allow', authorizeApproval: () => 'allow' });
+  await bundle.catalog.create({ authorizationContext: testContext, idempotencyKey: 'new' as never });
+  const effect = vi.fn(async () => ({ saved: true }));
+  const plugin = createToolPlugin({ pluginId: 'stop', version: '1.0.0', displayName: 'Stop',
+    registrations: [{ definition: { name: 'save', description: 'Save', input_schema: { type: 'object', properties: {} } }, executor: effect }],
+    approvals: [{ toolName: 'save', mode: 'always', summarize: () => 'Save reviewed change' }] });
+  const providerRequest = vi.fn(async function* () {
+    yield { type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', id: 'fc', call_id: 'call', name: 'save', arguments: '' } };
+    yield { type: 'response.function_call_arguments.done', output_index: 0, item_id: 'fc', arguments: '{}' };
+    yield { type: 'response.completed', response: { usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } };
+  });
+  const create = () => createHandrailAssistant({ id: 'stop', authorize: () => testContext, persistence, tools: [plugin], automaticTitles: false,
+    provider: openaiResponses({ model: 'fixture', request: providerRequest, supportsToolSearch: false, savedConversation: true }) });
+  let assistant = await create();
+  const post = (path: string, body: unknown) => assistant.handle(new Request(`https://app.test/${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+  const browser = await createHandrailAiClient({ baseUrl: 'https://app.test', startActivityPolling: false,
+    fetch: (url, init) => assistant.handle(new Request(url, init)),
+    conversations: { mode: 'multiple', clientId: 'browser' as never, authorize: () => 'allow' } });
+  const runtime = await browser.workspace!.open({ authorizationContext: testContext, conversationId: 'conversation' as never });
+  let turnId = '';
+  try {
+    expect(await runtime.sendMessage({ content: 'Save', onAccepted: accepted => { turnId = accepted.turnId; },
+      request: { protocol_version: AI_RUNTIME_PROTOCOL_VERSION, continuation_of: null,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Save' }] }], tools: [], tool_results: [],
+        generation: { max_output_tokens: 100, temperature: 0 }, correlation_hints: {} } })).toMatchObject({ status: 'waiting_for_approval' });
+    const proposal = (await bundle.approvals.listGroup({ permissionContext: testContext, groupId: 'conversation' as never }))[0]!;
+    await assistant.stopBackgroundWorkers(); assistant = await create();
+    expect((await post('turns/cancel', { conversationId: 'conversation', turnId, mutationId: 'stop', idempotencyKey: 'stop', reason: 'user' })).status).toBe(200);
+    // The decision endpoint is still authorized to retain an explicit decision;
+    // it must never override Stop to restart execution of this original turn.
+    await post('approvals/transition', { conversationId: 'conversation', proposalId: proposal.proposal_id,
+      expectedVersion: 1, status: decision, idempotencyKey: 'decision', idempotencyFingerprint: 'decision' });
+    await vi.waitFor(async () => expect((await bundle.durableTurns.load('conversation', turnId))?.record.status).toBe('cancelled'));
+    await runtime.resumeTurn(turnId as never);
+    expect(providerRequest).toHaveBeenCalledOnce(); expect(effect).not.toHaveBeenCalled();
+    expect((await bundle.durableTurns.load('conversation', turnId))?.record.cancellation?.acceptedAt).toEqual(expect.any(String));
+  } finally { await browser.dispose(); await assistant.stopBackgroundWorkers(); }
+}, 20_000);
