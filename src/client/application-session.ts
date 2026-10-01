@@ -65,6 +65,8 @@ export class ApplicationConversationSessionError extends Error {
 }
 const terminal = (turn: ConversationDisplayTurnControl) =>
   ["completed", "failed", "cancelled", "waiting_for_approval"].includes(turn.status);
+const executionTerminal = (turn: ConversationDisplayTurnControl) =>
+  ["completed", "failed", "cancelled"].includes(turn.status);
 const errorCode = (cause: unknown) => {
   if (!cause || typeof cause !== "object") return "unavailable";
   const error = cause as { resourceCode?: string; code?: string; transportCode?: string };
@@ -539,9 +541,12 @@ export class ApplicationConversationSession<TRequest = unknown> {
         try {
           const control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId }, lifetime);
           if (lifetime.aborted) continue;
-          if (control.status === "ready" && control.requestedTurn && terminal(control.requestedTurn)) {
-            // Execution is already settled even when its display page is temporarily unavailable.
-            await this.refresh().catch(cause => { if (denied(cause)) throw cause; });
+          if (control.status === "ready" && control.requestedTurn &&
+            (executionTerminal(control.requestedTurn) ||
+              terminal(control.requestedTurn) && !this.cancellationIds.has(turnId))) {
+            // Authorized scalar controls settle execution. A slow display read must
+            // not hold its observer open; refresh still owns presentation/errors.
+            void this.refresh().catch(() => undefined);
             this.assertOpen(); return control.requestedTurn;
           }
         } catch (cause) { if (denied(cause)) throw normalize(cause); }
@@ -554,8 +559,10 @@ export class ApplicationConversationSession<TRequest = unknown> {
     const control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId }, this.lifetime.signal);
     this.assertOpen();
     if (control.status !== "ready" || !control.requestedTurn) throw new ApplicationConversationSessionError("turn_unavailable", "Refresh the conversation before stopping this response.", true);
-    if (terminal(control.requestedTurn)) return "already_terminal";
-    if (control.activeTurnId !== turnId) throw new ApplicationConversationSessionError("turn_changed", "The active response changed.", true);
+    if (executionTerminal(control.requestedTurn)) return "already_terminal";
+    const currentApprovalWait = control.requestedTurn.status === "waiting_for_approval" &&
+      control.latestTurn?.turnId === turnId && control.activeTurnId === null;
+    if (control.activeTurnId !== turnId && !currentApprovalWait) throw new ApplicationConversationSessionError("turn_changed", "The active response changed.", true);
     const capability = this.options.transport.capabilities.authoritativeCancellation;
     if (!capability.supported) throw new ApplicationConversationSessionError("cancellation_unavailable", "Stopping responses is unavailable.");
     const cancellation = this.cancellationIds.get(turnId) ?? { identity: `cancel_${crypto.randomUUID()}`, reason };
@@ -565,7 +572,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
       turnId, mutationId: cancellation.identity, idempotencyKey: cancellation.identity, reason: cancellation.reason });
     this.assertOpen();
     if (!result.ok) throw new ApplicationConversationSessionError(result.error.code, result.error.message, result.error.retryable);
-    await this.refresh(); return result.value.status;
+    // The authoritative receipt is independent of transcript rendering latency.
+    void this.refresh().catch(() => undefined); return result.value.status;
   }
   stopObserving(turnId: string): boolean {
     let stopped = false;

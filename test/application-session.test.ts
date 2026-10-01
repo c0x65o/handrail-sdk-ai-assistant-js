@@ -417,6 +417,7 @@ it("cancels only the requested active turn and retries the exact cancellation in
   f.cancellation.mockRejectedValueOnce(new Error("lost response"));
   await expect(f.session.cancelTurn("running", "user")).rejects.toThrow("lost response");
   await f.session.cancelTurn("running", "superseded");
+  await flush();
   expect(f.cancellation.mock.calls[0]).toEqual(f.cancellation.mock.calls[1]);
   expect(f.session.getSnapshot().control?.activeTurnId).toBe("running");
   await expect(f.session.cancelTurn("other", "user")).rejects.toMatchObject({ code: "turn_unavailable" });
@@ -427,7 +428,53 @@ it("settles a wait from scalar controls even when message rendering is temporari
   const f = fixture(); f.setTurn({ turnId: "done", revision: 1, status: "completed", remoteMayStillBeRunning: false, error: null });
   vi.mocked(f.reader.page).mockRejectedValue(new Error("page offline"));
   expect((await f.session.waitForTurn("done")).status).toBe("completed");
+  await flush();
   expect(f.session.getSnapshot().error?.retryable).toBe(true);
+});
+
+it("does not hold terminal observation behind an unfinished display fetch", async () => {
+  const f = fixture(), page = deferred<ConversationDisplayPage>();
+  f.setTurn({ turnId: "done", revision: 1, status: "cancelled", remoteMayStillBeRunning: false, error: null });
+  vi.mocked(f.reader.page).mockReturnValue(page.promise);
+  const rendering = f.session.refresh();
+  await flush();
+  let result: ConversationDisplayTurnControl | undefined;
+  const observing = f.session.waitForTurn("done").then(turn => { result = turn; });
+  await flush();
+  try { expect(result?.status).toBe("cancelled"); }
+  finally { page.resolve(f.page([])); await rendering; await observing; }
+});
+
+it("returns the accepted Stop receipt while a display fetch is unfinished", async () => {
+  const f = fixture(), page = deferred<ConversationDisplayPage>();
+  f.setTurn({ turnId: "running", revision: 1, status: "running", remoteMayStillBeRunning: true, error: null });
+  vi.mocked(f.reader.page).mockReturnValue(page.promise);
+  const rendering = f.session.refresh();
+  await flush();
+  let result: string | undefined;
+  const stopping = f.session.cancelTurn("running", "user").then(receipt => { result = receipt; });
+  await flush();
+  try {
+    expect(f.cancellation).toHaveBeenCalledOnce();
+    expect(result).toBe("cancellation_requested");
+  } finally { page.resolve(f.page([])); await rendering; await stopping; }
+});
+
+it("Stop reaches an approval wait and the original client waits past stale controls for cancellation", async () => {
+  const f = fixture();
+  const waiting: ConversationDisplayTurnControl = { turnId: "waiting", revision: 1,
+    status: "waiting_for_approval", remoteMayStillBeRunning: false, error: null };
+  f.setTurn(waiting);
+  expect(await f.session.cancelTurn("waiting", "user")).toBe("cancellation_requested");
+  expect(f.cancellation).toHaveBeenCalledTimes(1);
+  let settled = false;
+  const observing = f.session.waitForTurn("waiting").then(turn => { settled = true; return turn; });
+  await flush();
+  expect(settled).toBe(false);
+  f.setTurn({ ...waiting, revision: 2, status: "cancelled" });
+  expect((await observing).status).toBe("cancelled");
+  expect(await f.session.cancelTurn("waiting", "user")).toBe("already_terminal");
+  expect(f.cancellation).toHaveBeenCalledTimes(1);
 });
 
 it("aborts waiting and ignores late controls when an account closes", async () => {
