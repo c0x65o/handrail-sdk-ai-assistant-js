@@ -30,7 +30,7 @@ export function ConversationRequestStatus({ state, proposals, activity, hasPendi
   let title: string, detail: string;
   if (savingDecision) {
     phase = "saving"; title = "Saving approval decision…"; detail = "Please wait for confirmation.";
-  } else if (waiting) {
+  } else if (waiting && !terminal) {
     phase = "waiting"; title = "Waiting for approval";
     detail = pending.length > 0 && !state.partial
       ? `${pending.length} ${pending.length === 1 ? "action needs" : "actions need"} your review.`
@@ -51,7 +51,12 @@ export function ConversationRequestStatus({ state, proposals, activity, hasPendi
   } else if (turn?.status === "failed" || activity?.turnStatus === "error") {
     phase = "attention"; title = "Request failed"; detail = "Review the error in this conversation.";
   } else if (turn?.status === "cancelled") {
-    phase = "attention"; title = "Request stopped"; detail = "Review any changes that already ran.";
+    phase = "attention";
+    title = turn.cancellation_reason === "user" ? "Request stopped by you"
+      : turn.cancellation_reason === "timeout" ? "Request timed out"
+        : turn.cancellation_reason === "superseded" ? "Request superseded or authorization revoked"
+          : turn.cancellation_reason === "runtime_shutdown" ? "Runtime shut down" : "Request cancelled";
+    detail = "Review any changes that already ran.";
   } else if (turn?.status === "completed" || activity?.turnStatus === "completed") {
     phase = tools.failed || tools.incomplete ? "attention" : "complete";
     title = phase === "attention" ? "Finished · some actions need attention" : "Request complete";
@@ -63,7 +68,7 @@ export function ConversationRequestStatus({ state, proposals, activity, hasPendi
         : phase === "complete" ? "✓" : "!"}</span>
       <span><strong>{title}</strong><span className="hr-chat__request-detail">{detail}</span></span>
     </div>
-    {waiting && !savingDecision && onReview && <button type="button" onClick={onReview}>Review next</button>}
+    {waiting && !terminal && !savingDecision && onReview && <button type="button" onClick={onReview}>Review next</button>}
   </section>;
 }
 

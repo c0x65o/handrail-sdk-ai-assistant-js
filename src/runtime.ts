@@ -1,3 +1,4 @@
+import { conversationCancellationReason as cancellationReason } from "./cancellation.js";
 import { streamBatches, isTextFrame } from "./stream-batches.js";
 import { jsonValuesEqual } from "./json-equality.js";
 import type { ConversationDraftOrigin } from "./client/draft-origin.js";
@@ -432,7 +433,6 @@ export async function createConversationRuntime<TRequest>(
   const retryControllers = new Map<string, AbortController>();
   const locallyStoppedTurns = new Set<string>();
   const cancellationRequestedTurns = new Set<string>();
-  const requestedCancellationReasons = new Map<string, ConversationTurnCancellationReason>();
   const cancellationOperations = new Map<
     string,
     Promise<ConversationRuntimeCancellationResult>
@@ -911,7 +911,6 @@ export async function createConversationRuntime<TRequest>(
           frameState,
           terminal,
           runtimeSource(),
-          requestedCancellationReasons.get(turnId) ?? store.getSnapshot().turns.find((turn) => turn.turn_id === turnId)?.cancellation_requested_reason ?? undefined,
         );
         const postPersistenceRevision = (
           (durableRevision ?? 0) + terminalDrafts.length
@@ -932,7 +931,6 @@ export async function createConversationRuntime<TRequest>(
               frameState,
               terminal,
               runtimeSource(),
-              requestedCancellationReasons.get(turnId) ?? store.getSnapshot().turns.find((turn) => turn.turn_id === turnId)?.cancellation_requested_reason ?? undefined,
               checkpoint,
             )
           : terminalDrafts;
@@ -1542,7 +1540,6 @@ export async function createConversationRuntime<TRequest>(
           options.providerContext?.capability.supported === true
         ) {
           cancellationRequestedTurns.add(turnId);
-          requestedCancellationReasons.set(turnId, reason);
           preflightController.abort(new CancellationRequestedError());
           await persist([
             cancellationDraft(
@@ -1581,7 +1578,6 @@ export async function createConversationRuntime<TRequest>(
       }
 
       cancellationRequestedTurns.add(turnId);
-      requestedCancellationReasons.set(turnId, reason);
       try {
         await persist([cancellationDraft(
           "turn.cancellation_requested",
@@ -2329,7 +2325,6 @@ function draftsForTerminal(
   state: FrameState,
   terminal: TerminalStreamEvent,
   source: ConversationEventSource,
-  requestedCancellationReason?: ConversationTurnCancellationReason,
   checkpoint?: TurnResumePoint,
 ): EventDraft[] {
   const metadata = metadataFor({
@@ -2367,7 +2362,7 @@ function draftsForTerminal(
       payload: {
         type: "turn.cancelled",
         turn_id: state.turnId,
-        reason: requestedCancellationReason ?? cancellationReason(terminal.reason),
+        reason: cancellationReason(terminal.reason),
       },
     }];
   }
@@ -2655,14 +2650,6 @@ function retryReasonCategory(code: string): RetryReasonCategory {
     case "unavailable": return "unavailable";
     case "internal_error": return "internal";
     default: return "interrupted";
-  }
-}
-
-function cancellationReason(reason: string): ConversationTurnCancellationReason {
-  switch (reason) {
-    case "deadline_exceeded": return "timeout";
-    case "policy_revoked": return "superseded";
-    default: return "runtime_shutdown";
   }
 }
 

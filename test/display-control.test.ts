@@ -26,3 +26,11 @@ it("retains the optional bounded pending-approval indicator without inventing su
   expect(parseConversationDisplayControl({ ...header, hasPendingApprovals: true }, { conversationId: "chat" }).hasPendingApprovals).toBe(true);
   expect(() => parseConversationDisplayControl({ ...header, status: "preparing", hasPendingApprovals: true }, { conversationId: "chat" })).toThrow();
 });
+
+it.each(["user", "timeout", "superseded", "runtime_shutdown"])("preserves bounded cancellation reason %s", cancellationReason => {
+  const latestTurn = { turnId: "turn", status: "cancelled", revision: 8, remoteMayStillBeRunning: false, error: null, cancellationReason };
+  const value = { schemaVersion: 1, conversationId: "chat", status: "ready", generation: 0,
+    revision: 8, canonicalRevision: 8, activeTurnId: null, activeTurn: null, latestTurn, requestedTurn: null };
+  expect(parseConversationDisplayControl(value, { conversationId: "chat" }).latestTurn?.cancellationReason).toBe(cancellationReason);
+  expect(() => parseConversationDisplayControl({ ...value, latestTurn: { ...latestTurn, cancellationReason: "unknown" } }, { conversationId: "chat" })).toThrow();
+});

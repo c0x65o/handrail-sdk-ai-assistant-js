@@ -1,3 +1,4 @@
+import { protocolCancellationReason } from "../cancellation.js";
 import type { CancelTurnInput, ConversationTransport, DurableTurnExecutionIdentity, StartTurnInput, TransportResult, TurnHandle,
   TurnExecutionContext, TurnObservation, TurnObservationResult } from "./types.js";
 
@@ -38,7 +39,7 @@ export function createApplicationTurnTransport<TEvent, TRequest>(
   const transport: ConversationTransport<TEvent, TRequest> = { capabilities: { authoritativeCancellation: { supported: true, capability: {
       async cancelTurn(input: CancelTurnInput) { const controller = active.get(key(input.conversationId, input.turnId));
         if (!controller) return { ok: true, value: { status: "already_terminal" } };
-        controller.abort(new DOMException("Application turn cancelled", "AbortError"));
+        controller.abort(protocolCancellationReason(input.reason));
         return { ok: true, value: { status: "cancellation_requested" } }; },
     } }, documentInput: { supported: false }, attachmentUpload: { supported: false }, presence: { supported: false },
     synchronization: { supported: false } },

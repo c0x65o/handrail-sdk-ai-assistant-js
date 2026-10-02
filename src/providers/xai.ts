@@ -1,8 +1,8 @@
+import { signalCancellationReason as cancellationReason } from "../cancellation.js";
 import {
   AI_RUNTIME_PROTOCOL_VERSION,
   type ApplicationToolResult,
   type AttachmentReference,
-  type CancellationReason,
   type ChatMessage,
   type JsonObject,
   type ProtocolMetadata,
@@ -274,14 +274,6 @@ async function mapMessage(
     }
   }
   return { role: message.role, content };
-}
-
-function cancellationReason(signal: AbortSignal): CancellationReason {
-  return signal.reason === "deadline_exceeded" ||
-    signal.reason === "policy_revoked" ||
-    signal.reason === "runtime_shutdown"
-    ? signal.reason
-    : "runtime_shutdown";
 }
 
 function isAbortError(error: unknown, signal: AbortSignal): boolean {

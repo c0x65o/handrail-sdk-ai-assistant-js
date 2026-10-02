@@ -180,7 +180,7 @@ describe("createProviderToolLoopTransport", () => {
     const events: StreamEvent[] = [];
     for await (const item of started.value.observation.events) events.push(item);
     if (cancelled) {
-      expect(parseStreamEvents(events).at(-1)).toMatchObject({ type: "response.cancelled" });
+      expect(parseStreamEvents(events).at(-1)).toMatchObject({ type: "response.cancelled", reason: "explicit_stop" });
       expect(await started.value.observation.result).toMatchObject({ status: "cancelled" });
     } else {
     expect(parseStreamEvents(events).at(-1)).toMatchObject({ type: "response.error", error: {

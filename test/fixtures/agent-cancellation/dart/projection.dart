@@ -14,6 +14,9 @@ Future<void> main(List<String> args) async {
         session.document!.activeTurnId != null) {
       throw StateError('Fresh Dart session did not converge: $turn');
     }
+    if (args.length > 4 && turn['cancellation_reason'] != args[4]) {
+      throw StateError('Fresh Dart session lost cancellation reason: $turn');
+    }
     final capability = (await client.capabilities()).displayHistory!;
     final control = await client.displayHistoryControl(
         conversationId: args[1], capability: capability, turnId: args[2]);
@@ -21,7 +24,7 @@ Future<void> main(List<String> args) async {
         control.requestedTurn?.remoteMayStillBeRunning != false) {
       throw StateError('Dart control projection did not converge');
     }
-    print('Fresh Dart process: ${args[3]}, remoteMayBeRunning=false');
+    print('Fresh Dart process: ${args[3]}, reason=${turn['cancellation_reason']}, remoteMayBeRunning=false');
   } finally {
     await session.dispose();
     client.close();

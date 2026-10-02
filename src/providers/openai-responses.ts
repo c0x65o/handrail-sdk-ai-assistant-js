@@ -1,3 +1,4 @@
+import { signalCancellationReason as cancellationReason } from "../cancellation.js";
 import { correlateOpenAIResponsesFunctionCalls } from "./openai-responses-stream.js";
 import { ProviderInputPreparationError } from "./input-preparation-error.js";
 import { awaitWithSignal } from "../await-signal.js";
@@ -13,7 +14,6 @@ import {
   AI_RUNTIME_PROTOCOL_LIMITS,
   AI_RUNTIME_PROTOCOL_VERSION,
   type AttachmentReference,
-  type CancellationReason,
   type JsonObject,
   type StreamEvent,
 } from "../protocol.js";
@@ -281,10 +281,6 @@ function publicFailure(error: ProviderAdapterError) {
   };
 }
 
-function cancellationReason(signal: AbortSignal): CancellationReason {
-  return signal.reason === "deadline_exceeded" || signal.reason === "policy_revoked" || signal.reason === "runtime_shutdown"
-    ? signal.reason : "runtime_shutdown";
-}
 
 export class OpenAIResponsesProviderAdapter implements ProviderAdapter {
   readonly metadata: ProviderAdapterMetadata;

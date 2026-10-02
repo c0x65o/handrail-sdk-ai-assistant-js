@@ -450,14 +450,9 @@ describe("ManagedRuntimeTransport", () => {
   });
 
   it.each([
-    {
-      terminal: {
-        ...envelope("response.cancelled", 2),
-        type: "response.cancelled" as const,
-        reason: "policy_revoked" as const,
-      },
-      status: "cancelled",
-    },
+    ...(["explicit_stop", "policy_revoked", "deadline_exceeded", "runtime_shutdown"] as const).map(reason => ({
+      terminal: { ...envelope("response.cancelled", 2), type: "response.cancelled" as const, reason }, status: "cancelled",
+    })),
     {
       terminal: {
         ...envelope("response.error", 2),

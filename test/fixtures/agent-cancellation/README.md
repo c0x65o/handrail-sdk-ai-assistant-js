@@ -63,3 +63,16 @@ Agent/Runner, native approvals/ledger, the durable writer, canonical/display
 projection, PostgreSQL, and clients are real. The deliberate session-attribution
 conflict remains rejected; only independently acknowledged cancellation settles.
 See [the repair and adoption contract](../../../docs/canonical-cancellation-projection.md).
+
+## Explicit Stop reason coverage
+
+The native Stop suite also holds the simulated model during generation, checks
+canonical `user` cancellation through fresh browser and optional Dart reload,
+repeats Stop/reload, rejects a revoked scope, and sends a new authorized turn.
+The model and business-effect boundaries are simulated; admission, Runner,
+PostgreSQL persistence, gateway, durable reconciliation, and clients are real.
+`HANDRAIL_PROJECTION_DART_PACKAGES` may explicitly select a source checkout's
+package configuration for this **source-only** check. It is not a dependency
+installation. Normal installed qualification must use updated public full-SHA
+fixture pins and locks after publication. The existing pins remain unchanged in
+the source repair; they cannot qualify an unpublished Agent protocol change.

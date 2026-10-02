@@ -24,6 +24,7 @@ export function applicationConversationPresentation(snapshot: ApplicationConvers
     const previous = turns.get(control.turnId);
     const ids = (role: "user" | "assistant") => messages.filter(message => message.turn_id === control.turnId && message.role === role).map(message => message.message_id);
     turns.set(control.turnId, { turn_id: control.turnId as ConversationTurnId, status: control.status,
+      ...(control.cancellationReason === undefined ? {} : { cancellation_reason: control.cancellationReason }),
       error: control.error, remote_may_still_be_running: control.remoteMayStillBeRunning,
       input_message_ids: previous?.input_message_ids ?? ids("user"), output_message_ids: previous?.output_message_ids ?? ids("assistant"),
       outcome: previous?.outcome ?? null, continuation_of_turn_id: previous?.continuation_of_turn_id ?? null });

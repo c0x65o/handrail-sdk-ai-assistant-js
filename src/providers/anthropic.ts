@@ -1,8 +1,8 @@
+import { signalCancellationReason as cancellationReason } from "../cancellation.js";
 import {
   AI_RUNTIME_PROTOCOL_VERSION,
   type ApplicationToolResult,
   type AttachmentReference,
-  type CancellationReason,
   type ChatMessage,
   type ImageMimeType,
   type JsonObject,
@@ -344,14 +344,6 @@ function coalesceMessages(messages: readonly AnthropicMessage[]): AnthropicMessa
     }
   }
   return output;
-}
-
-function cancellationReason(signal: AbortSignal): CancellationReason {
-  return signal.reason === "deadline_exceeded" ||
-    signal.reason === "policy_revoked" ||
-    signal.reason === "runtime_shutdown"
-    ? signal.reason
-    : "runtime_shutdown";
 }
 
 function safeProperty(value: unknown, key: string): unknown {

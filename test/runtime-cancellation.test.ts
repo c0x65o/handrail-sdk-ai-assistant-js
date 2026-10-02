@@ -60,7 +60,7 @@ function frame(type: StreamEvent["type"], sequence: number, fields = {}) {
 
 const started = () => frame("response.started", 0, { attribution });
 const completed = () => frame("response.completed", 1, { outcome: "stop" });
-const cancelled = () => frame("response.cancelled", 1, { reason: "runtime_shutdown" });
+const cancelled = () => frame("response.cancelled", 1, { reason: "explicit_stop" });
 const failed = () => frame("response.error", 1, {
   error: {
     category: "upstream",
@@ -695,3 +695,23 @@ describe("ConversationRuntime cancellation", () => {
     await expect(sending).rejects.toThrow("destroyed");
   });
 });
+
+for (const [wire, canonical] of [["explicit_stop", "user"], ["deadline_exceeded", "timeout"],
+  ["policy_revoked", "superseded"], ["runtime_shutdown", "runtime_shutdown"]] as const) {
+  it(`keeps authoritative ${wire} distinct from a racing user Stop and across reload`, async () => {
+    const transport = new TestTransport(async () => ({ ok: true, value: { status: "cancellation_requested" } }));
+    const observation = new ControlledObservation([started()]); transport.starts.push(observation);
+    const { runtime, eventStore } = await runtimeFor(transport);
+    const pending = runtime.sendMessage({ content: "Race cancellation", request });
+    const turnId = await activeTurnId(runtime);
+    await runtime.cancelTurn(turnId, "user");
+    const terminal = frame("response.cancelled", 1, { reason: wire });
+    observation.finish(terminal, { status: "cancelled", checkpoint: checkpoint(terminal) });
+    expect((await pending).status).toBe("cancelled");
+    expect(runtime.getSnapshot().turns[0]).toMatchObject({ cancellation_reason: canonical, remote_may_still_be_running: false });
+    runtime.destroy();
+    const reloaded = await createConversationRuntime({ conversationId, clientId, transport, eventStore });
+    expect(reloaded.getSnapshot().turns[0]).toMatchObject({ status: "cancelled", cancellation_reason: canonical });
+    reloaded.destroy();
+  });
+}

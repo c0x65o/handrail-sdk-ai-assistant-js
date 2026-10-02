@@ -394,7 +394,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
         ORDER BY first_revision DESC,record_id DESC LIMIT $3 FOR UPDATE
       ) UPDATE handrail_ai_display_records r SET control_payload=jsonb_build_object(
         'turnId',b.record_id,'revision',b.revision,'status',b.p->>'status',
-        'remoteMayStillBeRunning',b.p->'remote_may_still_be_running',
+        'remoteMayStillBeRunning',b.p->'remote_may_still_be_running','cancellationReason',b.p->'cancellation_reason',
         'error',CASE WHEN b.p->'error' IS NULL OR b.p->'error'='null'::jsonb THEN 'null'::jsonb ELSE jsonb_build_object(
           'code',left(b.p#>>'{error,code}',64),'message',left(b.p#>>'{error,message}',256),
           'retryable',b.p#>'{error,retryable}','messageTruncated',length(b.p#>>'{error,message}')>256) END)::text

@@ -461,3 +461,46 @@ it('rejects a stale browser pause after approval admission while preserving a la
   expect(await reconcileDurableConversationTurn(input)).toBe(true);
   expect((await state()).turns[0]?.status).toBe('waiting_for_approval');
 });
+
+for (const [wire, canonical] of [["explicit_stop", "user"], ["deadline_exceeded", "timeout"],
+  ["policy_revoked", "superseded"], ["runtime_shutdown", "runtime_shutdown"]] as const) {
+  for (const supplied of [false, true]) it(`reconciles ${wire} with terminal supplied=${supplied} exactly once`, async () => {
+    const { input, state } = await setup("cancelled", supplied
+      ? [frames[0]!, { ...envelope, sequence: 1, type: "response.cancelled", reason: wire }] : []);
+    const saved = (await input.turns.load("conversation", "turn"))!;
+    await input.turns.compareAndSet({ conversationId: "conversation", turnId: "turn", expectedVersion: saved.version,
+      record: { ...saved.record, cancellation: supplied ? null : { ...saved.record.cancellation!, reason: canonical } } });
+    await reconcileDurableConversationTurn(input);
+    const settled = await state();
+    expect(settled.turns[0]).toMatchObject({ status: "cancelled", cancellation_reason: canonical, remote_may_still_be_running: false });
+    await reconcileDurableConversationTurn(input);
+    expect((await state()).revision).toBe(settled.revision);
+  });
+}
+
+it("rejects a missing cancellation reason when no terminal frame was retained", async () => {
+  const { input, state } = await setup("cancelled", []);
+  const saved = (await input.turns.load("conversation", "turn"))!;
+  await input.turns.compareAndSet({ conversationId: "conversation", turnId: "turn", expectedVersion: saved.version,
+    record: { ...saved.record, cancellation: null } });
+  await expect(reconcileDurableConversationTurn(input)).rejects.toThrow();
+  expect((await state()).turns[0]?.status).not.toBe("cancelled");
+});
+
+it.each([["explicit_stop", "user"], ["deadline_exceeded", "timeout"], ["policy_revoked", "superseded"],
+  ["runtime_shutdown", "runtime_shutdown"]] as const)("authorizes only the retained %s reason in client synchronization", async (wire, canonical) => {
+  const { input, state } = await setup("cancelled", [frames[0]!, { ...envelope, sequence: 1, type: "response.cancelled", reason: wire }]);
+  const sync = createDurableApplicationConversationSync({ authorizationContext: {}, principalId: "user",
+    eventStore: input.events, turnStore: input.turns, authorizeConversation: () => true });
+  const propose = (reason: string, mutationId: string) => {
+    const event = parseConversationEvent({ version: 1, conversation_id: "conversation", event_id: mutationId, mutation_id: mutationId,
+      revision: 2, occurred_at: "2026-09-04T00:00:01.000Z", actor: { type: "assistant" }, source: { type: "runtime" },
+      metadata: { handrail_runtime: { sequence: 1, request_id: envelope.request_id, trace_id: envelope.trace_id, frame_type: "response.cancelled" } },
+      payload: { type: "turn.cancelled", turn_id: "turn", reason } });
+    return sync.appendMutations({ conversationId: "conversation" as never, expectedRevision: 1 as never,
+      mutations: [{ mutationId: mutationId as never, events: [{ ...event, mutation_id: mutationId as never }] }] });
+  };
+  expect((await propose(canonical === "user" ? "superseded" : "user", "forged-reason")).status).toBe("unauthorized");
+  await propose(canonical, "correct-reason");
+  expect((await state()).turns[0]).toMatchObject({ status: "cancelled", cancellation_reason: canonical });
+});

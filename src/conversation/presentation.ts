@@ -8,7 +8,7 @@ import type { ApplicationConversationSession } from "../client/application-sessi
  * retry, transport-resume, or provider-context state. Canonical stores also fit. */
 export type ConversationPresentationTurn = Pick<ConversationTurnRecord, "turn_id" | "status" | "error" |
   "remote_may_still_be_running" | "input_message_ids" | "output_message_ids" | "outcome" | "continuation_of_turn_id"> &
-  Partial<Pick<ConversationTurnRecord, "terminal_at" | "started_at">>;
+  Partial<Pick<ConversationTurnRecord, "terminal_at" | "started_at" | "cancellation_reason">>;
 export interface ConversationPresentationState extends Omit<ConversationState,
   "processed_event_ids" | "processed_mutation_ids" | "last_event_id" | "turns"> {
   readonly turns: readonly ConversationPresentationTurn[];

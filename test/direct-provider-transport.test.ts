@@ -600,7 +600,7 @@ describe("createDirectProviderTransport", () => {
     });
   });
 
-  it("aborts the active provider invocation and reports already_terminal after settlement", async () => {
+  it.each([["user", "explicit_stop"], ["timeout", "deadline_exceeded"], ["superseded", "policy_revoked"], ["runtime_shutdown", "runtime_shutdown"]] as const)("aborts the active provider invocation and reports already_terminal after settlement", async (reason, wire) => {
     const adapter = new FakeAdapter(async function* (invocation) {
       yield {
         ...envelope(invocation, "response.started", 0),
@@ -615,9 +615,9 @@ describe("createDirectProviderTransport", () => {
       yield {
         ...envelope(invocation, "response.cancelled", 1),
         type: "response.cancelled",
-        reason: "runtime_shutdown",
+        reason: invocation.signal.reason,
       };
-      return { status: "cancelled", reason: "runtime_shutdown", usage };
+      return { status: "cancelled", reason: invocation.signal.reason, usage };
     });
     const { transport, handle } = await start(adapter);
     const cancellation = transport.capabilities.authoritativeCancellation;
@@ -629,13 +629,12 @@ describe("createDirectProviderTransport", () => {
         turnId: handle.turnId,
         mutationId: "cancel_mutation",
         idempotencyKey: "cancel_idempotency",
-        reason: "user",
+        reason,
       }),
     ).toEqual({ ok: true, value: { status: "cancellation_requested" } });
     expect(adapter.invocation?.signal.aborted).toBe(true);
-    expect((await collect(handle.observation.events)).at(-1)?.type).toBe(
-      "response.cancelled",
-    );
+    expect(adapter.invocation?.signal.reason).toBe(wire);
+    expect((await collect(handle.observation.events)).at(-1)).toMatchObject({ type: "response.cancelled", reason: wire });
     expect(await handle.observation.result).toMatchObject({
       status: "cancelled",
       usageReceipt: {
@@ -649,7 +648,7 @@ describe("createDirectProviderTransport", () => {
         turnId: handle.turnId,
         mutationId: "cancel_mutation_retry",
         idempotencyKey: "cancel_idempotency_retry",
-        reason: "user",
+        reason,
       }),
     ).toEqual({ ok: true, value: { status: "already_terminal" } });
   });

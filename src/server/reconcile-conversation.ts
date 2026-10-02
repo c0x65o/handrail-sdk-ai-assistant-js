@@ -1,3 +1,4 @@
+import { protocolCancellationReason } from "../cancellation.js";
 import { createHash } from "node:crypto";
 import { createConversationRuntime } from "../runtime.js";
 import { createRetryPolicy } from "../retry.js";
@@ -31,11 +32,11 @@ function storedObservation(record: DurableApplicationTurnRecord<ChatRequest, Str
     // authorization or preparation fails. Its last physical frame may have an
     // older sequence. Append after the complete saved prefix, never over it.
     // The runtime still validates duplicates and rejects changed frame data.
+    if (record.status === "cancelled" && !record.cancellation) throw new TypeError("A cancelled durable turn is missing its cancellation reason");
     const preceding = frames.reduce((latest, frame) => frame.sequence > latest.sequence ? frame : latest);
     frames.push(parseStreamEvent({ protocol_version: AI_RUNTIME_PROTOCOL_VERSION,
       request_id: preceding.request_id, trace_id: preceding.trace_id, sequence: preceding.sequence + 1,
-      ...(record.status === "cancelled" ? { type: "response.cancelled", reason: record.cancellation?.reason === "timeout"
-        ? "deadline_exceeded" : "runtime_shutdown" } : { type: "response.error", error: { category: "internal", code: "internal_error",
+      ...(record.status === "cancelled" ? { type: "response.cancelled", reason: protocolCancellationReason(record.cancellation!.reason) } : { type: "response.error", error: { category: "internal", code: "internal_error",
         message: "The assistant could not complete this request. Your message and attachments are saved.", retryable: record.terminal.status === "failed" && record.terminal.error.retryable } }) }));
   }
   const result: TurnObservationResult = { ...record.terminal, checkpoint: emptyCheckpoint };

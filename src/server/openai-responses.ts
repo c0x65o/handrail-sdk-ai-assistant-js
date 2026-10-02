@@ -1,3 +1,4 @@
+import { signalCancellationReason } from "../cancellation.js";
 import { createHash } from "node:crypto";
 import { PostgresProviderOperationStore } from "../postgres/index.js";
 import { createRetryPolicy, type RetryPolicyOptions } from "../retry.js";
@@ -309,7 +310,7 @@ export function openaiResponses<TContext extends HandrailAssistantAuthorizationC
               }
             }
           } catch (error) {
-            if (invocation.signal.aborted) return { status: "cancelled", reason: "runtime_shutdown", usage: null };
+            if (invocation.signal.aborted) return { status: "cancelled", reason: signalCancellationReason(invocation.signal), usage: null };
             if (error instanceof SavedConversationPreparationError || error instanceof SavedConversationFileUnavailableError) {
               return { status: "failed", usage: null, error: { kind: "client", code: "invalid_request",
                 retryable: false, message: error.message } };

@@ -351,7 +351,7 @@ describe("OpenAIProviderAdapter", () => {
     expectValid(output.events);
   });
 
-  it("propagates AbortSignal and returns one cancellation terminal", async () => {
+  it.each(["explicit_stop", "deadline_exceeded", "policy_revoked", "runtime_shutdown"] as const)("propagates AbortSignal and returns one cancellation terminal", async (reason) => {
     const controller = new AbortController();
     let receivedSignal: AbortSignal | undefined;
     const request = vi.fn(
@@ -375,18 +375,18 @@ describe("OpenAIProviderAdapter", () => {
     const started = await stream.next();
     const pending = stream.next();
     await vi.waitFor(() => expect(receivedSignal).toBe(controller.signal));
-    controller.abort("deadline_exceeded");
+    controller.abort(reason);
     const cancelled = await pending;
     const done = await stream.next();
 
     expect(started.value).toMatchObject({ type: "response.started" });
     expect(cancelled.value).toMatchObject({
       type: "response.cancelled",
-      reason: "deadline_exceeded",
+      reason: reason,
     });
     expect(done).toEqual({
       done: true,
-      value: { status: "cancelled", reason: "deadline_exceeded", usage: null },
+      value: { status: "cancelled", reason: reason, usage: null },
     });
     expectValid([started.value as StreamEvent, cancelled.value as StreamEvent]);
   });

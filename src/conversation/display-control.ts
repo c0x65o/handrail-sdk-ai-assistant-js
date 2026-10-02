@@ -8,6 +8,7 @@ export interface ConversationDisplayTurnControl {
   readonly revision: number;
   readonly status: ConversationTurnRecord["status"];
   readonly remoteMayStillBeRunning: boolean;
+  readonly cancellationReason?: ConversationTurnRecord["cancellation_reason"];
   readonly error: { readonly code: string; readonly message: string;
     readonly retryable: boolean; readonly messageTruncated: boolean } | null;
 }
@@ -35,7 +36,7 @@ export const CONVERSATION_DISPLAY_CONTROL_MAXIMUM_BYTES = 32 * 1024;
 export function displayTurnControl(turn: ConversationTurnRecord, revision: number): ConversationDisplayTurnControl {
   const text = turn.error ? Array.from(turn.error.message.slice(0, 514)) : [];
   return { turnId: turn.turn_id, revision, status: turn.status,
-    remoteMayStillBeRunning: turn.remote_may_still_be_running,
+    remoteMayStillBeRunning: turn.remote_may_still_be_running, cancellationReason: turn.cancellation_reason,
     error: turn.error ? { code: Array.from(turn.error.code.slice(0, 128)).slice(0, 64).join(""),
       message: text.slice(0, 256).join(""), retryable: turn.error.retryable,
       messageTruncated: text.length > 256 } : null };
@@ -56,6 +57,8 @@ export function parseConversationDisplayControl(value: unknown, input: Conversat
         !["queued", "running", "waiting_for_tool_result", "waiting_for_approval", "completed", "cancelled", "failed"].includes(String(item.status)) ||
         typeof item.remoteMayStillBeRunning !== "boolean" || item.remoteMayStillBeRunning !==
           ["queued", "running", "waiting_for_tool_result"].includes(String(item.status))) return fail();
+    if (item.cancellationReason !== undefined && item.cancellationReason !== null &&
+        (typeof item.cancellationReason !== "string" || !["user", "timeout", "superseded", "runtime_shutdown"].includes(item.cancellationReason))) return fail();
     let error: ConversationDisplayTurnControl["error"] = null;
     if (item.error !== null) {
       if (!item.error || typeof item.error !== "object" || Array.isArray(item.error)) return fail();
@@ -65,7 +68,8 @@ export function parseConversationDisplayControl(value: unknown, input: Conversat
       error = { code: e.code, message: e.message, retryable: e.retryable, messageTruncated: e.messageTruncated };
     }
     return { turnId: item.turnId, revision: item.revision as number,
-      status: item.status as ConversationDisplayTurnControl["status"], remoteMayStillBeRunning: item.remoteMayStillBeRunning, error };
+      status: item.status as ConversationDisplayTurnControl["status"], remoteMayStillBeRunning: item.remoteMayStillBeRunning, error,
+      ...(item.cancellationReason === undefined ? {} : { cancellationReason: item.cancellationReason as ConversationTurnRecord["cancellation_reason"] }) };
   };
   if (v.hasPendingApprovals !== undefined && typeof v.hasPendingApprovals !== "boolean" ||
       header.status === "preparing" && v.hasPendingApprovals === true) return fail();

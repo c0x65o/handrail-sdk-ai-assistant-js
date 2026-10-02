@@ -27,6 +27,7 @@ export const AI_RUNTIME_COMPLETION_OUTCOMES = [
 ] as const;
 
 export const AI_RUNTIME_CANCELLATION_REASONS = [
+  "explicit_stop",
   "deadline_exceeded",
   "policy_revoked",
   "runtime_shutdown",

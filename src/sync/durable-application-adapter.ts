@@ -1,3 +1,4 @@
+import { conversationCancellationReason as cancellationReason } from "../cancellation.js";
 import { parseStreamEvent, type ChatRequest, type StreamEvent } from "../protocol.js";
 import { sha256Text } from "../provider-context.js";
 import type { DurableApplicationTurnStore } from "../transports/durable.js";
@@ -252,11 +253,6 @@ function payloadTurnId(payload: ConversationEventPayload): string | null {
 function runtimeMetadata(event: Pick<ConversationEvent, "metadata">): Record<string, unknown> {
   const value = event.metadata?.handrail_runtime;
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-function cancellationReason(reason: string): "user" | "timeout" | "superseded" | "runtime_shutdown" {
-  if (reason === "deadline_exceeded") return "timeout";
-  if (reason === "policy_revoked") return "superseded";
-  return "runtime_shutdown";
 }
 function withoutTarget(value: { readonly citation_id: string; readonly source_id: string; readonly order: number }) {
   return { citation_id: value.citation_id, source_id: value.source_id, order: value.order };

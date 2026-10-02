@@ -100,7 +100,7 @@ it.each(["failed", "cancelled", "completed"] as const)("honors %s over a stale r
   const activity = new InMemoryConversationActivityStore();
   activity.upsert({ conversationId: "conversation", turnId: "turn", turnStatus: "running", unread: false });
   render(<StyledChatPreset state={state} proposals={[proposal("one", "confirmed")]} activity={activity} includeStyles={false} transcription={false}/>);
-  expect(current().textContent).toContain(status === "failed" ? "Request failed" : status === "cancelled" ? "Request stopped" : "Request complete");
+  expect(current().textContent).toContain(status === "failed" ? "Request failed" : status === "cancelled" ? "Request cancelled" : "Request complete");
   expect(current().getAttribute("data-phase")).not.toBe("working");
 });
 
@@ -186,3 +186,13 @@ it("keeps uncertain disconnected work visible without claiming it is executing",
   expect(current().textContent).toContain("Checking request status…");
   expect(screen.queryByText("Working…")).toBeNull();
 });
+
+it.each([["user", "Request stopped by you"], ["timeout", "Request timed out"],
+  ["superseded", "Request superseded or authorization revoked"], ["runtime_shutdown", "Runtime shut down"]] as const)(
+  "presents saved %s over stale approval status", (reason, title) => {
+    const state = advance(waiting(), { type: "turn.cancelled", turn_id: "turn", reason });
+    render(<ConversationRequestStatus state={state} proposals={[proposal("one")]} activity={undefined}
+      hasPendingApprovals savingDecision={false} onReview={vi.fn()}/>);
+    expect(current().textContent).toContain(title);
+    expect(screen.queryByRole("button", { name: "Review next" })).toBeNull();
+  });

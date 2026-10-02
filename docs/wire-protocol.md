@@ -29,3 +29,37 @@ All endpoints are relative to an application-owned mount path. Every request mus
 Each `event` frame contains `{type:"event", event, checkpoint}`. Canonical `StreamEvent` values represent text, citations, tool calls/results, approvals, attachments, errors, usage, cancellation, and completion. Presence uses separate `handrail.live-presence.v1` ephemeral frames and must never be appended to the conversation event log.
 
 Clients must ignore unknown additive fields and event types they do not render, reject an incompatible major protocol string, preserve opaque IDs/cursors byte-for-byte, and resume only after durably applying the associated event. Servers must bound JSON/SSE sizes, redact public errors, authorize every conversation and attachment, and never trust client-supplied tenancy or actor identity.
+
+## Cancellation reasons
+
+`handrail.ai-runtime.v1` `response.cancelled.reason` is a closed enum:
+
+| Wire reason | Canonical `turn.cancelled.reason` / `cancellation_reason` | Meaning |
+| --- | --- | --- |
+| `explicit_stop` | `user` | An authorized user explicitly stopped this turn. |
+| `deadline_exceeded` | `timeout` | The execution deadline expired. |
+| `policy_revoked` | `superseded` | Authorization was revoked or execution was superseded. |
+| `runtime_shutdown` | `runtime_shutdown` | The runtime shut down. |
+
+Validators reject unknown values. Direct/application transports carry the same
+reason through their abort signal; provider adapters preserve it. A local Stop
+request does not override a different authoritative terminal reason. Disconnect
+is still observation-only. Recovery without a terminal frame translates the
+persisted cancellation reason; it must not guess a reason that is absent.
+
+Bounded display turn controls expose optional `cancellationReason`, using the
+canonical enum or null. New projections always include the field; absence in
+older display summaries means the reason is unavailable, not user Stop. Clients
+reject unsupported values. Full snapshots and turn display records retain
+`cancellation_reason`; bounded web/Flutter presentations preserve the control
+field too. This does not repair historical mislabelled cancellations or rewrite
+canonical history. Existing bounded control backfill carries the reason when
+preparing missing summaries; this source change performs no deployed backfill.
+
+`explicit_stop` extends the v1 closed enum: old wire decoders reject it, so all
+wire consumers must adopt the new SDK before a producer emits it. Publish the
+JS SDK first, update Agent's public HTTPS full-SHA dependency and lock, publish
+Agent and Flutter, then adopt matching public full-SHA pins/locks in applications.
+Do not substitute an older reason for compatibility. Package versions in this
+source repair are unchanged; candidate source tests do not qualify the eventual
+published commits or installed applications.

@@ -1,3 +1,4 @@
+import { protocolCancellationReason } from "../cancellation.js";
 import {
   AI_RUNTIME_PROTOCOL_VERSION,
   parseChatRequest,
@@ -734,16 +735,4 @@ export function createDirectProviderTransport(
   };
 
   return transport;
-}
-
-function protocolCancellationReason(
-  reason: CancelTurnInput["reason"],
-): "deadline_exceeded" | "policy_revoked" | "runtime_shutdown" {
-  switch (reason) {
-    case "timeout": return "deadline_exceeded";
-    case "superseded": return "policy_revoked";
-    case "user":
-    case "runtime_shutdown":
-      return "runtime_shutdown";
-  }
 }

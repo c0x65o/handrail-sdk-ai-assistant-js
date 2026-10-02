@@ -1,3 +1,4 @@
+import { signalCancellationReason } from "../cancellation.js";
 import { awaitWithSignal } from "../await-signal.js";
 import { createActiveExecutionBudget } from "../tools/active-budget.js";
 import { AI_RUNTIME_PROTOCOL_VERSION, parseChatRequest, type ApplicationToolResult,
@@ -225,7 +226,7 @@ export function createProviderToolLoopTransport(
             const failed = outcomes.find((outcome) => outcome.status === "failed");
             if (failed) {
               finalResult = turn.signal.aborted
-                ? { status: "cancelled", reason: "runtime_shutdown", usage: null }
+                ? { status: "cancelled", reason: signalCancellationReason(turn.signal), usage: null }
                 : { status: "failed", error: failed.error, usage: null };
               break;
             }

@@ -1,3 +1,4 @@
+import { signalCancellationReason } from "../cancellation.js";
 import { AI_RUNTIME_PROTOCOL_VERSION, parseStreamEvent, type StreamEvent } from "../protocol.js";
 import type { ProviderAdapterInvocation, ProviderAdapterResult, ProviderAdapterStream, ProviderUsage } from "../providers/index.js";
 
@@ -64,8 +65,8 @@ export async function* retainProviderInvocation(input: {
     if (forwarded === 0) yield parseStreamEvent({ ...envelope, sequence: forwarded++, type: "response.started",
       attribution: invocation.context.attribution });
     if (invocation.signal.aborted) {
-      yield parseStreamEvent({ ...envelope, sequence: forwarded, type: "response.cancelled", reason: "runtime_shutdown" });
-      return { status: "cancelled", reason: "runtime_shutdown", usage: null };
+      yield parseStreamEvent({ ...envelope, sequence: forwarded, type: "response.cancelled", reason: signalCancellationReason(invocation.signal) });
+      return { status: "cancelled", reason: signalCancellationReason(invocation.signal), usage: null };
     }
     const message = input.failureMessage ?? "This request could not be resumed safely. Check its saved action results before starting a new request.";
     yield parseStreamEvent({ ...envelope, sequence: forwarded, type: "response.error",
