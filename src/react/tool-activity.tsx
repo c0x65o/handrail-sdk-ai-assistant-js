@@ -14,7 +14,7 @@ export interface ToolActivityProps {
 }
 const labels: Record<ToolActivityStatus, string> = { pending: "Pending", running: "Running",
   awaiting_approval: "Waiting for approval", completed: "Completed", failed: "Failed",
-  cancelled: "Cancelled", incomplete: "No result recorded" };
+  rejected: "Rejected", expired: "Expired", cancelled: "Cancelled", incomplete: "No result recorded" };
 
 /** Optional unstyled details panel backed by canonical tool lifecycle evidence. */
 export function ToolActivity(props: ToolActivityProps): ReactNode {
@@ -28,6 +28,8 @@ export function ToolActivity(props: ToolActivityProps): ReactNode {
     ...(activity.running ? [`${activity.running} running`] : []),
     ...(activity.pending ? [`${activity.pending} pending`] : []),
     ...(activity.awaitingApproval ? [`${activity.awaitingApproval} waiting for approval`] : []),
+    ...(activity.rejected ? [`${activity.rejected} rejected`] : []),
+    ...(activity.expired ? [`${activity.expired} expired`] : []),
     ...(activity.failed ? [`${activity.failed} failed`] : []),
     ...(activity.cancelled ? [`${activity.cancelled} cancelled`] : []),
     ...(activity.incomplete ? [`${activity.incomplete} without a recorded result`] : [])].join(", ");

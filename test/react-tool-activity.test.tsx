@@ -128,3 +128,49 @@ it("keeps one expanded group with its original question across tool continuation
   expect(restored.container.querySelectorAll("details.hr-activity")).toHaveLength(1);
   expect(restored.container.querySelector("details.hr-activity")?.textContent).toContain("2 actions");
 });
+
+
+it.each([false, true])("distinguishes a declined B from executed A and real failures after replay (partial=%s)", partial => {
+  const proposal = (id: string) => ({ type: "approval.proposal_created", proposal_id: `proposal-${id}`,
+    turn_id: "turn", tool_call_id: id, tool_name: id, status: "pending", proposal_version: 1, expires_at: null,
+    reviewed_arguments: { type: "redacted_json", value: { record: id } } });
+  const payloads = [
+    { type: "turn.started", turn_id: "turn", input_message_ids: ["question"] },
+    call("update_asset"), proposal("update_asset"),
+    { type: "approval.proposal_status_changed", proposal_id: "proposal-update_asset", proposal_version: 2, status: "confirmed" },
+    { type: "approval.proposal_status_changed", proposal_id: "proposal-update_asset", proposal_version: 3, status: "executing" },
+    started("update_asset"), result("update_asset"),
+    { type: "approval.proposal_status_changed", proposal_id: "proposal-update_asset", proposal_version: 4, status: "executed" },
+    call("send_invoice"), proposal("send_invoice"),
+    { type: "approval.proposal_status_changed", proposal_id: "proposal-send_invoice", proposal_version: 2, status: "rejected" },
+    result("send_invoice", true),
+    { type: "turn.completed", turn_id: "turn", outcome: "stop", output_message_ids: [] },
+  ];
+  const state = { ...history(payloads), ...(partial ? { partial: true as const } : {}) };
+  expect(projectToolActivity(state)).toMatchObject({ completed: 1, rejected: 1, failed: 0, incomplete: 0 });
+  const view = render(<StyledChatPreset state={state} includeStyles={false} transcription={false}/>);
+  expect(screen.getByText("Activity complete")).toBeTruthy();
+  expect(screen.getByText("Request complete")).toBeTruthy();
+  expect(view.container.textContent).not.toContain("Failed");
+  view.unmount();
+  // A reload projects the same canonical facts, without modifying the saved error result.
+  expect(projectToolActivity(history(payloads))).toEqual(projectToolActivity(state));
+  expect(state.tool_calls[1]?.result?.is_error).toBe(true);
+  const failed = history([...payloads.slice(0, -1), call("read_ledger"), result("read_ledger", true), payloads.at(-1)!]);
+  expect(projectToolActivity(failed)).toMatchObject({ rejected: 1, failed: 1 });
+  render(<StyledChatPreset state={failed} includeStyles={false} transcription={false}/>);
+  expect(screen.getByText("Activity needs attention")).toBeTruthy();
+  expect(screen.getByText("Finished · some actions need attention")).toBeTruthy();
+});
+
+it("does not hide failures using an unrelated, ambiguous, or execution-conflicted rejection", () => {
+  const state = history([call("write"), result("write", true)]);
+  const rejected = { proposal_id: "p", turn_id: "turn", tool_call_id: "write", tool_name: "write",
+    status: "rejected", failure_reason: null } as unknown as ConversationState["approval_proposals"][number];
+  for (const proposals of [[{ ...rejected, turn_id: "other" as never }], [{ ...rejected, tool_name: "other" }],
+    [rejected, { ...rejected, proposal_id: "other" as never }], [{ ...rejected, failure_reason: "Uncertain execution" }]]) {
+    expect(projectToolActivity({ ...state, approval_proposals: proposals }).failed).toBe(1);
+  }
+  expect(projectToolActivity({ ...state, approval_proposals: [rejected], tool_calls: [{ ...state.tool_calls[0]!,
+    started_at: "2026-09-04T00:00:00.000Z" as never }] }).failed).toBe(1);
+});

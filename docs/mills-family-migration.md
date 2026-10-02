@@ -84,3 +84,65 @@ The checked-in Mills manifest and imports now use canonical
 `@handrail/ai-assistant`, pinned to the reviewed 0.2.1 commit with matching
 lockfile metadata. The UI repair described in the rollout qualification record
 must receive its own reviewed immutable SHA before Mills advances its pin.
+
+## Settled history and resumed approval context (October 2026)
+
+The shared activity projection distinguishes canonical rejected/expired approvals
+from execution failures using the turn, tool-call and tool-name association.
+It leaves error-shaped provider receipts intact. Conflicting execution evidence,
+actual failures and unfinished calls continue to require attention. The standard
+React card retains its bound details in collapsed history and can read a missing
+tool/proposal pair through the existing authorized display session when revealed.
+The Flutter client and widgets permit version-bound read-only inspection after a
+decision; only pending proposals remain eligible for decisions.
+
+Mills web still needs a small custom-renderer change. At Mills web commit
+`770a14829ef660e055136a09ef9ab884dace6174`,
+`src/client/assistant/MillsNativeApprovals.tsx:44` returns only a tool name and
+status for every non-pending proposal. Its existing `MillsPendingApprovalCard`
+loader at line 61 already renders the saved record and patch. Reuse that loader
+and disclosure for settled cards, show the saved status, and render the Confirm /
+Reject controls and confirmation prompt only for `status === 'pending'`.
+Do not fabricate review arguments from message text or issue a decision when
+opening history. `src/server/assistant/handrail-approval-review.ts:42` already
+permits settled reads, verifies the exact version and argument digest, redacts
+the response and reauthorizes after IO; no endpoint or audit store is needed.
+The mobile host's existing `_loadSharedApprovalReview` in
+`lib/repositories/sdk_assistant_repository.dart:718` has the same read-only
+contract and does not restrict reads to pending proposals.
+
+The reported final prose calling A pending after B was rejected has a separate
+model-input boundary. Source inspection establishes the following path; the
+specific QA model invocation was not replayed or inspected:
+
+- `src/server/assistant/agent-provider.ts:159` and `:166` add
+  `scope.tools.withApprovalContext` when constructing initial Agent input.
+  That shared helper describes only unresolved **earlier** proposals and is
+  not a live source of truth inside a saved Agent checkpoint.
+- The installed Agent SDK pin
+  `408a84231fcdb9fedc23e90fc88c280f9fbcc7f0`,
+  `dist/server/agent-runtime.js:147`, only calls `host.input` when there is no
+  saved run record. Resumption reuses retained input.
+- The per-invocation hook in Mills `agent-provider.ts:169` refreshes authorization
+  and attachments, but does not refresh approval statuses. Agent SDK invokes
+  this hook at `dist/server/agent-runtime.js:274`, including resumed calls.
+- Mills `src/server/assistant/agent-host.ts:196` already includes the current
+  tool's canonical `native_approval` in its result. Shared runtime regression
+  tests confirm A remains executed, B remains independently pending/rejected,
+  and restart/replay does not repeat A's execution.
+
+The minimal host remedy is to add a bounded, freshly authorized canonical
+approval-status snapshot in `prepareModelInput`, covering the saved approvals
+relevant to that run, including settled A as well as B. Associate entries by
+proposal/turn/tool-call identity and explicit status; include no argument or
+secret payloads. Treat the snapshot as current data that supersedes old status
+prose, while preserving the checkpoint's tool calls, outputs and execution
+identities. Merely calling the pending-only helper again cannot correct an old
+claim about a now-settled A. Do not strip or rewrite messages using regex.
+Qualify this host change with A confirmed, B pending across restart, then B
+rejected, asserting the final model input has A executed and B rejected.
+
+These host changes and Mills adoption/native QA are follow-up work. Neither
+Mills checkout nor any saved QA proposal is modified by this SDK repair. Resolve
+the new public full SHA for each SDK after the owning commit/push pipeline; the
+pre-repair pins are not delivery pins for the uncommitted changes.

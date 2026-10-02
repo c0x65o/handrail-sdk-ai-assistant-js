@@ -1,0 +1,111 @@
+{
+  "work_request": "c77aca92-2e18-5d6a-b284-09c5ef457567",
+  "tested_at": "2026-10-02",
+  "delivery": "Intended SDK source remains uncommitted. Handrail owns version bump, commit and push. No app deployment or saved QA data mutation.",
+  "public_baselines_verified_with_git_ls_remote": {
+    "js": "git+https://github.com/c0x65o/handrail-sdk-ai-assistant-js.git#e69d3c09f4da91a66bbc5a17159a2b8af3d49f7f",
+    "flutter": {
+      "url": "https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter.git",
+      "ref": "88463340fa0d704ca5ac883e915b9e8969bd1208",
+      "paths": [
+        "packages/handrail_ai_client",
+        "packages/handrail_ai_widgets"
+      ]
+    }
+  },
+  "patched_public_pins": "Pending owning pipeline; baseline SHAs do not contain this repair.",
+  "findings": [
+    {
+      "id": "e764a770-2324-40a0-b618-928df9e774eb",
+      "reproduction": "Automated pre-fix replay of executed A/rejected B produced failed=1 instead of rejected=1, failed=0 in full and partial presentation. Fixed regression passes.",
+      "repair": "JS and Flutter activity consult the exact canonical turn/tool-call/name association for rejected/expired reviews without started execution or failure_reason. Error-shaped provider receipts remain unchanged. Real failures, ambiguous associations and execution conflicts retain attention."
+    },
+    {
+      "id": "4c17d9b6-4405-4cbc-9e8d-8114865ba1a7",
+      "reproduction": "Read-only source confirms Mills custom renderer returns only name/status for non-pending actions. Its authenticated saved-detail endpoint already supports settled versions.",
+      "repair": "React standard history retains bound details and loads a missing tool/proposal pair through the display session on reveal, rejecting changed versions/bindings. Flutter permits read-only review after settlement and offers View details without decision controls. Mills custom renderer still needs its existing detail loader applied to non-pending cards."
+    },
+    {
+      "id": "9d583caa-7905-47c4-b6eb-914a15adb47d",
+      "reproduction": "Specific live model invocation unverified. Source trace identifies retained Agent input with no per-invocation approval-status refresh. Shared runtime recreation/replay test confirms executed A, pending then rejected B, exactly one A side effect.",
+      "owner": "Mills per-invocation model-input integration; no Agent SDK code change demonstrated necessary.",
+      "next_remedy": "In src/server/assistant/agent-provider.ts prepareModelInput (line 169), add a freshly authorized bounded status snapshot for exact proposal/turn/tool-call identities relevant to the run, including settled A and B. Preserve retained tool calls/results and execution identity. Initial withApprovalContext only describes unresolved earlier proposals; calling it again alone does not correct settled A."
+    }
+  ],
+  "host_handoff": "docs/mills-family-migration.md, section Settled history and resumed approval context (October 2026), contains exact source boundaries and minimal remedies.",
+  "checks": {
+    "js": {
+      "commands": [
+        "npm run typecheck",
+        "npm run build",
+        "./node_modules/.bin/vitest run test/react-tool-activity.test.tsx test/react-settled-details.test.tsx test/react-styled-approval-timeline.test.tsx test/react-styled-approvals.test.tsx test/react-bound-approval-review.test.tsx test/react-pending-approvals.test.tsx test/react-request-status.test.tsx test/react-transcript-follow.test.tsx test/react-structured-details.test.tsx test/react-display-transcript.test.tsx test/assistant-tool-runtime.test.ts test/approval-coordinator.test.ts test/approval-execution.test.ts test/server-tool-observer.test.ts --maxWorkers=1 --minWorkers=1",
+        "PLAYWRIGHT_BROWSERS_PATH=<task-local-browser-cache> node scripts/check-settled-transcript-browser.mjs"
+      ],
+      "result": "passed",
+      "vitest_files": 14,
+      "vitest_tests": 122,
+      "chromium": {
+        "history_reload": "collapsed",
+        "full": {
+          "away_frames": 27,
+          "pinned_frames": 24,
+          "tail_distance": 0
+        },
+        "paged": {
+          "away_frames": 27,
+          "pinned_frames": 24,
+          "tail_distance": 0
+        }
+      }
+    },
+    "flutter": {
+      "client_analyze": "dart analyze --fatal-infos: passed, no issues",
+      "widgets_analyze": "flutter analyze --no-pub --fatal-infos: passed, no issues",
+      "client_tests": {
+        "command": "dart test --concurrency=1 test/approval_decisions_test.dart test/pending_approval_inbox_test.dart test/approval_display_review_test.dart test/paged_approval_review_test.dart",
+        "passed": 30
+      },
+      "widgets_tests": {
+        "command": "flutter test --no-pub --concurrency=1",
+        "passed": 246
+      },
+      "tooling": "Read-only Flutter launcher stamp write failed. Checks completed using bin/cache/dart-sdk/bin/dart directly; Flutter commands used FLUTTER_ALREADY_LOCKED=true dart bin/cache/flutter_tools.snapshot. Nonfatal shared-cache stamp warnings remained. Playwright browser initially absent; installed only in task-local cache and browser check then passed.",
+      "widgets_final_fixture_check": {
+        "command": "flutter test --no-pub --concurrency=1 test/approval_decisions_test.dart",
+        "passed": 8,
+        "reason": "Rechecked after removing unrelated formatter changes from the existing test fixture."
+      }
+    }
+  },
+  "coverage": [
+    "Executed A then B pending/rejected across runtime recreation and canonical replay; duplicate side effects prevented",
+    "Real failure versus rejection; unrelated turn/name, ambiguous association and execution conflict",
+    "Full and paged React/Flutter transcript status and history",
+    "Inspectable distinct record/patch and invoice history without renewed execution controls",
+    "Changed review version, binding, account, conversation and late reads",
+    "Existing pending/confirmed/executing, scope, permission and duplicate-decision safeguards",
+    "Optional Review change, compact history, quiet Jump to latest"
+  ],
+  "remaining": [
+    "Owning pipeline must publish tested SDK commits and report the resulting exact full SHA pins.",
+    "Mills adoption must pin both new public SDK revisions with matching lockfiles.",
+    "Mills web custom renderer must reuse existing settled detail loader; Mills Agent model-input integration needs fresh canonical statuses.",
+    "Avery owns original staging/native QA after adoption; no live QA proposal was replayed, no app deployment performed, and existing mobile-install question remains untouched."
+  ],
+  "tested_source_sha256": {
+    "js/src/conversation/tool-activity.ts": "4f60f8f32d8ee50ddbb2000da10e95a5fc5d4730cf65326f7d487130a2d33d6a",
+    "js/src/react-styled/activity.tsx": "bb2f2078ada1bb88ae175b20bd3e470bfdd888025f807d77e5a4425d437b4c34",
+    "js/src/react-styled/index.tsx": "64d1f21fed744048923ca4ebdd517d7abbfac99a14a11fdbbee17f4f2bf4f5cb",
+    "js/src/react/tool-activity.tsx": "3cf5028a7888f94c5df98e6e38126856b5955c0c2ec70668e785d4c38e3fbcc1",
+    "js/test/assistant-tool-runtime.test.ts": "6fac87da8ac377a98fe95611706ff8d9b408fb1b3b1380d4781de2d67d14ff3f",
+    "js/test/react-tool-activity.test.tsx": "522155a20fecaa788adeb7e3898689d5c26bdcbc37126495c31aacc0bef97b50",
+    "js/test/react-settled-details.test.tsx": "5423c4508b09fcb27ba979827cbc3e7adf34d1e893091d15dc85ed970cb958cf",
+    "flutter/packages/handrail_ai_client/lib/src/approval_decisions.dart": "a7b5175101d4161241efe7da53ab08e089e1699cf034a3350f38379b70f7e6d5",
+    "flutter/packages/handrail_ai_client/test/approval_decisions_test.dart": "54534140de2850ac798db0bd3c5d3081c914a57d6ca27fa622c4f6fc6dc02879",
+    "flutter/packages/handrail_ai_widgets/lib/approval_decisions.dart": "ff29805ced0ffa41ab18827e5dc66dcf500af4ddc19f5a32730a7c0562aa288e",
+    "flutter/packages/handrail_ai_widgets/lib/conversation_transcript.dart": "8619e51c60bad12d9d9fa881519580a396035c6aa34a7037e495d35d7dc070b7",
+    "flutter/packages/handrail_ai_widgets/test/approval_decisions_test.dart": "167704b97e0d4f81ca8db680862aa1f56f0f17e0de2f45f94582a2748ecb2b16",
+    "flutter/packages/handrail_ai_widgets/test/conversation_transcript_test.dart": "37ae6b5be662346246e6866575f6e343b27ce39c5837e8ddc5306f21c61d28a8",
+    "flutter/packages/handrail_ai_widgets/test/settled_transcript_regression_test.dart": "14fe777c94875c3b284cbfd2d1158167753385b0556e54384a74aee6c177844b"
+  }
+}

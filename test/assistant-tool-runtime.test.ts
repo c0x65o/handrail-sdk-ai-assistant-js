@@ -12,6 +12,8 @@ import { createApprovalCoordinator } from "../src/conversation/approval-coordina
 import { resumeExternalToolApprovals } from "../src/server/external-tool-approvals.js";
 import { InMemoryDurableApplicationTurnStore } from "../src/transports/durable.js";
 import { parseChatRequest, AI_RUNTIME_PROTOCOL_VERSION } from "../src/protocol.js";
+import { replayConversation } from "../src/conversation/replay.js";
+import { projectToolActivity } from "../src/conversation/tool-activity.js";
 
 type Context = { scopeId: string; userId: string };
 const context: Context = { scopeId: "household:user", userId: "user" };
@@ -109,6 +111,41 @@ it("checks current access before and after reading review context", async () => 
   h.authorizeLocation.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("Access revoked during read"));
   await expect(h.runtime.withApprovalContext!({} as never, location, signal)).rejects.toThrow("Access revoked during read");
   expect(list).toHaveBeenCalledOnce();
+});
+
+it("retains executed A and pending then rejected B across recreation without duplicate execution", async () => {
+  const h = await setup(true), signal = new AbortController().signal;
+  h.authorizeLocation.mockResolvedValue(undefined);
+  const second = { ...call, tool_call_id: "second", arguments: { value: "distinct B" } };
+  const secondLocation = { ...location, turnId: "second-turn" };
+  await h.runtime.execute(call, signal, location);
+  await h.runtime.awaitApproval({ ...location, call, signal });
+  await h.decide("confirm");
+  const firstResult = await h.runtime.awaitApproval({ ...location, call, signal });
+  expect(firstResult).toMatchObject({ status: "completed", result: { is_error: false } });
+  await h.runtime.execute(second, signal, secondLocation);
+  await h.runtime.awaitApproval({ ...secondLocation, call: second, signal });
+  const restored = await h.create();
+  expect(await restored.awaitApproval({ ...secondLocation, call: second, signal })).toMatchObject({ status: "external_approval_required" });
+  const proposals = await h.proposals.listGroup({ permissionContext: context, groupId: location.conversationId as never });
+  expect(proposals.map(p => p.status)).toEqual(["executed", "pending"]);
+  const b = proposals.find(p => p.tool_call_id === second.tool_call_id)!;
+  await createApprovalCoordinator({ proposalStore: h.proposals, eventStore: h.events, authorize: () => "allow" }).decide({
+    permissionContext: context, conversationId: location.conversationId as never, proposalId: b.proposal_id,
+    expectedVersion: b.proposal_version, decision: "reject", attribution: { actor: { type: "user", id: "user" as never }, source: { type: "runtime" } },
+    idempotencyKey: "reject-b", idempotencyFingerprint: "reject-b", signal,
+  });
+  const rejected = await restored.awaitApproval({ ...secondLocation, call: second, signal });
+  expect(rejected).toMatchObject({ status: "completed", result: { is_error: true } });
+  expect(await (await h.create()).awaitApproval({ ...secondLocation, call: second, signal })).toEqual(rejected);
+  expect(await (await h.create()).awaitApproval({ ...location, call, signal })).toEqual(firstResult);
+  expect(h.effect).toHaveBeenCalledOnce();
+  const replay = await replayConversation({ conversationId: location.conversationId as never, eventStore: h.events, checkpointPolicy: false });
+  try {
+    expect(replay.state.approval_proposals.map(p => p.status)).toEqual(["executed", "rejected"]);
+    expect(projectToolActivity(replay.state, location.turnId)).toMatchObject({ completed: 1, failed: 0 });
+    expect(projectToolActivity({ ...replay.state, partial: true }, secondLocation.turnId)).toMatchObject({ rejected: 1, failed: 0 });
+  } finally { replay.store.destroy(); }
 });
 
 it.each(["confirm", "reject"] as const)("waits on native %s and reuses retained decisions on recreation", async decision => {

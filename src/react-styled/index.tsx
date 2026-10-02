@@ -8,6 +8,8 @@ import { ConversationRequestStatus, REQUEST_STATUS_CSS } from "./request-status.
 import { createInitialConversationState } from "../conversation/state.js";
 import { ConversationPendingApprovals } from "../react/pending-approvals.js";
 import { ConversationTranscript } from "../react/conversation-transcript.js";
+import { useBoundApprovalReview } from "../react/use-bound-approval-review.js";
+import { jsonValuesEqual } from "../json-equality.js";
 import { reviewedToolArguments } from "../conversation/approval-arguments.js";
 import { StructuredDetailsDisclosure, shouldCollapseStructuredDetails, structuredDetailLabel, HANDRAIL_STRUCTURED_DETAILS_CSS } from "../react/structured-details.js";
 export { StructuredDetails, StructuredDetailsDisclosure, shouldCollapseStructuredDetails, structuredDetailLabel, HANDRAIL_STRUCTURED_DETAILS_CSS, type StructuredDetailsProps, type StructuredDetailsDisclosureProps } from "../react/structured-details.js";
@@ -1008,7 +1010,27 @@ function ConversationGatewayApprovals({ resources, conversationId }: {
 export function StandardApprovalCard({ proposal, context }: {
   readonly proposal: ConversationApprovalProposalRecord; readonly context: StyledApprovalRenderContext;
 }) {
-  const arguments_ = reviewedToolArguments(context.state, proposal);
+  const session = useContext(ConversationContext)?.runtime?.displaySession;
+  const inlineArguments = reviewedToolArguments(context.state, proposal);
+  const conversationId = context.state.conversation_id;
+  const saved = useBoundApprovalReview({ scope: session, conversationId: conversationId ?? "", proposal,
+    enabled: inlineArguments === null && proposal.status !== "pending" && Boolean(session?.supportsPendingApprovals) &&
+      session?.getSnapshot().conversationId === conversationId,
+    load: async signal => {
+      const page = await session!.readApprovals({ proposalId: proposal.proposal_id }, signal);
+      const record = page.records.find(record => record.kind === "approval" && record.id === proposal.proposal_id);
+      const current = record?.kind === "approval" ? record.value : null;
+      if (!current || current.proposal_version !== proposal.proposal_version || current.status !== proposal.status ||
+        current.turn_id !== proposal.turn_id || current.tool_call_id !== proposal.tool_call_id ||
+        current.tool_name !== proposal.tool_name || current.group_id !== proposal.group_id ||
+        !jsonValuesEqual(current.reviewed_arguments, proposal.reviewed_arguments)) throw new Error("Action changed");
+      const tool_calls = page.records.flatMap(record => record.kind === "tool" && record.value ? [record.value] : []);
+      const value = reviewedToolArguments({ tool_calls }, proposal);
+      if (!value) throw new Error("Saved details unavailable");
+      return value;
+    },
+  });
+  const arguments_ = inlineArguments ?? saved.review;
   const pending = proposal.status === "pending";
   const expired = proposal.status === "expired";
   return <article className="hr-chat__approval" role="listitem" aria-label="Assistant action">
@@ -1018,7 +1040,9 @@ export function StandardApprovalCard({ proposal, context }: {
     })[proposal.status]}</span>
     {arguments_ ? <StructuredDetailsDisclosure value={arguments_} summary="Action details" always
       defaultOpen={pending && !shouldCollapseStructuredDetails(arguments_)}/>
-      : <p>Action details are unavailable. Refresh this conversation before confirming.</p>}
+      : saved.status === "loading" ? <p role="status">Loading saved action details…</p>
+        : <p>{pending ? "Action details are unavailable. Refresh this conversation before confirming." : "Saved action details are unavailable."}
+          {saved.status === "error" && <button type="button" onClick={saved.retry}>Retry action details</button>}</p>}
     {proposal.failure_reason && <p>{proposal.failure_reason}</p>}
     {pending && <div className="hr-chat__approval-actions">
       <button type="button" disabled={context.busy || context.readOnly || expired || arguments_ === null}

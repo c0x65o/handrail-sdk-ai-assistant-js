@@ -5,7 +5,7 @@ import { projectToolActivity, type ToolActivitySnapshot } from "../conversation/
 import { structuredDetailLabel } from "../react/structured-details.js";
 
 const labels = { pending: "Queued", running: "Running", awaiting_approval: "Waiting for approval",
-  completed: "Completed", failed: "Failed", cancelled: "Stopped", incomplete: "No result recorded" };
+  rejected: "Rejected", expired: "Expired", completed: "Completed", failed: "Failed", cancelled: "Stopped", incomplete: "No result recorded" };
 
 /** Inline action history; live request status belongs in the fixed status strip. */
 export function ConversationActivityCard({ state, group, display = "collapsed", renderDetails }: {

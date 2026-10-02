@@ -1,8 +1,8 @@
 import type { ConversationPresentationState as ConversationState, ConversationPresentationTurn as ConversationTurnRecord } from "./presentation.js";
-import type {  ConversationToolCallRecord} from "./state.js";
+import type { ConversationApprovalProposalRecord, ConversationToolCallRecord } from "./state.js";
 import { parseToolRecoverySummary, type ToolRecoverySummary } from "../tools/recovery.js";
 
-export type ToolActivityStatus = "pending" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "incomplete";
+export type ToolActivityStatus = "pending" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled" | "incomplete" | "rejected" | "expired";
 export interface ToolActivityItem {
   readonly toolCallId: string;
   readonly name: string;
@@ -19,12 +19,23 @@ export interface ToolActivitySnapshot {
   readonly failed: number;
   readonly cancelled: number;
   readonly incomplete: number;
+  readonly rejected?: number;
+  readonly expired?: number;
   readonly recovered?: number;
   readonly failedAttempts?: number;
   readonly items: readonly ToolActivityItem[];
 }
 
-function statusFor(call: ConversationToolCallRecord, turn: ConversationTurnRecord | undefined): ToolActivityStatus {
+function statusFor(call: ConversationToolCallRecord, turn: ConversationTurnRecord | undefined,
+  proposals: readonly ConversationApprovalProposalRecord[]): ToolActivityStatus {
+  // A declined/expired review produces an error-shaped provider result without
+  // executing. Only its exact canonical association can distinguish that from
+  // a failure. Conflicting execution or proposal evidence stays visible.
+  const matching = proposals.filter(proposal => proposal.turn_id === call.turn_id &&
+    proposal.tool_call_id === call.tool_call_id && proposal.tool_name === call.name);
+  const proposal = matching.length === 1 ? matching[0] : undefined;
+  if (!call.started_at && (!call.result || call.result.is_error) && !proposal?.failure_reason &&
+    (proposal?.status === "rejected" || proposal?.status === "expired")) return proposal.status;
   if (call.result) return call.result.is_error ? "failed" : "completed";
   if (turn?.status === "cancelled") return "cancelled";
   if (turn?.status === "failed" || turn?.status === "completed" && turn.outcome !== "tool_calls") return "incomplete";
@@ -54,13 +65,14 @@ export function projectToolActivity(state: ConversationState, turnId?: string): 
     // A successful later call with the same name alone never proves a previous failure recovered.
     const recovery = receipt && (receipt.status === "failed") === call.result?.is_error ? receipt : null;
     return Object.freeze({ toolCallId: String(call.tool_call_id), name: call.name ?? "Tool",
-      status: statusFor(call, terminal ? lastTurn : turns.get(call.turn_id)), ...(recovery ? { recovery } : {}) });
+      status: statusFor(call, terminal ? lastTurn : turns.get(call.turn_id), state.approval_proposals), ...(recovery ? { recovery } : {}) });
   }));
   const recovered = items.filter((item) => item.recovery?.status === "recovered").length;
   const failedAttempts = items.reduce((total, item) => total + (item.recovery?.failedAttempts ?? 0), 0);
   const count = (status: ToolActivityStatus) => items.filter((item) => item.status === status).length;
   return Object.freeze({ turnId: selected, total: items.length, items,
     ...(recovered ? { recovered } : {}), ...(failedAttempts ? { failedAttempts } : {}),
+    rejected: count("rejected"), expired: count("expired"),
     completed: count("completed"), running: count("running"), pending: count("pending"),
     awaitingApproval: count("awaiting_approval"), failed: count("failed"), cancelled: count("cancelled"), incomplete: count("incomplete") });
 }
