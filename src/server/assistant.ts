@@ -484,6 +484,10 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
     if (!running) {
       await reconcileDurableConversationTurn({ conversationId, turnId, events: bundle.events,
         turns: bundle.durableTurns as never, attribution: context.attribution,
+        readCompletedOutput: async input => {
+          await transportFor(context);
+          return durableTransports.get(executionKeyFor(context))?.readCompletedOutput?.(input) ?? null;
+        },
         authorize: async () => { await catalogFor(context).get({ authorizationContext: context, conversationId: conversationId as never }); },
         ...(options.diagnostics ? { diagnostics: options.diagnostics } : {}),
         ...(bundle.usageReceiptSink ? { usageReceiptSink: bundle.usageReceiptSink } : {}) });

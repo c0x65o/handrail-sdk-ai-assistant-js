@@ -54,6 +54,7 @@ export function qualifyDurableApplicationTurnStarts(
 ): ConversationTransport<StreamEvent, ChatRequest> {
   const qualified: ConversationTransport<StreamEvent, ChatRequest> = {
     capabilities: transport.capabilities,
+    ...(transport.readCompletedOutput ? { readCompletedOutput: transport.readCompletedOutput.bind(transport) } : {}),
     async startTurn(input, context) {
       try {
         const replay = await replayConversation({ conversationId: input.conversationId as ConversationId,

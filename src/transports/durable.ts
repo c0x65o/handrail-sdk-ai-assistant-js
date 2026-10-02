@@ -633,6 +633,12 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
     finally { release?.(); }
   };
   const transport: DurableApplicationTransport<TEvent, TRequest> = {
+    ...(options.delegate.readCompletedOutput ? { readCompletedOutput: async (input: { conversationId: string; turnId: string }) => {
+      if (options.authorizeRecovery && !await options.authorizeRecovery(input)) return null;
+      const document = await options.store.load(input.conversationId, input.turnId);
+      if (document?.record.status !== "completed" || document.record.terminal?.status !== "completed" || document.record.lease !== null) return null;
+      return options.delegate.readCompletedOutput!(input);
+    } } : {}),
     get activeWorkerCount() { return running.size; },
     async cancelTurnBeforeStart(input) {
       try {

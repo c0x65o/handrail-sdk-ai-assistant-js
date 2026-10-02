@@ -336,6 +336,43 @@ describe("server stored-output reconciliation", () => {
 
   const conflictingStart = { ...frames[0]!, attribution: { ...attribution,
     session: { ...attribution.session, id: "refreshed-session" } } } as StreamEvent;
+  it.each(["valid", "wrong-turn", "changed-prefix", "changed-snapshot", "uncertain", "bad-sequence", "revoked"] as const)(
+    "strictly validates independently retained completed output without rewriting the rejected stream (%s)", async mode => {
+      const { input, state } = await setup("completed", [frames[0]!, conflictingStart, ...frames.slice(1)]);
+      const original = await input.turns.load("conversation", "turn");
+      const diagnostics = vi.fn();
+      let revoked = false;
+      const readCompletedOutput = vi.fn(async () => {
+        if (mode === "uncertain") return null;
+        if (mode === "revoked") revoked = true;
+        if (mode === "changed-snapshot") await input.turns.compareAndSet({ conversationId: "conversation", turnId: "turn",
+          expectedVersion: original!.version, record: { ...original!.record, updatedAt: "2026-09-04T00:00:02.000Z" } });
+        return { conversationId: "conversation", turnId: mode === "wrong-turn" ? "other" : "turn", sourceRef: "checkpoint:verified:1",
+          events: mode === "changed-prefix" ? [conflictingStart, ...frames.slice(1)]
+            : mode === "bad-sequence" ? [frames[0]!, { ...frames[1]!, sequence: 3 }, frames[2]!] : frames,
+          result: { status: "completed" as const, checkpoint } };
+      });
+      const run = () => reconcileDurableConversationTurn({ ...input, diagnostics, readCompletedOutput,
+        authorize: async () => { if (revoked) throw Error("Revoked"); } });
+      if (mode === "valid") {
+        expect(await run()).toBe(true);
+        const recovered = await state();
+        expect(recovered.turns[0]?.status).toBe("completed");
+        expect(recovered.active_turn_id).toBeNull();
+        expect(recovered.messages[0]?.content).toEqual([{ type: "text", text: "Stored answer" }]);
+        const log = await input.events.read({conversationId:"conversation" as never});
+        expect(log.entries.find(row=>row.event.payload.type==="turn.completed")?.event.metadata?.handrail_output_recovery)
+          .toMatchObject({source_ref:"checkpoint:verified:1",durable_version:original!.version,source_sha256:expect.stringMatching(/^[a-f0-9]{64}$/)});
+        await run();
+        expect((await state()).revision).toBe(recovered.revision);
+      } else {
+        await expect(run()).rejects.toThrow();
+        expect((await state()).turns[0]?.status).not.toBe("completed");
+      }
+      expect(readCompletedOutput).toHaveBeenCalledTimes(1);
+      expect(diagnostics).toHaveBeenCalledWith(expect.objectContaining({code:"invalid_stored_output"}));
+      if (mode !== "changed-snapshot") expect(await input.turns.load("conversation", "turn")).toEqual(original);
+    });
   const acknowledgedConflict = async () => {
     const fixture = await setup("cancelled", [frames[0]!, frames[1]!, conflictingStart]);
     const saved = (await fixture.input.turns.load("conversation", "turn"))!;

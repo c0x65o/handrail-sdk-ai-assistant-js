@@ -52,12 +52,20 @@ export async function reconcileDurableConversationTurn(input: {
   readonly attribution: AuthoritativeAttribution;
   readonly authorize?: () => Promise<void>;
   readonly diagnostics?: AiDiagnosticSink;
+  readonly readCompletedOutput?: ConversationTransport<StreamEvent, ChatRequest>["readCompletedOutput"];
   readonly usageReceiptSink?: { capture(receipt: NormalizedUsageReceipt): Promise<void> };
 }): Promise<boolean> {
   await input.authorize?.();
   const document = await input.turns.load(input.conversationId, input.turnId);
   if (!document || document.record.status === "pending" || document.record.status === "running") return false;
   const record = document.record;
+  let recovered: Awaited<ReturnType<NonNullable<typeof input.readCompletedOutput>>> = null;
+  let recoveryDigest: string | null = null;
+  const verifyRecoverySnapshot = async () => {
+    if (!recovered) return;
+    const current = await input.turns.load(input.conversationId, input.turnId);
+    if (!current || current.version !== document.version) throw new Error("The recovered output source was superseded");
+  };
   let superseded = false;
   const verifyPausedSnapshot = async () => {
     if (record.status !== "waiting_for_approval") return;
@@ -78,9 +86,13 @@ export async function reconcileDurableConversationTurn(input: {
     append: async value => {
       await input.authorize?.();
       await verifyPausedSnapshot();
+      await verifyRecoverySnapshot();
       // The canonical CAS closes the race after verification. Every rebased
       // append is checked again, including the runtime's final pause event.
-      return input.events.append(value);
+      return input.events.append(recovered ? { ...value, events: value.events.map(event => parseConversationEvent({ ...event,
+        metadata: { ...event.metadata, handrail_output_recovery: { source_ref: recovered!.sourceRef,
+          source_sha256: recoveryDigest!, durable_version: document.version } },
+      })) } : value);
     },
   };
   const settleAcknowledgedCancellation = async (): Promise<boolean> => {
@@ -195,7 +207,9 @@ export async function reconcileDurableConversationTurn(input: {
       capabilities: { authoritativeCancellation: { supported: false }, documentInput: { supported: false },
         attachmentUpload: { supported: false }, presence: { supported: false }, synchronization: { supported: false } },
       async startTurn() { throw new Error("Reconciliation cannot start work"); },
-      async resumeTurn() { return { ok: true, value: storedObservation(record, input.attribution) }; },
+      async resumeTurn() { return { ok: true, value: recovered ? {
+        events: (async function* () { yield* recovered!.events; })(), result: Promise.resolve(recovered.result), disconnect() {},
+      } : storedObservation(record, input.attribution) }; },
     };
     const runtime = await createConversationRuntime({ conversationId, clientId: "server-reconciliation" as never,
       eventStore: events, transport, retryPolicy: createRetryPolicy({ maximumAttempts: 1 }) });
@@ -211,6 +225,31 @@ export async function reconcileDurableConversationTurn(input: {
           phase: "failed", conversationId: input.conversationId, turnId: input.turnId,
           code: "invalid_stored_output", retryable: false, cause: outcome.error });
         if (await settleAcknowledgedCancellation()) return true;
+        // A separate terminal checkpoint may retain valid output even though a
+        // host corrupted its observation stream on reconnect. Keep that stream
+        // rejected and unchanged. The independently read source is projected
+        // through this same strict runtime, including canonical fingerprints.
+        if (!recovered && record.status === "completed" && record.terminal?.status === "completed" &&
+          record.lease === null && input.readCompletedOutput) {
+          await input.authorize?.();
+          const candidate = structuredClone(await input.readCompletedOutput({ conversationId: input.conversationId, turnId: input.turnId }));
+          if (candidate) {
+            if (candidate.conversationId !== input.conversationId || candidate.turnId !== input.turnId ||
+              typeof candidate.sourceRef !== "string" || !candidate.sourceRef.trim() || candidate.sourceRef.length > 1024 ||
+              candidate.result.status !== "completed" || candidate.events.length > 10000 ||
+              new TextEncoder().encode(JSON.stringify(candidate)).length > 1048576) throw new TypeError("Invalid completed output source");
+            const frames = candidate.events.map(event => parseStreamEvent(event));
+            const first = frames[0], retained = record.events[0]?.event;
+            if (first?.type !== "response.started" || first.sequence !== 0 ||
+              !retained || first.request_id !== retained.request_id || first.trace_id !== retained.trace_id ||
+              frames.at(-1)?.type !== "response.completed") throw new TypeError("Completed output source identity changed");
+            recovered = { ...candidate, events: frames };
+            recoveryDigest = createHash("sha256").update(JSON.stringify(recovered)).digest("hex");
+            await input.authorize?.();
+            await verifyRecoverySnapshot();
+            continue;
+          }
+        }
         // A protocol conflict is not a concurrent-write retry. Preserve it for
         // diagnosis; in particular, never fabricate successful output from it.
         throw new Error("Stored turn output failed protocol validation");

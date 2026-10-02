@@ -222,4 +222,18 @@ export interface ConversationTransport<
   resumeTurn(
     input: ResumeTurnInput,
   ): Promise<TransportResult<TurnObservation<TEvent>>>;
+
+  /** Trusted-server recovery only; not exposed as a client gateway operation.
+   * Read an independently retained, immutable completed execution checkpoint.
+   * Never start/resume execution, answer an approval, or synthesize output from
+   * status. Return null for missing, uncertain or non-completed execution.
+   * Frames must retain the admitted stream identity/attribution and still pass
+   * ordinary runtime validation against the canonical prefix. */
+  readCompletedOutput?(input: { readonly conversationId: string; readonly turnId: string }): Promise<{
+    readonly conversationId: string;
+    readonly turnId: string;
+    readonly sourceRef: string;
+    readonly events: readonly TEvent[];
+    readonly result: Extract<TurnObservationResult, { readonly status: "completed" }>;
+  } | null>;
 }
