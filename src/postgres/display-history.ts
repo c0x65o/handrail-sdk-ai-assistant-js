@@ -32,6 +32,9 @@ export const postgresDisplayHistorySchema = Object.freeze([
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_pending_approvals ON handrail_ai_display_records
     (tenant_id,conversation_id,sort_at DESC,first_revision DESC,record_id DESC)
     WHERE kind='approval' AND NOT deleted AND (payload::jsonb->>'status')='pending'`,
+  `CREATE INDEX IF NOT EXISTS handrail_ai_display_approval_history ON handrail_ai_display_records
+    (tenant_id,conversation_id,sort_at DESC,first_revision DESC,record_id DESC)
+    WHERE kind='approval' AND NOT deleted AND (payload::jsonb->>'status') IN ('executed','rejected','expired')`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_latest_turn ON handrail_ai_display_records
     (tenant_id,conversation_id,first_revision DESC,record_id DESC) WHERE kind='turn' AND NOT deleted`,
   `CREATE INDEX IF NOT EXISTS handrail_ai_display_missing_control ON handrail_ai_display_records
@@ -280,6 +283,7 @@ type Cursor = { v: 1; scope: string; generation: number; ceiling: number; view: 
 function viewOf(view: ConversationDisplayView | undefined): ConversationDisplayView {
   if (!view || view.type === "messages") return { type: "messages" };
   if (view.type === "pending_approvals") return { type: "pending_approvals" };
+  if (view.type === "approval_history") return { type: "approval_history" };
   if (view.type === "approval") { identity(view.proposalId); return { type: "approval", proposalId: view.proposalId }; }
   if (view.type === "turn") { identity(view.turnId); return { type: "turn", turnId: view.turnId }; }
   if (view.type === "context") {
@@ -524,6 +528,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
           AND record_id=ANY(ARRAY(SELECT jsonb_array_elements_text($9::jsonb->'messageIds')))
         UNION SELECT $9::jsonb->>'turnId'))) AND c.kind IN ('turn','tool','approval','budget','citation')`;
     const filter = view.type === "messages" ? "r.kind='message' AND r.visible AND $9::text IS NULL"
+      : view.type === "approval_history" ? "r.kind='approval' AND (r.payload::jsonb->>'status') IN ('executed','rejected','expired') AND $9::text IS NULL"
       : view.type === "pending_approvals" ? "r.kind='approval' AND (r.payload::jsonb->>'status')='pending' AND $9::text IS NULL"
       : view.type === "approval" ? `(r.kind,r.record_id) IN (
           SELECT 'approval',$9::text UNION ALL
@@ -578,7 +583,7 @@ export class PostgresConversationDisplayHistory implements ConversationDisplayHi
       ORDER BY p.sort_at ${order},p.first_revision ${order},p.record_id ${order},p.kind ${order}`,
     [this.tenantId, input.conversationId, cursor?.ceiling ?? null, Math.min(limits.maximumInlineRecordBytes, maximumBytes - 4096),
       cursor?.at ?? null, cursor?.sequence ?? null, cursor?.id ?? null, cursor?.kind ?? null,
-      view.type === "messages" || view.type === "pending_approvals" ? null : view.type === "approval" ? view.proposalId : view.type === "turn" ? view.turnId : view.type === "context" ? JSON.stringify(view) : view.messageId, limit + 1, maximumBytes - 1024,
+      view.type === "messages" || view.type === "pending_approvals" || view.type === "approval_history" ? null : view.type === "approval" ? view.proposalId : view.type === "turn" ? view.turnId : view.type === "context" ? JSON.stringify(view) : view.messageId, limit + 1, maximumBytes - 1024,
       input.anchor?.messageId ?? null]);
     await this.authorize(input.conversationId);
     const head = result.rows[0]!;

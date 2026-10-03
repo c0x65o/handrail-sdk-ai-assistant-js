@@ -177,7 +177,19 @@ describe("indexed display history", () => {
     // Review remains available as an audit record, but reflects the current decision.
     expect((await display().page({ conversationId: input.conversationId, view: { type: "approval", proposalId: "one" } }))
       .records.find(record => record.kind === "approval")?.value).toMatchObject({ status: "rejected", proposal_version: 2 });
+    const historyInput = { conversationId: input.conversationId, view: { type: "approval_history" as const }, limit: 2 };
+    const history = await display().page(historyInput);
+    expect(history.records.map(record => record.id)).toEqual(["two", "three"]);
+    expect(history.records.every(record => record.kind === "approval" && record.value?.status === "rejected")).toBe(true);
+    expect((await display().page({ ...historyInput, cursor: history.nextCursor! })).records.map(record => record.id)).toEqual(["one"]);
+    await expect(display("tenant", "other").page({ ...historyInput, cursor: history.nextCursor! })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(display().page({ ...input, cursor: history.nextCursor! })).rejects.toMatchObject({ code: "invalid_input" });
+    expect((await display("other").page(historyInput)).records).toEqual([]);
+    const revoked = vi.fn(async () => {}).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("revoked"));
+    await expect(new PostgresConversationDisplayHistory(client, "tenant", "scope", revoked).page(historyInput)).rejects.toThrow("revoked");
     await append("pending-inbox", [{ type: "conversation.cleared" }], 113);
+    expect((await display().page(historyInput)).records).toEqual([]);
+    await expect(display().page({ ...historyInput, cursor: history.nextCursor! })).rejects.toMatchObject({ code: "stale_cursor" });
     await expect(display().page({ ...input, cursor: first.nextCursor! })).rejects.toMatchObject({ code: "stale_cursor" });
     expect((await display().page({ conversationId: input.conversationId, view: { type: "approval", proposalId: "one" } })).records).toEqual([]);
   });

@@ -26,6 +26,7 @@ function gateway(options: { large?: boolean; activity?: boolean; citation?: bool
         ...(options.pending ? { hasPendingApprovals: true } : {}) };
       else if (body.operation === "content") value = { encoding: "plain-text", text: "Expanded message text", revision: 200, nextOffset: null };
       else if (body.operation === "changes") value = { ...header, records: [], nextCursor: null, throughRevision: 200 };
+      else if (input.view?.type === "approval_history") value = { ...header, records: [{ kind: "approval", id: "settled", turnId: "old-turn", revision: 1, bytes: 200, deferred: false, value: { proposal_id: "settled", status: "executed" } }], nextCursor: "older-actions" };
       else if (input.view?.type === "pending_approvals") value = { ...header, records: [{ kind: "approval", id: "old-approval", turnId: "old-turn",
         revision: 1, bytes: 200, deferred: false, value: { proposal_id: "old-approval", tool_name: "update_device", status: "pending" } }], nextCursor: null };
       else if (input.view?.type === "context") {
@@ -187,4 +188,24 @@ it("negotiates multiple conversations lazily and drops the previous chat body wh
     expect(client.workspace!.getSnapshot().threads.filter(thread => thread.runtime.getSnapshot().messages.length)).toHaveLength(1);
     expect(client.registry!.getSnapshot().liveCount).toBe(4);
   } finally { await client.dispose(); }
+});
+
+
+it("negotiates bounded read-only history without expanding the React transcript", async () => {
+  const f = gateway();
+  const client = await createHandrailAiClient({ baseUrl: "https://app.test/ai", fetch: f.fetcher,
+    capabilities: { ...capabilities, displayHistory: { ...capabilities.displayHistory as Exclude<ApplicationGatewayCapabilities["displayHistory"], false | undefined>, approvalHistory: true } },
+    conversations: { mode: "single", conversationId: "single" as never, clientId: "client" as never } });
+  try {
+    render(<ConversationProvider runtime={client.conversation!}><StyledChatPreset includeStyles={false}/></ConversationProvider>);
+    await screen.findByText("single saved 200");
+    const session = client.conversation!.displaySession!;
+    const before = session.window.getSnapshot().records;
+    const page = await session.readApprovals({ history: true }, new AbortController().signal);
+    expect(page.records.map(r => r.id)).toEqual(["settled"]);
+    expect(page.nextCursor).toBe("older-actions");
+    expect(session.window.getSnapshot().records).toBe(before);
+    const cancelled = new AbortController(); cancelled.abort();
+    await expect(session.readApprovals({ history: true }, cancelled.signal)).rejects.toMatchObject({ name: "AbortError" });
+  } finally { cleanup(); await client.dispose(); }
 });

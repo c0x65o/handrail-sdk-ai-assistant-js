@@ -34,6 +34,8 @@ export type ConversationDisplayView =
   | { readonly type: "messages" }
   /** Current pending decisions, independent of the loaded message window. */
   | { readonly type: "pending_approvals" }
+  /** Settled read-only decisions, independent of transcript pagination. */
+  | { readonly type: "approval_history" }
   /** One proposal and its bound tool record; never an entire turn. */
   | { readonly type: "approval"; readonly proposalId: string }
   | { readonly type: "turn"; readonly turnId: string }

@@ -195,6 +195,7 @@ export async function createHandrailAiClient<TEvent = unknown, TRequest = unknow
     messageText: Boolean(capabilities.displayHistory && capabilities.displayHistory.messageText === true),
     recordText: Boolean(capabilities.displayHistory && capabilities.displayHistory.recordText === true),
     approvalReview: Boolean(capabilities.displayHistory && capabilities.displayHistory.approvalReview === true),
+    approvalHistory: Boolean(capabilities.displayHistory && capabilities.displayHistory.approvalHistory === true),
     pendingApprovals: Boolean(capabilities.displayHistory && capabilities.displayHistory.pendingApprovals === true),
     onLocalStateFlush: operation => { localFlushes.add(operation); void operation.finally(() => localFlushes.delete(operation)); },
     ...(options.synchronizationPollingMilliseconds === undefined ? {} : { pollMilliseconds: options.synchronizationPollingMilliseconds }),

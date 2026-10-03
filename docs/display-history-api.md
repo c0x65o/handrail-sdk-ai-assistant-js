@@ -549,6 +549,32 @@ change canonical citation history. Deferred source expansion remains separate.
 
 ## Pending approvals outside the loaded transcript
 
+### Settled action history
+
+`displayHistory.approvalHistory: true` additionally negotiates the
+`{ type: "approval_history" }` page view. It returns current `executed`,
+`rejected`, and `expired` proposals, independently of retained message pages.
+The existing authorization, owner scope, generation, revision, byte limits,
+deferred records, and view-bound keyset cursors apply. It never grants decision
+authority or loads the canonical event log. The additive
+`handrail_ai_display_approval_history` index needs no replay or backfill.
+
+The standard server assistant advertises this capability. Custom gateway
+assemblies set `displayApprovalHistory: true` only when their scoped store
+implements this view. JS callers use `session.readApprovals({ history: true },
+signal)`; this read does not alter the React transcript or decision controls.
+
+The Flutter session hydrates one 30-record/64 KiB page separately from message
+context, refreshes that page when the control revision changes, and replaces it
+on explicit Older/Newest actions. Its shared Action history disclosure counts
+the current page, including deferred records; it is not a conversation-wide
+total. Settled details remain in the presentation document for existing host
+review validation. Deferred details are read-only, revision-bound sections
+inside the disclosure. Pending and failed controls retain their existing gates.
+Older servers retain the prior window-local history behavior until upgraded.
+
+### Pending decisions
+
 Servers advertising `displayHistory.pendingApprovals: true` support two additional
 page views: `{ type: "pending_approvals" }` and
 `{ type: "approval", proposalId }`. The first uses the indexed current `pending`

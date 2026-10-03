@@ -51,6 +51,7 @@ export interface ApplicationConversationSessionOptions<TRequest> {
   readonly recordText?: boolean;
   readonly approvalReview?: boolean;
   readonly pendingApprovals?: boolean;
+  readonly approvalHistory?: boolean;
   /** Bootstrap waits for account-owned local flushes before completing disposal. */
   readonly onLocalStateFlush?: (operation: Promise<void>) => void;
   readonly pollMilliseconds?: number;
@@ -187,24 +188,30 @@ export class ApplicationConversationSession<TRequest = unknown> {
     this.wake = setTimeout(() => { this.wake = undefined; void this.refresh().catch(() => undefined); }, 100);
   }
   setFollowingLatest(value: boolean): void { this.followingLatest = value; this.publish(); }
+  get supportsApprovalHistory(): boolean { return this.options.approvalHistory === true; }
   get supportsPendingApprovals(): boolean { return this.options.pendingApprovals === true; }
   /** Explicit inbox/review reads share account and selection cancellation. They
    * never hydrate the message window or become provider context. */
-  async readApprovals(input: { readonly proposalId?: string; readonly cursor?: string }, signal: AbortSignal) {
+  async readApprovals(input: { readonly proposalId?: string; readonly cursor?: string; readonly history?: boolean }, signal: AbortSignal) {
     this.assertOpen();
-    if (!this.supportsPendingApprovals || !this.active || this.control?.status !== "ready") {
+    if (input.history && input.proposalId) throw new TypeError("History cannot select a decision");
+    if (!(input.history ? this.supportsApprovalHistory : this.supportsPendingApprovals) || !this.active || this.control?.status !== "ready") {
       throw new ApplicationConversationSessionError("approval_inbox_unavailable", "Pending approvals are unavailable.", true);
     }
     const generation = this.control.generation;
     const combined = AbortSignal.any([signal, this.displayLifetime.signal, this.lifetime.signal]);
     const page = await this.options.reader.page({ conversationId: this.options.conversationId,
-      view: input.proposalId ? { type: "approval", proposalId: input.proposalId } : { type: "pending_approvals" },
+      view: input.proposalId ? { type: "approval", proposalId: input.proposalId } : input.history ? { type: "approval_history" } : { type: "pending_approvals" },
       ...(input.proposalId ? { limit: 2, maximumBytes: 128 * 1024 } : {}),
       ...(input.cursor ? { cursor: input.cursor } : {}) }, combined);
     if (combined.aborted) throw new DOMException("Approval read cancelled", "AbortError");
     if (page.status !== "ready" || page.generation !== generation || this.control?.generation !== generation ||
         page.revision < Math.max(this.control?.revision ?? 0, this.window.getSnapshot().revision)) {
       throw new ApplicationConversationSessionError("stale_approvals", "Approval details changed. Try again.", true);
+    }
+    if (input.history && page.records.some(record => record.kind !== "approval" || record.deleted ||
+      record.value && !["executed", "rejected", "expired"].includes(record.value.status))) {
+      throw new TypeError("Invalid action history page");
     }
     return page;
   }

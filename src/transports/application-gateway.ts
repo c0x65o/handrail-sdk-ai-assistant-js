@@ -72,7 +72,7 @@ export interface ApplicationGatewayCapabilities {
   readonly presence: boolean;
   readonly synchronization: boolean;
   /** Complete message records, separate from canonical audit synchronization. */
-  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true; readonly messageText?: true; readonly recordText?: true; readonly approvalReview?: true; readonly pendingApprovals?: true };
+  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true; readonly messageText?: true; readonly recordText?: true; readonly approvalReview?: true; readonly pendingApprovals?: true; readonly approvalHistory?: true };
   readonly activity?: boolean;
   /** Omitted by older gateways; never assume saved files have public URLs. */
   readonly attachmentDownloads?: false | AttachmentDownloadCapability;
@@ -149,6 +149,8 @@ export interface ApplicationGatewayOptions<TEvent, TRequest, TContext extends Ap
   readonly displayApprovalReview?: true;
   /** Scoped store supports pending_approvals and approval display views. */
   readonly displayPendingApprovals?: true;
+  /** Scoped store supports bounded, read-only approval_history pages. */
+  readonly displayApprovalHistory?: true;
   readonly approvals?: ApprovalProposalStore<TContext>;
   readonly turnApprovalMode?: (input: TurnApprovalModeInput, context: TContext) => Promise<TurnApprovalModeResult>;
   readonly titleGeneration?: ApplicationGatewayTitleGeneration<TContext>;
@@ -403,6 +405,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
     ...(options.displayHistoryFor ? { displayHistory: { version: 1 as const,
       maximumPageSize: CONVERSATION_DISPLAY_LIMITS.maximumPageSize, maximumPageBytes: CONVERSATION_DISPLAY_LIMITS.maximumPageBytes,
       ...(options.displayControl ? { control: true as const } : {}),
+      ...(options.displayApprovalHistory ? { approvalHistory: true as const } : {}),
       ...(options.displayPendingApprovals ? { pendingApprovals: true as const } : {}),
       ...(options.displayRecordText ? { recordText: true as const } : {}),
       ...(options.displayApprovalReview ? { approvalReview: true as const } : {}),

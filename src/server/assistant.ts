@@ -1098,6 +1098,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
           displayRecordText: true,
           displayApprovalReview: true,
           displayPendingApprovals: true,
+          displayApprovalHistory: true,
           displayHistoryFor(current): ConversationDisplayHistory {
             const identity = maintenanceIdentity(current);
             const authorize = async (conversationId: string) => {
