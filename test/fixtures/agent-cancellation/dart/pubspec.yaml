@@ -6,5 +6,5 @@ dependencies:
   handrail_ai_client:
     git:
       url: https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter.git
-      ref: b0ccf46ad9c71aaa55e2fbe5e304e1c64e66ecca
+      ref: 737f71ccba45c9201247d3a16fcc5f460859c6dc
       path: packages/handrail_ai_client
