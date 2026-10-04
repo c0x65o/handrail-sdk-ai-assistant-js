@@ -344,6 +344,12 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         result.status !== "cancelled" && result.status !== "completed") {
         return { ...record, status: "pending", terminal: null, lease: null, updatedAt: timestamp(now()) };
       }
+      // Losing observation is not a terminal execution failure. Retain the
+      // admitted delegate identity/events and release only this fenced claim;
+      // authenticated recovery reuses the original idempotent admission.
+      if (result.status === "disconnected" && !record.cancellation?.acceptedAt) {
+        return { ...record, status: "pending", terminal: null, lease: null, updatedAt: timestamp(now()) };
+      }
       const status = result.status === "completed" ? "completed" :
         record.cancellation?.acceptedAt || result.status === "cancelled" ? "cancelled" :
         result.status === "waiting_for_approval" ? "waiting_for_approval" : "failed";
@@ -550,6 +556,7 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "durable_turn",
           phase: result.status === "completed" || result.status === "waiting_for_approval" ? "succeeded" : result.status === "cancelled" ? "cancelled" : "failed",
           conversationId, turnId, attempt,
+          ...(result.status === "disconnected" ? { code: "observation_disconnected", retryable: true } : {}),
           ...(result.status === "failed" ? { code: result.error.code, retryable: result.error.retryable } : {}) });
       };
       await Promise.race([execute(), monitoring, interrupted]);
@@ -602,6 +609,11 @@ export function createDurableApplicationTransport<TEvent, TRequest, TStoredReque
         while (index < current.record.events.length) { const next = current.record.events[index++]!;
           checkpoint = next.checkpoint; yield clone(next.event); }
         if (current.record.terminal) { resolveResult(clone(current.record.terminal)); return; }
+        // A settled nonterminal attempt has no live observer worker. Close this
+        // client observation too; never fabricate a canonical terminal fact.
+        if (current.record.status === "pending" && current.record.attempt > 0 && !current.record.lease) {
+          resolveResult({ status: "disconnected", checkpoint }); return;
+        }
         await new Promise<void>((resolve) => setTimeout(resolve, pollMilliseconds));
       }
     })();

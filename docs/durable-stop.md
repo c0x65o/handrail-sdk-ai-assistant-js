@@ -46,3 +46,21 @@ old workers can still incorrectly terminalize Stop. Previously terminalized
 records from the old bug are not silently reopened; their delegate outcome needs
 explicit reconciliation before any authorized repair. Consumer adoption must use
 the eventual published full Git SHA and matching lockfile.
+
+## Nonterminal observer exit
+
+A delegate's `disconnected` result carries no canonical terminal outcome. The
+durable wrapper retains its admitted identity, request, events, and cancellation
+intent as `pending`, releases the fenced worker lease, and ends client observation
+with `disconnected`. Existing recovery scanning or authenticated same-turn resume
+can claim another attempt under the existing attempt budget and scope checks.
+Recovery still calls the delegate's idempotent `startTurn` with the original
+turn/mutation/idempotency keys. Delegates must preserve verified and uncertain
+effects when they re-enter execution. No observer timeout or automatic immediate
+retry is added.
+
+An accepted explicit Stop still settles as cancelled; an unacknowledged Stop
+remains pending for delivery. Canonical completed, cancelled, failed, and approval
+wait results retain their existing semantics. Client observation disconnection
+does not cancel the durable executor. The gateway projects terminal facts only
+when the durable result supplies them.

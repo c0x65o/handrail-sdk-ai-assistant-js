@@ -156,14 +156,14 @@ it("retries an accepted Stop whose response was lost with the same identity", as
   expect(accepted).toBe(1); expect(f.cancelTurn.mock.calls[0]).toEqual(f.cancelTurn.mock.calls[1]); expect(f.startTurn).toHaveBeenCalledOnce();
 });
 
-it("a failed observation does not strand the admitted delegate when a fresh context sends Stop", async () => {
+it("a disconnected observation remains pending when a fresh context sends Stop", async () => {
   const f = fixture(), original = f.startTurn.getMockImplementation()!;
   f.startTurn.mockImplementation(async (...args) => {
     const started = await original(...args); if (!started.ok) return started;
     return { ...started, value: { ...started.value, observation: { ...started.value.observation,
       result: Promise.resolve({ status: 'disconnected' as const, checkpoint }) } } };
   });
-  const first = f.worker("lost-observation"); await first.startTurn(input); await f.status("failed"); await first.stopWorkers();
+  const first = f.worker("lost-observation"); await first.startTurn(input); await vi.waitFor(() => expect(first.activeWorkerCount).toBe(0)); await f.status("pending"); await first.stopWorkers();
   const fresh = f.worker("fresh-context"); await f.cancel(fresh); await f.status("cancelled"); await fresh.stopWorkers();
   expect(f.startTurn).toHaveBeenCalledOnce(); expect(f.cancelTurn).toHaveBeenCalledOnce();
   expect(f.cancelTurn.mock.calls[0]![0].turnId).toBe('remote-turn');

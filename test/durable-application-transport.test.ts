@@ -389,3 +389,31 @@ it("saves bounded text batches with unchanged frames and resumable checkpoints b
     expect(saved.map(item => item.checkpoint)).toEqual(emitted.map(event => checkpoint(event.id)));
   } finally { await transport.stopWorkers(); }
 });
+
+it("recovers a disconnected non-Agent application executor without forging a terminal outcome", async () => {
+  const store = new InMemoryDurableApplicationTurnStore<Request, Event>();
+  let attempts = 0;
+  const seen: unknown[] = [];
+  const inner = createApplicationTurnTransport<Event, Request>({ execute: async (_request, context) => {
+    seen.push(context.durableExecution);
+    await context.emit({ id: "1", text: "retained" });
+    return { status: ++attempts === 1 ? "disconnected" : "completed", checkpoint: checkpoint("1") };
+  } });
+  const first = durable(store, inner, "first-executor");
+  const started = await first.startTurn(input);
+  if (!started.ok) throw Error(started.error.message);
+  expect(await collect(started.value.observation.events)).toEqual([{ id: "1", text: "retained" }]);
+  expect(await started.value.observation.result).toEqual({ status: "disconnected", checkpoint: checkpoint("1") });
+  await vi.waitFor(() => expect(first.activeWorkerCount).toBe(0));
+  expect((await store.load(input.conversationId, input.conversationTurnId))?.record).toMatchObject({
+    status: "pending", terminal: null, lease: null, attempt: 1, delegateTurnId: input.conversationTurnId });
+  await first.stopWorkers();
+  const fresh = durable(store, inner, "fresh-executor");
+  try {
+    expect(await fresh.recoverTurn(input.conversationId, input.conversationTurnId)).toEqual({ ok: true, value: { status: "started" } });
+    await vi.waitFor(() => expect(fresh.activeWorkerCount).toBe(0));
+    const saved = (await store.load(input.conversationId, input.conversationTurnId))!;
+    expect(saved.record).toMatchObject({ status: "completed", lease: null, attempt: 2 });
+    expect(seen).toEqual([1, 2].map(attempt => ({ conversationId: input.conversationId, turnId: input.conversationTurnId, attempt })));
+  } finally { await fresh.stopWorkers(); }
+});

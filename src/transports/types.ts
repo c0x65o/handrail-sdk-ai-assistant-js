@@ -110,6 +110,9 @@ export interface TurnObservationCancelled {
   readonly usageReceipt?: NormalizedUsageReceipt | null;
 }
 
+/** Observation ended without a canonical terminal outcome. A durable wrapper
+ * releases its claim and retains the turn for authorized same-turn recovery.
+ * This result is neither explicit Stop nor evidence of execution failure. */
 export interface TurnObservationDisconnected {
   readonly status: "disconnected";
   readonly checkpoint: TurnResumePoint;
