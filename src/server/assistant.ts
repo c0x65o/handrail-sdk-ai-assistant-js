@@ -976,7 +976,13 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
       eventStore: filesFor(context)?.events ?? bundleFor(context).events,
       turnStore: bundleFor(context).durableTurns as never,
       authorizeConversation: async (conversationId) => {
-        await ownsConversation(context, conversationId);
+        try { await ownsConversation(context, conversationId); }
+        catch (error) {
+          // Foreign and missing conversations share the sync contract's terminal
+          // denial. Preserve storage/service failures for the retryable HTTP path.
+          if (error instanceof ConversationCatalogError && (error.code === "not_found" || error.code === "forbidden")) return false;
+          throw error;
+        }
         // Repair is retried on each request, but it is not an authorization check.
         // A competing projector or activity-store outage must not block access to
         // already-saved history. The adapter still validates every proposed event.

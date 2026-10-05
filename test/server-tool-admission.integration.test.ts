@@ -123,14 +123,16 @@ it.each([false, true])("HTTP authenticated recovery admits exact execution repla
     expect(admission).toHaveBeenCalledOnce();
     historyAllowed = false;
     const deniedHistory = await post("synchronization", { operation: "pull_snapshot", input: { conversationId: "conversation" } });
-    // Existing sync error mapping reports thrown catalog denials as unavailable.
-    // Inspect the host diagnostic so this cannot pass because of an unrelated failure.
-    expect(deniedHistory.status).toBe(503);
-    expect(await deniedHistory.text()).not.toContain("protectedReceipt");
-    expect(diagnostics.mock.calls.map(([event]) => event)).toContainEqual(expect.objectContaining({
+    expect(deniedHistory.status).toBe(200);
+    expect(await deniedHistory.json()).toEqual({ ok: true, value: {
+      status: "unauthorized", message: "Conversation synchronization was denied.",
+    } });
+    expect(diagnostics.mock.calls.map(([event]) => event)).not.toContainEqual(expect.objectContaining({
       domain: "gateway", operation: "synchronization.pull_snapshot", phase: "failed",
-      cause: expect.objectContaining({ code: "forbidden" }),
     }));
     expect(admission).toHaveBeenCalledOnce();
+    expect(providerRequest).toHaveBeenCalledTimes(2);
+    expect(effect).toHaveBeenCalledOnce();
+    expect((await database.query("SELECT * FROM domain_changes")).rows).toHaveLength(1);
   } finally { await assistant.stopBackgroundWorkers(); await database.close(); }
 }, 30_000);
