@@ -1,0 +1,68 @@
+{
+  "workRequest": "Expose assistant polling configuration",
+  "baseline": {
+    "version": "0.2.78",
+    "sha": "f46361de645425aa417882b44beadbbed6dc04e8"
+  },
+  "reproduction": {
+    "result": "reproduced",
+    "command": "npx vitest run test/react-realtime-launcher.test.tsx --maxWorkers=1 --minWorkers=1 -t forwards",
+    "beforeFix": "All three new forwarding cases failed: bootstrap received undefined instead of the supplied 6000ms interval."
+  },
+  "implementation": [
+    "Add three optional numeric polling props to HandrailAssistantLauncher and forward them only when defined.",
+    "Include all three values in configuration identity and bootstrap effect dependencies; exclude them from the workspace/DOM spread.",
+    "Retain client/device IDs and the existing pending-store instance across timing-only rebinds, including the default in-memory journal. Preserve the previous account/configuration ownership boundary.",
+    "Document visible idle versus hidden idle behavior, active-turn priority, existing input limits and defaults, separate activity traffic, and host-owned request budgeting."
+  ],
+  "validation": [
+    {
+      "command": "npm run build",
+      "result": "passed",
+      "evidence": "Public React styled declarations contain all three optional number props. No scheduler, bootstrap constraints, or default intervals changed."
+    },
+    {
+      "command": "npm run typecheck",
+      "result": "passed"
+    },
+    {
+      "command": "npx vitest run test/client-polling.test.ts test/client-bootstrap.test.ts test/application-session.test.ts test/conversation-activity.test.ts test/react-realtime-launcher.test.tsx test/react-application-session.test.tsx test/react-styled.test.tsx --maxWorkers=1 --minWorkers=1",
+      "result": "passed",
+      "tests": 114,
+      "files": 7,
+      "evidence": "Deterministic interval boundaries, default compatibility, hidden active turns, input minimum/maximum and invalid values, Retry-After priority, individual timing-prop rebind/removal, generated identity retention, supplied/fallback pending stores, account isolation, and existing admission/auth/cancellation regression coverage."
+    },
+    {
+      "command": "HANDRAIL_TEST_CHROMIUM=<cached Chromium 1228 executable> node scripts/check-launcher-polling-browser.mjs",
+      "result": "passed",
+      "evidence": "Built public launcher in Chromium with a deterministic clock and synthetic fetch: default and custom cadence, visible idle, hidden idle, exact pending admission replay after timing rebind, Retry-After minimum, no leaked DOM attributes or React errors, and no reads after unmount.",
+      "boundary": "Local fixture only; no real provider, credentials, host deployment or database. Default Playwright executable was absent; reused the matching cached Chromium. Fixture readiness and catalog-envelope issues were corrected before the passing run."
+    },
+    {
+      "command": "node --test test/package-contract.test.mjs",
+      "result": "passed",
+      "tests": 31,
+      "evidence": "Built public ESM exports, package boundaries, Git prepare/build contract, and existing package dry-run checks."
+    },
+    {
+      "command": "npx eslint src/react-styled/index.tsx test/react-realtime-launcher.test.tsx test/client-polling.test.ts test/fixtures/polling-gateway.ts test/fixtures/launcher-polling-browser.tsx scripts/check-launcher-polling-browser.mjs",
+      "result": "passed"
+    },
+    {
+      "command": "npm run lint",
+      "result": "failed",
+      "evidence": "Initial run reported 39 errors: one new fixture alias warning was fixed and all changed files then passed scoped lint. The other 38 errors are in untouched files (undefined globals, unused parameters, explicit any, and the turn-approval-mode control-character regex). Repository-wide lint is not claimed clean."
+    },
+    {
+      "command": "npm run check:public-surface",
+      "result": "failed",
+      "evidence": "Existing runtime-neutral declaration scan rejects the fetch marker. For example dist/attachments/downloader.d.ts:22 exposes fetch; matching src/attachments/downloader.ts:39 was verified present in baseline HEAD. The changed React styled declarations are excluded from that scan."
+    }
+  ],
+  "release": {
+    "state": "source changes left uncommitted for Handrail's post-agent release step",
+    "newVersion": null,
+    "newSha": null,
+    "remaining": "Handrail owns the patch version bump, commit and push, and must report the resulting exact public HTTPS Git SHA. Review the two repository-wide check failures above. Preview's owner separately chooses timing values, wires IndexedDB and qualifies the installed revision; Mills remains frozen. No consumer dependency or deployment was changed."
+  }
+}

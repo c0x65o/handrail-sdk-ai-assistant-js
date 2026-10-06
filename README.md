@@ -675,6 +675,41 @@ also exposes `synchronize()` and an optional
 destroying the runtime stops polling. Recovery of saved active turns runs in
 the background so opening the chat does not wait for execution to finish.
 
+The endpoint-only `HandrailAssistantLauncher` accepts the same three optional
+timings as `createHandrailAiClient`:
+
+| Option | Default | Existing input limits (milliseconds) |
+| --- | --- | --- |
+| `activityPollingMilliseconds` | 5000 | Safe integer, 500–300000 |
+| `synchronizationPollingMilliseconds` | 1000 | Safe integer, 100–300000 |
+| `idleSynchronizationPollingMilliseconds` | 15000 for display sessions | Safe integer, 100–300000 |
+
+For negotiated display-history/control sessions, the regular synchronization
+interval applies when the conversation is selected and the workspace is visible,
+**even when no turn is running**, or whenever the conversation has an active turn.
+The idle interval applies only when neither condition holds. A successful visible
+refresh reads both control and the display window; hidden sessions read control.
+Activity polling is a separate feed and continues while the launcher is closed.
+Closing the launcher (or setting a page workspace's `visible={false}`) updates
+workspace visibility; merely hiding its DOM with CSS does not.
+
+Choose both synchronization intervals and the activity interval for the host's
+request budget, accounting for multiple open conversations, tabs and other app
+traffic. Raising only the idle interval does not reduce visible idle polling.
+These options do not change host rate limits; the existing error backoff and
+`Retry-After` minimum still take priority over the configured cadence. Intervals
+are delays after reads complete, not guaranteed wall-clock request rates.
+For legacy canonical-event runtimes, the idle default is
+`max(synchronizationPollingMilliseconds, 15000)` and an explicit idle interval
+must be at least the regular interval. Bootstrap's capability-specific validation
+and defaults are unchanged.
+
+Changing any timing prop rebinds the launcher client and disposes its previous
+observers. Timing-only changes retain client/device identity and pending submission
+identity, including the in-memory fallback journal. Supply a stable, account/API-scoped
+`pendingStore` for recovery across reloads; a capable store is already inferred for
+draft storage. The host owns the timing values and durable storage wiring.
+
 Server activity includes the canonical `turnId` and, when admission history is
 available, `turnRevision`. The Postgres activity store uses these fields to
 reject delayed updates from older turns and to retain terminal/read state.

@@ -36,7 +36,7 @@ import { RealtimeWorkspaceMonitor, summarizeRealtimeWorkspace, type RealtimeWork
 import { useConversationApprovals } from "../react/use-conversation-approvals.js";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { ConversationContext } from "../react/context.js";
-import type { ApplicationConversationPendingStore } from "../client/session-submission.js";
+import { InMemoryApplicationConversationPendingStore, type ApplicationConversationPendingStore } from "../client/session-submission.js";
 import { createHandrailAiClient, type HandrailAiClient } from "../client/bootstrap.js";
 import { type AttachmentUploader } from "../attachments/uploader.js";
 import type { AttachmentUploadAdapter } from "../attachments/types.js";
@@ -892,6 +892,13 @@ export interface HandrailAssistantLauncherProps extends Omit<HandrailChatWorkspa
   readonly diagnostics?: AiDiagnosticSink;
   readonly clientId?: string;
   readonly deviceId?: string;
+  /** Activity feed interval in milliseconds. Defaults to 5000; integer 500–300000. */
+  readonly activityPollingMilliseconds?: number;
+  /** Selected/visible or running conversation polling. Defaults to 1000ms; integer 100–300000. */
+  readonly synchronizationPollingMilliseconds?: number;
+  /** Hidden, inactive conversation polling. Defaults to 15000ms; integer 100–300000.
+   * Legacy event runtimes require this to be at least synchronizationPollingMilliseconds. */
+  readonly idleSynchronizationPollingMilliseconds?: number;
   readonly loading?: ReactNode;
   readonly failure?: (error: unknown) => ReactNode;
   readonly onWorkingChange?: (working: boolean) => void;
@@ -1146,8 +1153,16 @@ function browserIdentity(prefix: string): string {
 /** Endpoint-only production launcher. It owns negotiation, catalog, runtimes, uploads, recovery, and cleanup. */
 export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps): ReactNode {
   if (props.attachmentUploadAdapter && props.uploaderForConversation) throw new TypeError("Choose an attachment adapter or a custom uploader factory, not both");
-  const configurationKey = useMemo(() => Object.freeze({}),
+  // Timing changes replace observers, but must retain uncertain admission IDs
+  // even when the host uses the account-lifetime in-memory journal.
+  const ownership = useMemo(() => ({
+    clientId: (props.clientId ?? browserIdentity("client")) as ConversationClientId,
+    deviceId: (props.deviceId ?? browserIdentity("device")) as ConversationDeviceId,
+    pendingStore: props.pendingStore ?? new InMemoryApplicationConversationPendingStore<ChatRequest>(),
+  }),
     [props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId, props.pendingStore, props.attachmentUploadAdapter]);
+  const configurationKey = useMemo(() => Object.freeze({}), [ownership,
+    props.activityPollingMilliseconds, props.synchronizationPollingMilliseconds, props.idleSynchronizationPollingMilliseconds]);
   const [savedState, setState] = useState<AssistantLauncherState | null>(null);
   // Never render or observe a previous account/endpoint while the replacement boots.
   const state = savedState?.configurationKey === configurationKey ? savedState : null;
@@ -1159,11 +1174,13 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
     setFailure(null);
     void (async () => {
       try {
-        const clientId = (props.clientId ?? browserIdentity("client")) as ConversationClientId;
-        const deviceId = (props.deviceId ?? browserIdentity("device")) as ConversationDeviceId;
+        const { clientId, deviceId, pendingStore } = ownership;
         const client = await createHandrailAiClient<StreamEvent, ChatRequest, object>({
           baseUrl: props.endpoint,
-          ...(props.pendingStore ? { pendingStore: props.pendingStore } : {}),
+          pendingStore,
+          ...(props.activityPollingMilliseconds === undefined ? {} : { activityPollingMilliseconds: props.activityPollingMilliseconds }),
+          ...(props.synchronizationPollingMilliseconds === undefined ? {} : { synchronizationPollingMilliseconds: props.synchronizationPollingMilliseconds }),
+          ...(props.idleSynchronizationPollingMilliseconds === undefined ? {} : { idleSynchronizationPollingMilliseconds: props.idleSynchronizationPollingMilliseconds }),
           ...(props.attachmentUploadAdapter ? { attachmentUploadAdapter: props.attachmentUploadAdapter } : {}),
           ...(props.fetch === undefined ? {} : { fetch: props.fetch }),
           ...(props.protectedRequest === undefined ? {} : { protectedRequest: props.protectedRequest }),
@@ -1204,7 +1221,8 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
       const previous = owned; owned = null;
       void previous?.client.dispose();
     };
-  }, [configurationKey, props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.clientId, props.deviceId, props.pendingStore, props.attachmentUploadAdapter]);
+  }, [configurationKey, ownership, props.endpoint, props.fetch, props.protectedRequest, props.diagnostics, props.attachmentUploadAdapter,
+    props.activityPollingMilliseconds, props.synchronizationPollingMilliseconds, props.idleSynchronizationPollingMilliseconds]);
 
   const voiceMonitor = useMemo(() => {
     if (!state || !props.voiceActivity) return null;
@@ -1231,12 +1249,15 @@ export function HandrailAssistantLauncher(props: HandrailAssistantLauncherProps)
   if (state === null || state.client.workspace === null) return <>{styles}{props.loading ?? null}</>;
   const { endpoint: _endpoint, fetch: _fetch, protectedRequest: _protected, diagnostics: _diagnostics, clientId: _clientId,
     deviceId: _deviceId, pendingStore: _pendingStore, attachmentUploadAdapter: _attachmentAdapter, loading: _loading, failure: _failure, includeStyles: _includeStyles,
+    activityPollingMilliseconds: _activityPolling, synchronizationPollingMilliseconds: _synchronizationPolling,
+    idleSynchronizationPollingMilliseconds: _idlePolling,
     onWorkingChange: _onWorkingChange, autoTitle: _autoTitle,
     presentation: _presentation, uploaderForConversation: _uploaderForConversation,
     attachmentIntake: _attachmentIntake, voiceActivity: _voiceOptions, ...launcher } = props;
   void _endpoint; void _fetch; void _protected; void _diagnostics; void _clientId; void _deviceId; void _loading;
   void _failure; void _includeStyles; void _onWorkingChange; void _autoTitle; void _presentation; void _pendingStore;
   void _uploaderForConversation; void _attachmentIntake; void _voiceOptions; void _attachmentAdapter;
+  void _activityPolling; void _synchronizationPolling; void _idlePolling;
   const authorizationContext = EMPTY_ASSISTANT_AUTHORIZATION_CONTEXT;
   return <>{styles}<AssistantWorkingObserver workspace={state.client.workspace}
     {...(voiceMonitor ? { voiceActivity: voiceMonitor } : {})}

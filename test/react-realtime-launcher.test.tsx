@@ -5,7 +5,62 @@ const bootstrap = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("../src/client/bootstrap.js", () => ({ createHandrailAiClient: bootstrap.create }));
 import { RealtimeWorkspaceMonitor } from "../src/realtime/workspace.js";
 import { HandrailAssistantLauncher } from "../src/react-styled/index.js";
+import { InMemoryApplicationConversationPendingStore, prepareApplicationConversationSubmission } from "../src/client/session-submission.js";
+import type { ChatRequest } from "../src/protocol.js";
 afterEach(cleanup);
+it.each(["activityPollingMilliseconds", "synchronizationPollingMilliseconds", "idleSynchronizationPollingMilliseconds"] as const)(
+  "forwards %s and rebinds only when it changes, retaining pending identity", async option => {
+    bootstrap.create.mockReset();
+    const snapshot = { selectedConversationId: null, threads: [], runningCount: 0, errorCount: 0, unreadCount: 0 };
+    const workspace = { getSnapshot: () => snapshot, subscribe: () => () => {}, open: vi.fn(),
+      select: vi.fn(), markRead: vi.fn(), setVisible: vi.fn() };
+    const dispose = vi.fn();
+    bootstrap.create.mockResolvedValue({ workspace, attachmentUpload: null, activity: null, dispose,
+      capabilities: { attachments: false, documentInput: false }, presenceControllerFor: () => null,
+      catalog: { list: async () => ({ items: [], hasMore: false }),
+        capabilities: { archive: { supported: false }, restore: { supported: false } } } });
+    const props = { endpoint: "/polling", presentation: "page" as const, autoTitle: false, includeStyles: false };
+    const view = render(<HandrailAssistantLauncher {...props} {...{ [option]: 6000 }}/>);
+    await view.findByRole("button", { name: "New" });
+    const first = bootstrap.create.mock.calls[0]![0];
+    expect(first[option]).toBe(6000);
+    const pending = prepareApplicationConversationSubmission<ChatRequest>({ conversationId: "chat" as never,
+      clientId: first.conversations.clientId, revision: 0, operationId: "pending", now: "2026-10-06T00:00:00.000Z",
+      input: { content: "uncertain", request: first.buildRequest({ content: "uncertain", attachments: [] }) } });
+    await first.pendingStore.retain(pending);
+    view.rerender(<HandrailAssistantLauncher {...props} {...{ [option]: 6000 }} title="Rerender"/>);
+    expect(bootstrap.create).toHaveBeenCalledTimes(1);
+    view.rerender(<HandrailAssistantLauncher {...props} {...{ [option]: 12000 }}/>);
+    await view.findByRole("button", { name: "New" });
+    expect(bootstrap.create).toHaveBeenCalledTimes(2);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    const second = bootstrap.create.mock.calls[1]![0];
+    expect(second[option]).toBe(12000);
+    expect(second.pendingStore).toBe(first.pendingStore);
+    expect(await second.pendingStore.load("chat")).toEqual(pending);
+    expect(second.conversations.clientId).toBe(first.conversations.clientId);
+    expect(second.conversations.deviceId).toBe(first.conversations.deviceId);
+    expect(view.container.innerHTML.toLowerCase()).not.toContain(option.toLowerCase());
+    view.rerender(<HandrailAssistantLauncher {...props}/>);
+    await view.findByRole("button", { name: "New" });
+    expect(bootstrap.create).toHaveBeenCalledTimes(3);
+    expect(bootstrap.create.mock.calls[2]![0]).not.toHaveProperty(option);
+    // A new account/endpoint must not inherit the fallback journal or identity.
+    view.rerender(<HandrailAssistantLauncher {...props} endpoint="/other-account"/>);
+    await view.findByRole("button", { name: "New" });
+    expect(bootstrap.create.mock.calls[3]![0].pendingStore).not.toBe(first.pendingStore);
+    expect(bootstrap.create.mock.calls[3]![0].conversations.clientId).not.toBe(first.conversations.clientId);
+    const pendingStore = new InMemoryApplicationConversationPendingStore<ChatRequest>();
+    await pendingStore.retain(pending);
+    view.rerender(<HandrailAssistantLauncher {...props} pendingStore={pendingStore}/>);
+    await view.findByRole("button", { name: "New" });
+    expect(bootstrap.create.mock.calls[4]![0].pendingStore).toBe(pendingStore);
+    view.rerender(<HandrailAssistantLauncher {...props} pendingStore={pendingStore} {...{ [option]: 6000 }}/>);
+    await view.findByRole("button", { name: "New" });
+    expect(bootstrap.create.mock.calls[5]![0].pendingStore).toBe(pendingStore);
+    expect(await pendingStore.load("chat")).toEqual(pending);
+  });
+
 it("discovers voice in unopened conversations while the launcher is closed and disposes its observer", async () => {
   const observerDispose = vi.spyOn(RealtimeWorkspaceMonitor.prototype, "dispose");
   const onWorkingChange = vi.fn();
