@@ -544,3 +544,85 @@ it("removes local feedback when preflight fails before a submission is retained"
   expect(f.session.getSnapshot()).toMatchObject({ submitting: false, outgoingMessage: null });
   expect(f.resources.appendMutations).not.toHaveBeenCalled();
 });
+
+it.each(["forbidden", "unauthenticated"] as const)("settles %s only from canonical failure and retains the saved message", async code => {
+  const f = fixture(); await f.session.initialize();
+  vi.mocked(f.transport.startTurn).mockImplementation(async input => {
+    f.setTurn({ turnId: input.conversationTurnId, revision: 3, status: "failed", remoteMayStillBeRunning: false,
+      error: { code, message: "Admission denied; message saved", retryable: false, messageTruncated: false } });
+    return { ok: false, error: { code, message: "denied", retryable: false } };
+  });
+  const result = await f.session.sendMessage({ content: "retain me", request: { text: "retain me" } });
+  expect(result.status).toBe("failed"); expect(f.saved()).toBeNull();
+  expect(f.session.getSnapshot().control?.activeTurnId).toBeNull();
+  expect(f.resources.appendMutations).toHaveBeenCalledOnce(); expect(f.cancellation).not.toHaveBeenCalled();
+  expect(await f.session.retryPending()).toBeNull(); expect(f.transport.startTurn).toHaveBeenCalledOnce();
+});
+
+it("does not terminalize an uncertain start when a later retry is forbidden", async () => {
+  const f = fixture(); await f.session.initialize();
+  vi.mocked(f.transport.startTurn).mockResolvedValueOnce({ ok: false, error: { code: "unavailable", message: "lost acknowledgement", retryable: true } })
+    .mockResolvedValue({ ok: false, error: { code: "forbidden", message: "revoked", retryable: false } });
+  await expect(f.session.sendMessage({ content: "one identity", request: { text: "one identity" } })).rejects.toMatchObject({ code: "unavailable" });
+  const saved = f.saved();
+  await expect(f.session.retryPending()).rejects.toMatchObject({ code: "forbidden" });
+  expect(f.saved()).toEqual(saved); expect(f.transport.startTurn).toHaveBeenNthCalledWith(2, saved!.start);
+  expect(f.session.getSnapshot().hasPendingSubmission).toBe(true); expect(f.cancellation).not.toHaveBeenCalled();
+});
+
+it("honors start Retry-After across repeated explicit Retry without new writes or identities", async () => {
+  vi.useFakeTimers(); const f = fixture(); await f.session.initialize();
+  vi.mocked(f.transport.startTurn).mockResolvedValueOnce({ ok: false, error: { code: "rate_limited", message: "wait", retryable: true, retryAfterMs: 5000 } });
+  await expect(f.session.sendMessage({ content: "throttled", request: { text: "throttled" } })).rejects.toMatchObject({ code: "rate_limited" });
+  const saved = f.saved();
+  for (let i = 0; i < 3; i++) await expect(f.session.retryPending()).rejects.toMatchObject({ code: "rate_limited" });
+  expect(f.resources.appendMutations).toHaveBeenCalledOnce(); expect(f.transport.startTurn).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(f.transport.startTurn).toHaveBeenCalledOnce(); // No automatic mutation retry.
+  await f.session.retryPending();
+  expect(f.transport.startTurn).toHaveBeenNthCalledWith(2, saved!.start);
+});
+
+it("releases a terminal pending journal after reload without resubmitting", async () => {
+  const f = fixture(); await f.session.initialize();
+  vi.mocked(f.transport.startTurn).mockResolvedValue({ ok: false, error: { code: "unavailable", message: "lost", retryable: true } });
+  await expect(f.session.sendMessage({ content: "saved", request: { text: "saved" } })).rejects.toThrow();
+  f.setTurn({ turnId: f.saved()!.start.conversationTurnId, revision: 3, status: "failed", remoteMayStillBeRunning: false, error: null });
+  f.session.dispose();
+  const restarted = new ApplicationConversationSession({ conversationId: "chat" as never, clientId: "reload" as never,
+    reader: f.reader, resources: f.resources, transport: f.transport, pendingStore: f.pendingStore }); sessions.push(restarted);
+  await restarted.initialize();
+  expect(f.saved()).toBeNull(); expect(restarted.getSnapshot().hasPendingSubmission).toBe(false);
+  expect(f.transport.startTurn).toHaveBeenCalledOnce(); expect(f.resources.appendMutations).toHaveBeenCalledOnce();
+});
+
+it.each([true, false])("backs off throttled display reads while active=%s without Retry or visibility bypass", async active => {
+  vi.useFakeTimers(); const f = fixture(); await f.session.initialize();
+  if (!active) await f.session.setActive(false);
+  vi.mocked(f.reader.control).mockRejectedValue({ transportCode: "rate_limited", retryable: true, retryAfterMs: 20_000 });
+  await expect(f.session.refresh()).rejects.toMatchObject({ code: "rate_limited" });
+  const count = vi.mocked(f.reader.control).mock.calls.length;
+  await f.session.refresh(); await f.session.setActive(!active);
+  await vi.advanceTimersByTimeAsync(19_999);
+  expect(f.reader.control).toHaveBeenCalledTimes(count);
+  await vi.advanceTimersByTimeAsync(2);
+  expect(f.reader.control).toHaveBeenCalledTimes(count + 1);
+});
+
+it("keeps Retry-After when an older display read succeeds after an observer is throttled", async () => {
+  vi.useFakeTimers(); const f = fixture(); await f.session.initialize();
+  const gate = deferred<ConversationDisplayControl>(), controller = new AbortController();
+  vi.mocked(f.reader.control).mockReturnValueOnce(gate.promise)
+    .mockRejectedValueOnce({ transportCode: "rate_limited", retryable: true, retryAfterMs: 5000 })
+    .mockRejectedValueOnce({ transportCode: "unavailable", retryable: true });
+  const refreshing = f.session.refresh(); await flush();
+  const waiting = f.session.waitForTurn("pending", controller.signal);
+  const other = f.session.waitForTurn("other", controller.signal);
+  const stopped = expect(waiting).rejects.toMatchObject({ code: "observation_closed" });
+  const otherStopped = expect(other).rejects.toMatchObject({ code: "observation_closed" });
+  await flush(); gate.resolve(f.control()); await refreshing;
+  const reads = vi.mocked(f.reader.control).mock.calls.length;
+  await f.session.refresh(); await vi.advanceTimersByTimeAsync(4999);
+  expect(f.reader.control).toHaveBeenCalledTimes(reads);
+  controller.abort(); await stopped; await otherStopped;
+});

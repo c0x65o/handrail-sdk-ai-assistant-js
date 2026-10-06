@@ -29,12 +29,19 @@ const eventually = async predicate => {
 let providerGate = deferred(), observerGate = deferred(), holdObserver = false, observerHeld = 0, calls = 0;
 let displayGate = deferred(), holdDisplay = false, displayHeld = 0;
 let admissionGate = deferred(), holdAdmission = false, admissionHeld = 0, dropAdmission = false, revoked = false;
-let delayDisplayAfterAdmission = false;
+let delayDisplayAfterAdmission = false, denyStart = 0, throttleStart = false, dropStart = false;
+const savedStarts = [];
+let throttleHistory = false, throttledHistory = 0, revokeStart = false;
 let assistant, browser, server, page;
 const requests = [], errors = [];
 try {
   await persistence.persistence.migrate();
-  assistant = await createHandrailAssistant({ id: 'reopen', persistence, authorize: request => {
+  assistant = await createHandrailAssistant({ id: 'reopen', persistence, authorize: (request, action) => {
+    if (action === 'start' && revokeStart) revoked = true;
+    if (action === 'start' && throttleStart) throw new globalThis.Response('Throttled', { status: 429, headers: { 'Retry-After': '2' } });
+    if (action === 'start' && denyStart) throw new globalThis.Response(JSON.stringify({ ok: false, error: {
+      code: denyStart === 401 ? 'unauthenticated' : 'forbidden', message: 'Fixture admission denied', retryable: false,
+    } }), { status: denyStart, headers: { 'content-type': 'application/json' } });
     if (revoked) throw Error('Fixture session revoked');
     const user = request.headers.get('x-fixture-account');
     if (!['alice', 'bob'].includes(user)) throw Error('Fixture authentication required');
@@ -69,13 +76,18 @@ try {
   const code = (Array.isArray(output) ? output : [output]).flatMap(bundle => bundle.output).find(item => item.type === 'chunk').code;
   server = createServer(async (req, res) => {
     try {
-      if (req.url === '/' || req.url === '/?page=1') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end('<meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script src="/fixture.js"></script>'); return; }
+      if (req.url === '/' || req.url.startsWith('/?')) { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end('<meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script src="/fixture.js"></script>'); return; }
       if (req.url === '/fixture.js') { res.setHeader('content-type', 'text/javascript'); res.end(code); return; }
       if (!req.url.startsWith('/api/assistant')) { res.writeHead(404).end(); return; }
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = Buffer.concat(chunks).toString();
       const input = body ? JSON.parse(body) : null;
+      if (req.url.endsWith('/turns/start')) savedStarts.push(input);
       requests.push({ path: req.url, operation: input?.operation, turnId: input?.input?.turnId });
+      if (throttleHistory && req.url.endsWith('/conversations/history')) {
+        throttledHistory++;
+        res.writeHead(429, { 'Retry-After': '3' }).end('Throttled'); return;
+      }
       // Delay only the external HTTP observation, while display polling converges.
       if (holdObserver && req.url.endsWith('/conversations/history') && input?.operation === 'control' && input.input?.turnId) {
         observerHeld++; await observerGate.promise;
@@ -90,6 +102,11 @@ try {
         method: req.method, headers: { 'content-type': 'application/json',
           'x-fixture-account': req.headers['x-fixture-account'] ?? '' }, ...(body ? { body } : {}),
       }));
+      if (dropStart && req.url.endsWith('/turns/start')) {
+        dropStart = false;
+        await response.body?.cancel();
+        res.writeHead(503, { 'content-type': 'application/json' }).end('{"ok":'); return;
+      }
       if (delayDisplayAfterAdmission && req.url.endsWith('/synchronization') && input?.operation === 'append_mutations') {
         delayDisplayAfterAdmission = false; holdDisplay = true;
       }
@@ -116,7 +133,8 @@ try {
   page.setDefaultTimeout(10000);
   page.on('pageerror', error => errors.push(String(error)));
   await page.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
-  await page.goto(base + (process.env.HANDRAIL_REOPEN_PAGE === '1' ? '/?page=1' : '/'));
+  await page.goto(base + '/?' + new globalThis.URLSearchParams({ ...(process.env.HANDRAIL_REOPEN_PAGE === '1' ? { page: '1' } : {}),
+    ...(process.env.HANDRAIL_DENIED_START_TEST === '1' ? { durable: '1' } : {}) }));
   const open = () => page.getByRole('button', { name: /Open chat/ }).click();
   const send = () => page.getByRole('button', { name: 'Send message', exact: true });
   const draft = () => page.getByRole('textbox');
@@ -133,6 +151,113 @@ try {
     });
     return false;
   });
+  if (process.env.HANDRAIL_DENIED_START_TEST === '1') {
+    await open();
+    for (const status of [403, 401]) {
+      denyStart = status;
+      await draft().fill(`Saved but denied ${status}`); await ready(); await send().click();
+      await eventually(() => requests.filter(r => r.path.endsWith('/turns/start')).length === (status === 403 ? 1 : 2));
+      await eventually(() => !page.isClosed() && page.evaluate(() => !window.reopenFixture.session.getSnapshot().submitting));
+      console.log('Denied admission snapshot:', await page.evaluate(() => ({ text: document.body.innerText,
+        state: window.reopenFixture.session.getSnapshot().control })));
+      await eventually(async () => (await pool.query("SELECT count(*)::int AS n FROM handrail_ai_events WHERE payload->'payload'->>'type'='turn.failed'")).rows[0].n === (status === 403 ? 1 : 2));
+      assert.equal(calls, 0);
+      await eventually(async () => await page.getByRole('button', { name: 'Stop response', exact: true }).count() === 0);
+      if (process.env.HANDRAIL_REOPEN_SCREENSHOT && status === 403) await page.screenshot({ path: process.env.HANDRAIL_REOPEN_SCREENSHOT, fullPage: true });
+      await page.reload(); await open();
+      await page.getByText(`Saved but denied ${status}`, { exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Stop response', exact: true }).count(), 0);
+      assert.equal(calls, 0);
+    }
+    assert.equal(await admissions(), 2);
+    assert.equal(requests.filter(r => r.path.endsWith('/turns/start')).length, 2);
+    assert.equal(requests.filter(r => r.path.endsWith('/cancel')).length, 0);
+    console.log('PASS: denied 401/403 retain canonical messages, terminalize without provider calls, and converge on reload.');
+    const postStart = async (input, account = 'alice') => page.evaluate(async ({ input, account }) => {
+      const response = await globalThis.fetch('/api/assistant/turns/start', { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-fixture-account': account }, body: JSON.stringify(input) });
+      await response.text(); return response.status;
+    }, { input, account });
+    const first = savedStarts[0];
+    denyStart = 403;
+    assert.equal(await postStart(first, 'bob'), 403);
+    assert.equal(await postStart({ ...first, mutationId: 'foreign-identity' }), 403);
+    denyStart = 0;
+    assert.equal(await postStart(first), 200); // Terminal replay after authentication changes.
+    assert.equal(await postStart(first), 200);
+    assert.equal(calls, 0); assert.equal(await admissions(), 2);
+    console.log('PASS: denied foreign ownership/mismatched identity do not mutate; repeated authorized replay stays terminal with zero provider calls.');
+
+    throttleHistory = true;
+    await eventually(() => throttledHistory === 1);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await open(); await open();
+    await page.getByRole('button', { name: 'Retry conversation', exact: true }).click();
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    assert.equal(throttledHistory, 1);
+    throttleHistory = false;
+    await eventually(() => page.evaluate(() => !window.reopenFixture.session.getSnapshot().error));
+    assert.equal(calls, 0);
+    console.log('PASS: history 429 honors Retry-After across Retry and hide/reopen without a hot loop.');
+
+    const retry = () => page.getByRole('button', { name: 'Retry saved message', exact: true });
+    throttleStart = true;
+    await draft().fill('Retry throttled admission'); await ready(); await send().click();
+    await retry().waitFor();
+    await eventually(() => page.evaluate(() => !window.reopenFixture.session.getSnapshot().submitting));
+    const throttled = savedStarts.at(-1), beforeRetry = savedStarts.length;
+    await retry().evaluate(button => { button.click(); button.click(); });
+    assert.equal(savedStarts.length, beforeRetry); assert.equal(calls, 0);
+    await new Promise(resolve => setTimeout(resolve, 2100));
+    assert.equal(savedStarts.length, beforeRetry); // No automatic resubmit.
+    throttleStart = false; providerGate.resolve();
+    await retry().click(); await revealReply('Synthetic reply 1');
+    assert.deepEqual(savedStarts.at(-1), throttled); assert.equal(await admissions(), 3);
+    console.log('PASS: HTTP 429 honors Retry-After, repeated Retry does not write, and explicit retry reuses the saved identity.');
+
+    providerGate = deferred(); dropStart = true;
+    await draft().fill('Uncertain admitted execution'); await ready(); await send().click();
+    await retry().waitFor(); await eventually(() => calls === 2);
+    await eventually(() => page.evaluate(() => !window.reopenFixture.session.getSnapshot().submitting));
+    const uncertain = savedStarts.at(-1);
+    await page.reload(); await open(); await retry().waitFor();
+    denyStart = 403; await retry().click();
+    await eventually(() => page.evaluate(() => !window.reopenFixture.session.getSnapshot().submitting));
+    assert.deepEqual(savedStarts.at(-1), uncertain); assert.equal(calls, 2);
+    assert.equal(await admissions(), 4);
+    const retained = (await pool.query("SELECT payload FROM handrail_ai_documents WHERE kind='durable_turn' AND record_id=$1", [uncertain.conversationTurnId])).rows[0].payload;
+    assert.ok(['pending', 'running'].includes(retained.status));
+    await page.getByRole('button', { name: 'Stop response', exact: true }).click();
+    await eventually(async () => (await pool.query("SELECT count(*)::int AS n FROM handrail_ai_events WHERE payload->'payload'->>'type'='turn.cancelled'")).rows[0].n === 1);
+    providerGate.resolve(); denyStart = 0;
+    await page.reload(); await open();
+    await page.getByText('Uncertain admitted execution', { exact: true }).waitFor();
+    await eventually(async () => await retry().count() === 0);
+    assert.equal(calls, 2); assert.equal(await admissions(), 4);
+    console.log('PASS: network uncertainty survives reload and later denial without overwriting execution; explicit Stop settles once and reload releases the journal.');
+    revokeStart = true; denyStart = 401;
+    await draft().fill('Saved before complete revocation'); await ready(); await send().click();
+    await page.getByText('Conversation access is unavailable.', { exact: true }).waitFor();
+    await eventually(() => page.evaluate(() => !window.reopenFixture.session.getSnapshot().submitting));
+    const revokedStart = savedStarts.at(-1), startsBeforeRestore = savedStarts.length;
+    assert.equal(calls, 2);
+    assert.equal(await page.getByRole('button', { name: 'Stop response', exact: true }).count(), 0);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM handrail_ai_documents WHERE kind='durable_turn' AND record_id=$1", [revokedStart.conversationTurnId])).rows[0].n, 0);
+    revoked = false; revokeStart = false; denyStart = 0;
+    await page.reload(); await open(); await retry().waitFor();
+    assert.equal(savedStarts.length, startsBeforeRestore); assert.equal(calls, 2);
+    await retry().click(); await revealReply('Synthetic reply 3');
+    assert.deepEqual(savedStarts.at(-1), revokedStart); assert.equal(await admissions(), 5);
+    console.log('PASS: complete revocation denies settlement access, retains the original hold, hides Stop, and requires explicit same-identity Retry after authentication returns.');
+    const durableFacts = (await pool.query("SELECT payload->>'status' AS status,payload->>'attempt' AS attempt,payload->>'delegateStartAttempted' AS attempted FROM handrail_ai_documents WHERE kind='durable_turn'")).rows;
+    assert.equal(durableFacts.length, 5);
+    assert.equal(durableFacts.filter(row => row.status === 'failed' && row.attempt === '0' && row.attempted === 'false').length, 2);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM handrail_ai_events WHERE payload->'payload'->>'type'='message.created' AND payload->'payload'->>'role'='user'")).rows[0].n, 5);
+    console.log('PASS: SQL proves five unique user messages/turns, two admission failures with zero dispatch attempts, and no duplicate execution.');
+
+
+
+  } else {
   await open(); await draft().fill('First turn'); await send().click();
   await eventually(() => calls === 1);
   holdObserver = true;
@@ -238,6 +363,7 @@ try {
   assert.equal(await admissions(), 7); assert.equal(calls, 7);
   console.log('PASS: account replacement during delayed hydration isolates history; revoked authorization retains draft with zero admissions.');
   assert.ok(!(await page.evaluate(() => window.reopenFixture.errors)).includes('pending_send_exists'));
+  }
   assert.deepEqual(errors, []);
 } catch (error) {
   console.log('Fixture failure details:', { calls, errors, recentRequests: requests.slice(-8),

@@ -1,0 +1,109 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+Denied admission snapshot: {
+  text: 'Open chat\n' +
+    'Race fixture\n' +
+    'Race fixture\n' +
+    '\n' +
+    'Fixture admission denied\n' +
+    '\n' +
+    'Retry saved message\n' +
+    'The message could not be sent. Check your connection and try again.',
+  state: {
+    schemaVersion: 1,
+    conversationId: '6060951d-115a-452e-b2c6-095b98433ec3',
+    status: 'ready',
+    generation: 0,
+    revision: 0,
+    canonicalRevision: 0,
+    activeTurnId: null,
+    activeTurn: null,
+    latestTurn: null,
+    requestedTurn: null,
+    hasPendingApprovals: false
+  }
+}
+Fixture failure details: {
+  calls: 0,
+  errors: [],
+  recentRequests: [
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/activity',
+      operation: 'list',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    }
+  ],
+  browser: {
+    text: 'Open chat\n' +
+      'Running\n' +
+      'Race fixture\n' +
+      'Race fixture\n' +
+      'Saved but denied 403\n' +
+      'Copy\n' +
+      'Retry saved message\n' +
+      'Response queued.\n' +
+      '•••\n' +
+      'Queued…\n' +
+      'Waiting to start.\n' +
+      'The message could not be sent. Check your connection and try again.',
+    errors: [ 'forbidden' ],
+    state: {
+      kind: 'display',
+      conversationId: '6060951d-115a-452e-b2c6-095b98433ec3',
+      control: [Object],
+      window: [Object],
+      related: [Array],
+      hasMoreRelated: false,
+      relatedTruncated: false,
+      loading: false,
+      submitting: false,
+      hasPendingSubmission: true,
+      error: null,
+      outgoingMessage: null
+    }
+  }
+}
+file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:27
+  throw Error('Fixture condition did not settle');
+        ^
+
+Error: Fixture condition did not settle
+    at eventually (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:27:9)
+    at async file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:148:7
+
+Node.js v22.23.1
+Owned temporary PostgreSQL cluster stopped.

@@ -1,3 +1,4 @@
+import { ReadBackoff } from "../read-backoff.js";
 import type { ConversationId } from "./events.js";
 import { emitAiDiagnostic, type AiDiagnosticSink } from "../diagnostics.js";
 
@@ -411,6 +412,7 @@ export class PollingConversationActivity implements ConversationActivityReadable
   #controller: AbortController | null = null;
   #liveController: AbortController | null = null;
   #pollLiveUpdates: Set<string> | null = null;
+  readonly #backoff = new ReadBackoff();
 
   constructor(options: PollingConversationActivityOptions) {
     const interval = options.intervalMilliseconds ?? 5_000;
@@ -456,6 +458,7 @@ export class PollingConversationActivity implements ConversationActivityReadable
   }
   async refresh(): Promise<void> {
     if (this.#controller) return;
+    if (this.#backoff.remaining) return;
     if (this.#timer !== null) clearTimeout(this.#timer);
     this.#timer = null;
     const controller = new AbortController(); this.#controller = controller;
@@ -464,12 +467,14 @@ export class PollingConversationActivity implements ConversationActivityReadable
     try {
       const records = await this.#load(controller.signal);
       if (controller.signal.aborted) return;
+      this.#backoff.succeeded();
       // Events received while this request was pending are newer than its snapshot.
       this.#store.replace([
         ...records.filter((record) => !liveUpdates.has(String(record.conversationId))),
         ...this.#store.getSnapshot().filter((record) => liveUpdates.has(String(record.conversationId))),
       ]);
     } catch (cause) {
+      if (!controller.signal.aborted) this.#backoff.failed(cause);
       if (!controller.signal.aborted) emitAiDiagnostic(this.#diagnostics, {
         domain: "activity", operation: "poll", phase: "failed",
         code: "activity_poll_unavailable", retryable: true, cause,
@@ -478,9 +483,9 @@ export class PollingConversationActivity implements ConversationActivityReadable
     finally {
       if (this.#controller === controller) this.#controller = null;
       if (this.#pollLiveUpdates === liveUpdates) this.#pollLiveUpdates = null;
-      if (!controller.signal.aborted) this.#timer = setTimeout(() => {
+      if (!controller.signal.aborted && !this.#backoff.terminal) this.#timer = setTimeout(() => {
         this.#timer = null; void this.refresh();
-      }, this.#intervalMilliseconds);
+      }, Math.max(this.#intervalMilliseconds, this.#backoff.remaining));
     }
   }
   stop(): void {

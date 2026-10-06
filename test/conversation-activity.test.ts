@@ -266,3 +266,16 @@ describe("conversation activity", () => {
     await reader.cancel();
   });
 });
+
+it("backs off activity throttling, honors Retry-After and stops polling on denial", async () => {
+  vi.useFakeTimers();
+  const load = vi.fn().mockRejectedValueOnce({ retryable: true, retryAfterMs: 20_000 })
+    .mockRejectedValue({ retryable: false, transportCode: "forbidden" });
+  const activity = new PollingConversationActivity({ load, intervalMilliseconds: 500 });
+  try {
+    await activity.refresh(); await activity.refresh();
+    await vi.advanceTimersByTimeAsync(19_999); expect(load).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1); expect(load).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000); expect(load).toHaveBeenCalledTimes(2);
+  } finally { activity.stop(); vi.useRealTimers(); }
+});

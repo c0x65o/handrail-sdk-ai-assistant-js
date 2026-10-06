@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createApplicationGatewayDisplayHistory } from "../src/transports/application-gateway.js";
 import {
   ApprovalProposalStoreError,
   ConversationCatalogError,
@@ -425,4 +426,20 @@ describe("application-owned gateway transport", () => {
     }));
     expect(synchronization).toHaveBeenCalledTimes(3);
   });
+});
+
+it.each([401, 403, 429])("normalizes plain HTTP %s and Retry-After for starts and reads", async status => {
+  const fetch = vi.fn(async () => new Response("not JSON", { status, headers: { "Retry-After": "17" } }));
+  const transport = createApplicationGatewayTransport({ baseUrl: "https://app.test", fetch });
+  const result = await transport.startTurn({ conversationId: "chat", conversationTurnId: "turn" as never,
+    mutationId: "message", idempotencyKey: "start", request: {} });
+  const expected = { code: status === 401 ? "unauthenticated" : status === 403 ? "forbidden" : "rate_limited",
+    retryable: status === 429, retryAfterMs: 17_000 };
+  expect(result).toMatchObject({ ok: false, error: expected });
+  const resources = createApplicationGatewayResourceClient({ baseUrl: "https://app.test", fetch });
+  await expect(resources.listActivity!()).rejects.toMatchObject({ transportCode: expected.code,
+    retryable: expected.retryable, retryAfterMs: expected.retryAfterMs });
+  const history = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test", fetch });
+  await expect(history.control({ conversationId: "chat" })).rejects.toMatchObject({ transportCode: expected.code,
+    retryable: expected.retryable, retryAfterMs: expected.retryAfterMs });
 });

@@ -1,4 +1,5 @@
 import type { ConversationMessageRecord } from "../conversation/state.js";
+import { ReadBackoff } from "../read-backoff.js";
 import type { ConversationApprovalDisplayDecision, ConversationApprovalDisplayDecisionInput, ConversationApprovalDisplayReview, ConversationApprovalDisplayReviewInput } from "../conversation/approval-display-review.js";
 import type { ConversationClientId, ConversationId, ConversationTurnCancellationReason } from "../conversation/events.js";
 import type { ConversationDisplayControl, ConversationDisplayControlInput, ConversationDisplayTurnControl } from "../conversation/display-control.js";
@@ -60,7 +61,7 @@ export interface ApplicationConversationSessionOptions<TRequest> {
   readonly now?: () => string;
 }
 export class ApplicationConversationSessionError extends Error {
-  constructor(readonly code: string, message: string, readonly retryable = false) {
+  constructor(readonly code: string, message: string, readonly retryable = false, readonly retryAfterMs?: number) {
     super(message); this.name = "ApplicationConversationSessionError";
   }
 }
@@ -79,7 +80,8 @@ function normalize(cause: unknown): ApplicationConversationSessionError {
     : new ApplicationConversationSessionError(errorCode(cause), denied(cause)
       ? "Conversation access is unavailable." : cause instanceof ApplicationGatewayResourceError
         ? cause.message : "Conversation could not be refreshed. Try again.", !denied(cause) &&
-        !(cause && typeof cause === "object" && "retryable" in cause && cause.retryable === false));
+        !(cause && typeof cause === "object" && "retryable" in cause && cause.retryable === false),
+        cause && typeof cause === "object" && "retryAfterMs" in cause && typeof cause.retryAfterMs === "number" ? cause.retryAfterMs : undefined);
 }
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -126,6 +128,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   private observationTurnId: string | null = null;
   private poll: ReturnType<typeof setTimeout> | undefined;
   private wake: ReturnType<typeof setTimeout> | undefined;
+  private readonly readBackoff = new ReadBackoff();
+  private readonly startBackoff = new ReadBackoff();
   private followingLatest = true;
   private preparingSend = false;
   private outgoing: Exclude<ApplicationConversationSessionSnapshot["outgoingMessage"], undefined> = null;
@@ -173,19 +177,29 @@ export class ApplicationConversationSession<TRequest = unknown> {
     try {
       const pending = await this.options.pendingStore.load(this.options.conversationId); this.assertOpen();
       this.publish({ hasPendingSubmission: pending !== null }); await this.refresh();
+      if (pending) {
+        const control = await this.options.reader.control({ conversationId: this.options.conversationId,
+          turnId: pending.start.conversationTurnId }, this.lifetime.signal);
+        this.assertOpen();
+        if (control.status === "ready" && control.requestedTurn && executionTerminal(control.requestedTurn)) {
+          await this.cleanAcceptedDraft(pending);
+          await this.options.pendingStore.acknowledge(pending); this.assertOpen();
+          this.publish({ hasPendingSubmission: false });
+        }
+      }
     } catch (cause) { const error = normalize(cause); this.publish({ error }); throw error; }
     finally { this.schedulePoll(); }
   }
   private schedulePoll() {
     clearTimeout(this.poll);
-    if (this.lifetime.signal.aborted || this.state.error && !this.state.error.retryable) return;
+    if (this.lifetime.signal.aborted || this.readBackoff.terminal || this.state.error && !this.state.error.retryable) return;
     this.poll = setTimeout(() => {
       void this.refresh().catch(() => undefined).finally(() => this.schedulePoll());
-    }, this.active || this.control?.activeTurn ? this.pollMilliseconds : this.idlePollMilliseconds);
+    }, Math.max(this.readBackoff.remaining, this.active || this.control?.activeTurn ? this.pollMilliseconds : this.idlePollMilliseconds));
   }
   private scheduleRefresh() {
-    if (this.wake || this.lifetime.signal.aborted || this.state.error && !this.state.error.retryable) return;
-    this.wake = setTimeout(() => { this.wake = undefined; void this.refresh().catch(() => undefined); }, 100);
+    if (this.wake || this.lifetime.signal.aborted || this.readBackoff.terminal || this.state.error && !this.state.error.retryable) return;
+    this.wake = setTimeout(() => { this.wake = undefined; void this.refresh().catch(() => undefined); }, Math.max(100, this.readBackoff.remaining));
   }
   setFollowingLatest(value: boolean): void { this.followingLatest = value; this.publish(); }
   get supportsApprovalHistory(): boolean { return this.options.approvalHistory === true; }
@@ -299,6 +313,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   refresh(): Promise<void> {
     this.assertOpen();
     if (this.pending) return this.pending;
+    if (this.readBackoff.remaining) return Promise.resolve();
+    const readGeneration = this.readBackoff.generation;
     const signal = AbortSignal.any([this.lifetime.signal, this.displayLifetime.signal]);
     const work = Promise.resolve().then(async () => {
       this.publish({ loading: true });
@@ -341,7 +357,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
             try { await this.readRelated(signal, true); } catch (cause) { this.relatedKey = ""; throw cause; }
           }
         }
-        if (!signal.aborted) this.publish({ error: null });
+        if (!signal.aborted) { this.readBackoff.succeeded(readGeneration); this.publish({ error: null }); }
       } catch (cause) {
         if (signal.aborted) return;
         if (denied(cause)) {
@@ -350,7 +366,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
           this.control = null; this.outgoing = null; this.clearRelated();
           await this.window.select(null);
         }
-        const error = normalize(cause); this.publish({ error }); throw error;
+        const error = normalize(cause); this.readBackoff.failed(error); this.publish({ error }); throw error;
       } finally { if (!this.lifetime.signal.aborted) this.publish({ loading: false }); }
     }).finally(() => { if (this.pending === work) this.pending = null; });
     this.pending = work; return work;
@@ -458,6 +474,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
       if (this.submission.json !== json) return Promise.reject(new ApplicationConversationSessionError("pending_send_exists", "Another message is being submitted."));
       this.acceptCallback(onAccepted); return this.submission.promise;
     }
+    if (this.startBackoff.remaining) return Promise.reject(new ApplicationConversationSessionError("rate_limited",
+      "Your message is saved. Wait before retrying its original submission.", true, this.startBackoff.remaining));
     this.showOutgoing(saved);
     this.admitted = null; this.callbacks = []; this.acceptCallback(onAccepted);
     let retained = false;
@@ -482,46 +500,66 @@ export class ApplicationConversationSession<TRequest = unknown> {
       }
       if (this.outgoing) this.outgoing = { ...this.outgoing, status: "sent" };
       this.publish();
-      if (saved.localDraft) {
-        try {
-          if (saved.localDraft.textVersion !== undefined) {
-            if (!this.draft) throw new Error("No local draft owner");
-            await this.draft.reconcileAccepted(saved.localDraft.textVersion);
-          }
-          if (saved.localDraft.fileIds?.length) {
-            if (!this.options.reconcileAcceptedFiles) throw new Error("No local file owner");
-            await this.options.reconcileAcceptedFiles(saved.localDraft.fileIds);
-          }
-        } catch {
-          throw new ApplicationConversationSessionError("draft_cleanup_failed",
-            "Your message was saved, but its local draft could not be cleared. Retry the saved message.", true);
-        }
-      }
+      await this.cleanAcceptedDraft(saved);
       this.assertOpen(); this.admitted = saved;
       for (const callback of this.callbacks.splice(0)) this.acceptCallback(callback);
       this.assertOpen();
-      const control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId: saved.start.conversationTurnId }, this.lifetime.signal);
+      let control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId: saved.start.conversationTurnId }, this.lifetime.signal);
       this.assertOpen();
       if (control.status !== "ready" || !control.requestedTurn) throw new ApplicationConversationSessionError("admission_unconfirmed", "The saved turn is not visible yet.", true);
       this.scheduleRefresh();
       if (!terminal(control.requestedTurn)) {
         const started = await this.options.transport.startTurn(saved.start);
-        if (!started.ok) throw new ApplicationConversationSessionError(started.error.code, started.error.message, started.error.retryable);
-        if (this.lifetime.signal.aborted) { started.value.observation.disconnect(); this.assertOpen(); }
-        if (started.value.conversationId !== this.options.conversationId || started.value.turnId !== saved.start.conversationTurnId || started.value.mutationId !== saved.start.mutationId) {
-          started.value.observation.disconnect(); throw new ApplicationConversationSessionError("invalid_start", "The server acknowledged a different turn.");
+        if (!started.ok) {
+          if (started.error.code === "rate_limited") this.startBackoff.failed(started.error);
+          // The HTTP rejection alone cannot settle a previous uncertain start.
+          // Only an authorized canonical terminal control releases this journal.
+          if (!started.error.retryable && ["unauthenticated", "forbidden"].includes(started.error.code)) {
+            control = await this.options.reader.control({ conversationId: this.options.conversationId,
+              turnId: saved.start.conversationTurnId }, this.lifetime.signal);
+            this.assertOpen();
+          }
+          if (control.status !== "ready" || !control.requestedTurn || !executionTerminal(control.requestedTurn)) {
+            throw new ApplicationConversationSessionError(started.error.code, started.error.message, started.error.retryable, started.error.retryAfterMs);
+          }
+        } else {
+          this.startBackoff.succeeded();
+          if (this.lifetime.signal.aborted) { started.value.observation.disconnect(); this.assertOpen(); }
+          if (started.value.conversationId !== this.options.conversationId || started.value.turnId !== saved.start.conversationTurnId || started.value.mutationId !== saved.start.mutationId) {
+            started.value.observation.disconnect(); throw new ApplicationConversationSessionError("invalid_start", "The server acknowledged a different turn.");
+          }
+          this.observe(started.value.observation, saved.start.conversationTurnId);
         }
-        this.observe(started.value.observation, saved.start.conversationTurnId);
       }
       await this.options.pendingStore.acknowledge(saved); this.assertOpen();
       this.publish({ hasPendingSubmission: false });
-      return terminal(control.requestedTurn) ? control.requestedTurn : this.waitForTurn(saved.start.conversationTurnId);
+      if (control.requestedTurn && terminal(control.requestedTurn)) {
+        await this.refresh(); return control.requestedTurn;
+      }
+      return this.waitForTurn(saved.start.conversationTurnId);
     }).catch((cause: unknown) => {
       if (!retained || denied(cause)) this.outgoing = null;
       if (this.outgoing?.status === "sending") this.outgoing = { ...this.outgoing, status: "unconfirmed" };
       const error = normalize(cause); this.publish({ error }); throw error; })
       .finally(() => { this.submission = null; this.callbacks = []; this.admitted = null; this.publish({ submitting: false }); });
     this.submission = { json, promise }; this.publish({ submitting: true }); return promise;
+  }
+  private async cleanAcceptedDraft(saved: ApplicationConversationSubmission<TRequest>): Promise<void> {
+    if (saved.localDraft) {
+      try {
+        if (saved.localDraft.textVersion !== undefined) {
+          if (!this.draft) throw new Error("No local draft owner");
+          await this.draft.reconcileAccepted(saved.localDraft.textVersion);
+        }
+        if (saved.localDraft.fileIds?.length) {
+          if (!this.options.reconcileAcceptedFiles) throw new Error("No local file owner");
+          await this.options.reconcileAcceptedFiles(saved.localDraft.fileIds);
+        }
+      } catch {
+        throw new ApplicationConversationSessionError("draft_cleanup_failed",
+          "Your message was saved, but its local draft could not be cleared. Retry the saved message.", true);
+      }
+    }
   }
   private acceptCallback(callback: ConversationRuntimeSendMessageInput<TRequest>["onAccepted"]) {
     if (!callback || this.lifetime.signal.aborted) return;
@@ -545,6 +583,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
     try {
       for (;;) {
         if (lifetime.aborted) throw new ApplicationConversationSessionError("observation_closed", "Conversation observation was closed.");
+        if (this.readBackoff.remaining) await delay(this.readBackoff.remaining, lifetime);
         try {
           const control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId }, lifetime);
           if (lifetime.aborted) continue;
@@ -556,8 +595,11 @@ export class ApplicationConversationSession<TRequest = unknown> {
             void this.refresh().catch(() => undefined);
             this.assertOpen(); return control.requestedTurn;
           }
-        } catch (cause) { if (denied(cause)) throw normalize(cause); }
-        await delay(this.pollMilliseconds, lifetime);
+        } catch (cause) {
+          const error = normalize(cause); this.readBackoff.failed(error);
+          if (!error.retryable) throw error;
+        }
+        await delay(Math.max(this.pollMilliseconds, this.readBackoff.remaining), lifetime);
       }
     } finally { this.waits.delete(key); }
   }

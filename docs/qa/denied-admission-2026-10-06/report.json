@@ -1,0 +1,147 @@
+{
+  "workRequest": "deb2aeaf-e201-4bff-9e21-99777dfbeb33",
+  "title": "Denied assistant admission lifecycle",
+  "baseline": {
+    "version": "0.2.77",
+    "gitSha": "699dc19f0b96b86d3fcec4315730ac30495d86fa",
+    "reproduced": true,
+    "method": "Built the initially clean exact checkout through npm run build, then ran the real high-level gateway, disposable PostgreSQL 15 and rendered Chromium fixture. The test fixture was added before production source edits; this was a source fixture, not an installed Mills build.",
+    "result": "Expected failing baseline: one /turns/start authorization rejection, zero synthetic provider calls, saved user message and active queued turn; no canonical turn.failed event. The UI remained Queued / Waiting to start with a pending journal and send error.",
+    "evidence": "denied-before.log"
+  },
+  "rootCause": [
+    "Synchronization admits the canonical user message and turn.started before /turns/start authorization. A denied start previously returned before creating any durable execution record, so canonical history kept the turn queued indefinitely.",
+    "The browser clears the accepted draft after canonical save, then retained the unresolved submission on start rejection. A subsequent successful display read cleared the send error but still showed the orphaned queued control.",
+    "Display and activity polling retried failures at a fixed interval. Display-history error parsing also discarded Retry-After, especially for plain-text host/proxy 429 responses. The real HTTP/browser fixture reproduced the missing delay.",
+    "Preview omitting visible on mounted hidden sections is a separate host visibility defect. The SDK cannot infer section visibility from a host CSS/hidden container. The exact cause of Preview's reported 53 history and 7 activity throttles, or collateral Chat throttling, is not established by this local fixture."
+  ],
+  "repair": [
+    "The gateway offers a trusted rejection callback only for definitive 401/403. The high-level assistant independently authenticates the conversation read policy and verifies catalog ownership and exact saved message, mutation, text and attachment identities.",
+    "An atomic durable-store create reserves an unstarted rejected identity as failed, with zero dispatch attempts and admissionRejected=true. Existing or concurrently admitted records are never overwritten or cancelled. The ordinary reconciler derives canonical terminal history and activity. Rejection settlement does not run provider work or automatic title generation.",
+    "The session releases its journal only after authorized canonical terminal evidence, including after reload. Accepted text/files are cleaned using their existing exact draft receipts; the canonical message remains available. No automatic start, resubmit or new identity is introduced.",
+    "Plain-text/empty 401/403 and 429 responses are normalized for start, resource and bounded display reads. Network/invalid successful acknowledgements remain uncertain.",
+    "Failed display/observer and activity reads back off exponentially from 1s to 30s, with Retry-After as a minimum (bounded to the safe timer range). Terminal read denials stop scheduled polling. Repeated manual Retry and visibility changes cannot bypass an in-memory cooldown. Start 429 retains the original journal and gates explicit retry; it never automatically retries mutations. Concurrent stale successes cannot clear a newer cooldown, and concurrent failures preserve the longest outstanding Retry-After."
+  ],
+  "safetyAndLimits": [
+    "Authentication, grants, provider/tool policy and rate-limit configuration remain unchanged. No migration, new endpoint, consumer change, platform/database/queue mutation, deployment, external model call, version bump, commit or push was performed.",
+    "If independent authentication/ownership is unavailable (complete revocation), settlement cannot acquire authority to write. The original journal remains held, inaccessible controls are removed, and only an explicit retry after restored authentication may reuse that identity. A later denied retry cannot terminalize an already admitted uncertain execution.",
+    "Canonical terminal rejection is enabled by createHandrailAssistant. A custom low-level gateway must provide its own correctly authorized rejectStart callback; client-only upgrade cannot create server authority.",
+    "Historical orphaned queued turns from older servers carry no retained denial proof. This patch does not infer a terminal outcome or migrate them automatically. Reconcile using original identities and current authority, or explicit Stop under the existing cancellation contract.",
+    "Retry-After cooldown state belongs to the live client instance; full reload creates a new read lifecycle. Durable submission identity survives reload when an account/API-scoped pending store is installed.",
+    "Linked Flutter source remains unchanged. Phone evidence is Chromium mobile emulation (390x844, touch), not a physical-device/native acceptance claim."
+  ],
+  "verification": {
+    "typecheck": {
+      "command": "npm run typecheck",
+      "result": "pass",
+      "evidence": "typecheck.log"
+    },
+    "build": {
+      "command": "npm run build",
+      "result": "pass",
+      "evidence": "build.log"
+    },
+    "lint": {
+      "command": "npx eslint (all changed source, tests and fixture script)",
+      "result": "pass",
+      "evidence": "lint.log"
+    },
+    "focusedTests": {
+      "result": "pass",
+      "files": 11,
+      "tests": 264,
+      "workers": 1,
+      "evidence": "focused-tests.log"
+    },
+    "finalAdmissionChecks": {
+      "result": "pass",
+      "files": 2,
+      "tests": 49,
+      "workers": 1,
+      "reason": "Reran after adding rejection validation of replay_error.",
+      "evidence": "final-admission-tests.log"
+    },
+    "desktop": {
+      "result": "pass",
+      "viewport": "1440x1000",
+      "evidence": [
+        "denied-desktop.log",
+        "denied-desktop.png"
+      ]
+    },
+    "phonePage": {
+      "result": "pass",
+      "viewport": "390x844, touch, presentation=page, visible prop",
+      "evidence": [
+        "denied-phone.log",
+        "denied-phone.png"
+      ]
+    },
+    "browserScenarios": [
+      "Definitive 401/403 after canonical save: failed/non-running control, no Stop, retained message across reload, one start per submission, zero provider calls.",
+      "Foreign owner and mismatched mutation denied; repeated authorized replay of rejected identity remains terminal and dispatches nothing.",
+      "History 429 respects Retry-After through Retry and hide/reopen; start 429 prevents immediate repeated Retry and has no automatic resubmit.",
+      "Lost start acknowledgement after durable admission survives IndexedDB reload; later 403 does not overwrite the running record; explicit Stop settles once and reload releases the journal.",
+      "Complete revocation prevents settlement writes and hides Stop. Reload after authentication restoration does not start work; explicit Retry uses the identical saved start.",
+      "Each full scenario ends with five unique canonical user messages and five turns, two failed records with attempt=0/delegateStartAttempted=false, and three synthetic provider calls only for separately authorized scenarios."
+    ],
+    "reopenEarlyStop": {
+      "result": "pass",
+      "evidence": "reopen-early-stop.log",
+      "coverage": "Phone/page close/reopen, delayed observer/hydration/admission, next-draft retention, Enter/form guards, repeated Send, lost synchronization acknowledgement, early/repeated Stop, late-output suppression, account replacement, revoked admission."
+    },
+    "harness": "Existing test/run-agent-stop-postgres.mjs creates and removes its own PostgreSQL 15 cluster, non-superuser fixture role and disposable database. Persistence tests use the SDK SQL stores/migrations and real gateway. Existing focused SQL suites additionally use PGlite. Synthetic provider boundary only; no shared DB or production data.",
+    "environmentRecovery": "Default Playwright browser path was absent; reused an existing cached Chromium through HANDRAIL_TEST_CHROMIUM. Initial lint issues and a test-only session observation gap after reload were corrected; final checks above passed.",
+    "finalPollingChecks": {
+      "result": "pass",
+      "files": 3,
+      "tests": 69,
+      "workers": 1,
+      "evidence": "final-polling-tests.log",
+      "coverage": "Includes concurrent display/observer failures: an older success or a shorter later failure cannot erase the longest Retry-After cooldown."
+    }
+  },
+  "nativeEvidenceAccess": {
+    "currentContext": "Handrail MCP confirmed this SDK request, no linked projects/campaigns, no configured dev services or runtime capabilities.",
+    "millsRequest": "get_work_request(79c123b9-22fd-4711-84c2-91840a482614) returned Work request not found in this run scope.",
+    "unverified": "Current native Mills artifacts and Preview campaign 72b59159-5642-43b1-9687-cd17c042e9e5 were not independently read. Supplied owner evidence guided the exact-SDK reproduction; no claim of installed Mills/Preview or physical-phone acceptance."
+  },
+  "reproduce": {
+    "prerequisites": "Node dependencies from this checkout, existing locked pg fixture dependency, PostgreSQL 15 binaries at /usr/lib/postgresql/15/bin, Playwright Chromium or HANDRAIL_TEST_CHROMIUM pointing to an installed executable.",
+    "build": "npm run build",
+    "desktop": "HANDRAIL_REOPEN_SEND_TEST=1 HANDRAIL_DENIED_START_TEST=1 node test/run-agent-stop-postgres.mjs",
+    "phonePage": "HANDRAIL_REOPEN_SEND_TEST=1 HANDRAIL_DENIED_START_TEST=1 HANDRAIL_REOPEN_MOBILE=1 HANDRAIL_REOPEN_PAGE=1 node test/run-agent-stop-postgres.mjs",
+    "reopenEarlyStop": "HANDRAIL_REOPEN_SEND_TEST=1 HANDRAIL_REOPEN_MOBILE=1 HANDRAIL_REOPEN_PAGE=1 node test/run-agent-stop-postgres.mjs",
+    "screenshots": "Optionally set HANDRAIL_REOPEN_SCREENSHOT to a PNG output path."
+  },
+  "delivery": {
+    "candidateVersion": null,
+    "candidateGitSha": null,
+    "state": "Intended source changes remain uncommitted. Handrail post-agent release owns the actual version bump, commit and push. Baseline 0.2.77/699dc19 is not the fixed release."
+  },
+  "installedConsumerQualification": [
+    "Obtain the actual published package version and full 40-character Git SHA from Handrail post-agent release output. Freeze that exact revision for both Mills and Preview; do not substitute the baseline or a branch/tag.",
+    "In separately authorized consumer work, pin @handrail/ai-assistant to git+https://github.com/c0x65o/handrail-sdk-ai-assistant-js.git#<published-full-sha>, regenerate the matching package-manager lockfile and exact-SHA install-script allowlists, and use the normal install/build pipeline. Upgrade both gateway/server and browser bundle. No file/workspace/tarball/registry installation or dist patch.",
+    "Record consumer version/SHA, installed SDK package version, manifest/lockfile resolved Git SHA and bundle provenance. Update any archived fixture assertion that freezes an old SDK SHA to the assigned candidate without discarding baseline evidence.",
+    "Using disposable PostgreSQL, the real host authorization policy and synthetic provider/tool boundaries, deny only start after saving a message. For 401 and 403 require canonical failed state, retained message/attachments, no false Stop after close/reopen/reload, zero provider/effect calls and no duplicate message/turn rows.",
+    "Exercise delayed/lost start and synchronization acknowledgements, transient 429 with both Retry-After seconds and HTTP-date, repeated Retry/Stop, authentication replacement and total revocation. Uncertain starts must retain original identities and must not be overwritten by later denial. No automatic resubmit.",
+    "Repeat immediate follow-up after completed response and close/reopen under slow hydration/observation; retain the 0.2.77 reopen/earlyStop qualification and attachment/draft receipt checks.",
+    "Preview must pass visible=false for mounted inactive page sections and visible=true when shown. Verify history/activity request counts under 403/429 in both active and hidden sections. Preserve host auth/rate limits and capture correlated network/server diagnostics before attributing collateral Chat throttling.",
+    "Collect installed desktop and actual-phone screenshots, network traces and durable/provider/effect counts in each native QA campaign. Installed Mills/Preview qualification and any release/deployment remain downstream owner workflow steps."
+  ],
+  "sourceSha256": {
+    "scripts/check-reopen-send-browser.mjs": "e6bf6e3d4e0919690069605c6f908a760e0692d56c9a17b637633be2026342e6",
+    "src/client/application-session.ts": "aa522fe90110e4137f6f3de2a5e3e17c6b9371bd4cfbc3d41be69dd69d042e8a",
+    "src/conversation/activity.ts": "c5bff1f52e097e2a5788db7d1b369e45fe43e070428607141af769562b463e53",
+    "src/server/assistant.ts": "ff501f859ac43d821a6134a32c4286a97c600961759160b6e3630032e586a74e",
+    "src/sync/durable-application-adapter.ts": "cd07641788aba28791b8b14168d8619b22dad4562d66871cc2a999e07ee808db",
+    "src/transports/application-gateway.ts": "5d35def5803ac73cd3183e961c031b51a38ce48e34114a415122cbaf9e35d16e",
+    "src/transports/durable.ts": "a970b60a5c193bd2a2c18d20ec8965549d2f457d5e5c15f24c612688cb6dfa2c",
+    "test/application-gateway.test.ts": "2ff3582641bd8404b43d13c3ee488c1ee6caac8cb9bd0680027e398d4aef4a6f",
+    "test/application-session.test.ts": "e7981cd94ec9f9ceb5c18ff92d1b7ef0e7632eeda24860cd6595d983508453d1",
+    "test/conversation-activity.test.ts": "a6d66ea7e725df15fb45dcf5d144d67a1310c835d2e65b63c4aa7434e86cf150",
+    "test/fixtures/reopen-send-browser.tsx": "981a42596e7678e96188a63fec074af83c5acdecf2dd71635fb5527eaf89ead3",
+    "src/read-backoff.ts": "c3ddc0e3892d6a6639ebdc953c2167378d116e68e5b0385009d57968f296e20a",
+    "src/server/reject-turn-admission.ts": "dcd9c2297b3c4dc56df0e7f735513ce8be0fd309e3d4fd775c0fc386b2e34ebd"
+  }
+}

@@ -1,0 +1,12 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ✓ test/application-session.test.ts (41 tests) 433ms
+ ✓ test/conversation-activity.test.ts (15 tests) 241ms
+ ✓ test/application-gateway.test.ts (13 tests) 51ms
+
+ Test Files  3 passed (3)
+      Tests  69 passed (69)
+   Start at  23:24:41
+   Duration  2.78s (transform 977ms, setup 0ms, collect 1.49s, tests 725ms, environment 1ms, prepare 179ms)
+

@@ -1,0 +1,87 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+Denied admission snapshot: {
+  text: 'Open chat\n' +
+    'Race fixture\n' +
+    'Race fixture\n' +
+    'Saved but denied 403\n' +
+    'Copy\n' +
+    'Request failed\n' +
+    '\n' +
+    'The assistant could not complete this request. Your message and attachments are saved.\n' +
+    '\n' +
+    'The assistant could not complete this request. Your message and attachments are saved.\n' +
+    '!\n' +
+    'Request failed\n' +
+    'Review the error in this conversation.\n' +
+    'The assistant could not complete this request. Your message and attachments are saved.',
+  state: {
+    schemaVersion: 1,
+    conversationId: 'a83d0c3e-2f3f-4c1c-8bdf-c6b1fbc86dd8',
+    status: 'ready',
+    generation: 0,
+    revision: 6,
+    canonicalRevision: 6,
+    activeTurnId: null,
+    activeTurn: null,
+    latestTurn: {
+      turnId: 'turn_7818f8d9-6066-4592-b074-ec5c6697783d',
+      revision: 6,
+      status: 'failed',
+      remoteMayStillBeRunning: false,
+      error: [Object],
+      cancellationReason: null
+    },
+    requestedTurn: null,
+    hasPendingApprovals: false
+  }
+}
+Denied admission snapshot: {
+  text: 'Open chat\n' +
+    'Race fixture\n' +
+    'Race fixture\n' +
+    'Saved but denied 403\n' +
+    'Copy\n' +
+    'Request failed\n' +
+    '\n' +
+    'The assistant could not complete this request. Your message and attachments are saved.\n' +
+    '\n' +
+    'Saved but denied 401\n' +
+    'Copy\n' +
+    'Request failed\n' +
+    '\n' +
+    'The assistant could not complete this request. Your message and attachments are saved.\n' +
+    '\n' +
+    'The assistant could not complete this request. Your message and attachments are saved.\n' +
+    '!\n' +
+    'Request failed\n' +
+    'Review the error in this conversation.\n' +
+    'The assistant could not complete this request. Your message and attachments are saved.',
+  state: {
+    schemaVersion: 1,
+    conversationId: 'a83d0c3e-2f3f-4c1c-8bdf-c6b1fbc86dd8',
+    status: 'ready',
+    generation: 0,
+    revision: 12,
+    canonicalRevision: 12,
+    activeTurnId: null,
+    activeTurn: null,
+    latestTurn: {
+      turnId: 'turn_7b81f742-3a62-4111-b1b1-869ed85da718',
+      revision: 12,
+      status: 'failed',
+      remoteMayStillBeRunning: false,
+      error: [Object],
+      cancellationReason: null
+    },
+    requestedTurn: null,
+    hasPendingApprovals: false
+  }
+}
+PASS: denied 401/403 retain canonical messages, terminalize without provider calls, and converge on reload.
+PASS: denied foreign ownership/mismatched identity do not mutate; repeated authorized replay stays terminal with zero provider calls.
+PASS: history 429 honors Retry-After across Retry and hide/reopen without a hot loop.
+PASS: HTTP 429 honors Retry-After, repeated Retry does not write, and explicit retry reuses the saved identity.
+PASS: network uncertainty survives reload and later denial without overwriting execution; explicit Stop settles once and reload releases the journal.
+PASS: complete revocation denies settlement access, retains the original hold, hides Stop, and requires explicit same-identity Retry after authentication returns.
+PASS: SQL proves five unique user messages/turns, two admission failures with zero dispatch attempts, and no duplicate execution.
+Owned temporary PostgreSQL cluster stopped.

@@ -135,6 +135,9 @@ export interface ApplicationGatewayOptions<TEvent, TRequest, TContext extends Ap
     context: TContext,
   ) => ConversationTransport<TEvent, TRequest> | Promise<ConversationTransport<TEvent, TRequest>>;
   readonly authorize: ApplicationGatewayRequestAuthorizer<TContext>["authorize"];
+  /** Trusted denial settlement, never execution. The callback must independently
+   * authenticate/authorize the saved conversation and fence any existing start. */
+  readonly rejectStart?: (request: Request, input: StartTurnInput<TRequest>, error: TransportError) => Promise<void>;
   /** Converts a durable event into the exact resume point acknowledged by clients. */
   readonly checkpointForEvent: (event: TEvent) => TurnResumePoint;
   readonly capabilities?: Partial<Omit<ApplicationGatewayCapabilities, "protocolVersion" | "authoritativeCancellation">>;
@@ -192,6 +195,19 @@ function transportStatus(error: TransportError): number {
 
 function failure(error: TransportError): Response {
   return json({ ok: false, error }, transportStatus(error));
+}
+
+function responseFailure(response: Response, error?: Partial<TransportError>): TransportError {
+  const code = response.status === 401 ? "unauthenticated" : response.status === 403 ? "forbidden"
+    : response.status === 429 ? "rate_limited" : error?.code ?? "unavailable";
+  const header = response.headers.get("retry-after");
+  const milliseconds = header === null ? NaN : /^\d+(?:\.\d+)?$/u.test(header.trim())
+    ? Number(header) * 1000 : Date.parse(header) - Date.now();
+  const hint = Number.isFinite(milliseconds) ? Math.max(0, milliseconds) : error?.retryAfterMs;
+  return { code, message: error?.message ?? (code === "rate_limited" ? "Too many requests. Try again later."
+    : code === "unauthenticated" || code === "forbidden" ? "Conversation access is unavailable." : "Application gateway request failed"),
+    retryable: code === "unauthenticated" || code === "forbidden" ? false : code === "rate_limited" ? true : error?.retryable ?? (response.ok || response.status >= 500),
+    ...(hint === undefined ? {} : { retryAfterMs: hint }) };
 }
 
 type ApplicationGatewayResourceDomain = "conversation_catalog" | "approval_proposals" | "display_history";
@@ -446,11 +462,25 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
             action !== "attachments" && action !== "attachment_download" && request.method !== "POST")) {
           return new Response(null, { status: 405, headers: { allow: action === "capabilities" || action === "attachment_download" ? "GET" : "POST" } });
         }
+        const rejectedRequest = action === "start" && options.rejectStart ? request.clone() : null;
         let authorizationContext: TContext;
         try {
           authorizationContext = await options.authorize(request, action);
         } catch (error) {
-          return authorizationFailure(error);
+          const response = authorizationFailure(error);
+          if (rejectedRequest && (response.status === 401 || response.status === 403)) {
+            try {
+              const input = await body<StartTurnInput<TRequest>>(rejectedRequest.clone(), maximumBytes);
+              await options.rejectStart!(rejectedRequest, input, {
+                code: response.status === 401 ? "unauthenticated" : "forbidden",
+                message: "Assistant admission was denied. Your message and attachments are saved.", retryable: false,
+              });
+            } catch (cause) {
+              emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "reject_start",
+                phase: "failed", code: "rejection_unsettled", retryable: true, cause });
+            }
+          }
+          return response;
         }
         if (action === "capabilities") {
           return json({ ok: true, value: capabilitiesFor(await resolveTransport(authorizationContext)) });
@@ -540,6 +570,11 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
             conversationId: input.conversationId, turnId: input.conversationTurnId, ...diagnosticCorrelation });
           const result = await transport.startTurn(input);
           if (!result.ok) {
+            if (rejectedRequest && !result.error.retryable && ["unauthenticated", "forbidden"].includes(result.error.code)) {
+              try { await options.rejectStart!(rejectedRequest, input, result.error); }
+              catch (cause) { emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "reject_start",
+                phase: "failed", code: "rejection_unsettled", retryable: true, cause }); }
+            }
             emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "start", phase: "failed",
               conversationId: input.conversationId, turnId: input.conversationTurnId,
               code: result.error.code, retryable: result.error.retryable, durationMs: Date.now() - requestStartedAt,
@@ -723,6 +758,7 @@ export interface ApplicationGatewayResourceClient {
 }
 
 export class ApplicationGatewayResourceError extends Error {
+  readonly retryAfterMs?: number;
   readonly transportCode: TransportError["code"];
   readonly retryable: boolean;
   readonly resourceDomain: ApplicationGatewayResourceDomain | undefined;
@@ -732,12 +768,14 @@ export class ApplicationGatewayResourceError extends Error {
     readonly message: string;
     readonly transportCode: TransportError["code"];
     readonly retryable: boolean;
+    readonly retryAfterMs?: number;
     readonly resourceError?: ApplicationGatewayResourceFailure;
   }) {
     super(input.message);
     this.name = "ApplicationGatewayResourceError";
     this.transportCode = input.transportCode;
     this.retryable = input.retryable;
+    if (input.retryAfterMs !== undefined) this.retryAfterMs = input.retryAfterMs;
     this.resourceDomain = input.resourceError?.domain;
     this.resourceCode = input.resourceError?.code;
   }
@@ -846,17 +884,16 @@ export function createApplicationGatewayResourceClient(
     try {
       const response = await fetcher(url, await options.protectedRequest?.({ url, ...initial }) ?? initial);
       statusCode = response.status;
-      const result = await response.json() as {
+      const result = (await response.json().catch(() => ({})) ?? {}) as {
         readonly ok?: boolean;
         readonly value?: T;
         readonly error?: Partial<TransportError>;
         readonly resourceError?: ApplicationGatewayResourceFailure;
       };
       if (!response.ok || !result.ok) {
+        const error = responseFailure(response, result.error);
         throw new ApplicationGatewayResourceError({
-          message: result.error?.message ?? "Application gateway request failed",
-          transportCode: result.error?.code ?? "unavailable",
-          retryable: result.error?.retryable ?? response.status >= 500,
+          ...error, transportCode: error.code,
           ...(result.resourceError === undefined ? {} : { resourceError: result.resourceError }),
         });
       }
@@ -947,7 +984,13 @@ export function createApplicationGatewayDisplayHistory(
     signal?.throwIfAborted();
     const response = await abortable(fetcher(target, { ...initial, ...protectedInit, redirect: "error", ...(signal ? { signal } : {}) }), signal);
     const reader = response.body?.getReader();
-    if (!reader) throw new TypeError("Empty display history response");
+    if (!reader) {
+      if (!response.ok) {
+        const error = responseFailure(response);
+        throw new ApplicationGatewayResourceError({ ...error, transportCode: error.code });
+      }
+      throw new TypeError("Empty display history response");
+    }
     const chunks: Uint8Array[] = []; let size = 0;
     try {
       for (;;) {
@@ -961,11 +1004,12 @@ export function createApplicationGatewayDisplayHistory(
     signal?.throwIfAborted();
     const bytes = new Uint8Array(size); let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    const result = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as { ok?: boolean; value?: T; error?: Partial<TransportError>;
-      resourceError?: ApplicationGatewayResourceFailure };
+    let result: { ok?: boolean; value?: T; error?: Partial<TransportError>; resourceError?: ApplicationGatewayResourceFailure };
+    try { result = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+    catch (cause) { if (response.ok) throw cause; result = {}; }
     if (!response.ok || result?.ok !== true || result?.value === undefined) {
-      throw new ApplicationGatewayResourceError({ message: result?.error?.message ?? "History is unavailable",
-        transportCode: result?.error?.code ?? "unavailable", retryable: result?.error?.retryable ?? true,
+      const error = responseFailure(response, result?.error);
+      throw new ApplicationGatewayResourceError({ ...error, transportCode: error.code,
         ...(result?.resourceError ? { resourceError: result.resourceError } : {}) });
     }
     return result.value;
@@ -1108,7 +1152,8 @@ export function createApplicationGatewayTransport<TEvent = unknown, TRequest = u
         const connection = new AbortController();
         const response = await invoke("/turns/start", input, connection.signal);
         if (!response.ok) {
-          const result = await response.json() as TransportResult<TurnHandle<TEvent>>;
+          const body = (await response.json().catch(() => ({})) ?? {}) as { error?: Partial<TransportError> };
+          const result = { ok: false as const, error: responseFailure(response, body.error) };
           emitAiDiagnostic(options.diagnostics, { domain: "gateway", operation: "start", phase: "failed",
             conversationId: input.conversationId, turnId: input.conversationTurnId,
             durationMs: Date.now() - startedAt, statusCode: response.status,

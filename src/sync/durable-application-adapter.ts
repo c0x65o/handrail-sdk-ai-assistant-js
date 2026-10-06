@@ -2,7 +2,7 @@ import { conversationCancellationReason as cancellationReason } from "../cancell
 import { parseStreamEvent, type ChatRequest, type StreamEvent } from "../protocol.js";
 import { sha256Text } from "../provider-context.js";
 import type { DurableApplicationTurnStore } from "../transports/durable.js";
-import type { ConversationTransport } from "../transports/types.js";
+import type { ConversationTransport, StartTurnInput } from "../transports/types.js";
 import type { ConversationEvent, ConversationEventPayload, ConversationId } from "../conversation/events.js";
 import type { ConversationSyncMutationEvent } from "./types.js";
 import type { ConversationEventStore } from "../conversation/event-store.js";
@@ -47,6 +47,45 @@ export function createDurableApplicationConversationSync<TAuthorizationContext>(
   });
 }
 
+/** Verify the exact canonical user admission without creating an executor. */
+export async function validateSavedApplicationTurnStart(input: StartTurnInput<ChatRequest>, eventStore: ConversationEventStore) {
+  const replay = await replayConversation({ conversationId: input.conversationId as ConversationId,
+    eventStore, checkpointPolicy: false });
+  const state = replay.state;
+  replay.store.destroy();
+  if (state.replay_error !== null) throw new TypeError("Saved conversation history is invalid.");
+  const turn = state.turns.find((candidate) => candidate.turn_id === input.conversationTurnId);
+  const message = turn?.input_message_ids.length === 1
+    ? state.messages.find((candidate) => candidate.message_id === turn.input_message_ids[0]) : undefined;
+  const proposed = input.request.messages.filter((candidate) => candidate.role === "user").at(-1);
+  // An attachment-only draft is stored with an empty text placeholder by
+  // some clients and with no text parts by others. Empty parts carry no
+  // instructions; retain exact comparison for every nonempty part and
+  // independently bind all attachment identities below.
+  const proposedText = proposed?.content.filter((part) => part.type === "text" && part.text !== "") ?? [];
+  const savedText = message?.content.filter((part) => part.text !== "") ?? [];
+  if (!turn || !message || message.role !== "user" || !proposed || json(savedText) !== json(proposedText)) {
+    throw new TypeError("The turn does not match its saved user message.");
+  }
+  const admission = await findConversationEvent(eventStore, input.conversationId as ConversationId,
+    (event) => event.payload.type === "message.created" && event.payload.message_id === message.message_id);
+  if (!admission) throw new TypeError("The saved user message for this turn could not be found.");
+  if (admission.mutation_id !== input.mutationId) {
+    throw new TypeError("The turn identity does not match its saved user message.");
+  }
+  const retainedAttachments = message.attachments.map((attachment) => ({ attachment_id: attachment.attachment_id,
+    media_type: attachment.media_type, byte_size: attachment.size_bytes ?? null,
+    filename: attachment.filename ?? null })).sort(byAttachmentId);
+  const requestedAttachments = proposed.content.filter((part) => part.type !== "text").map((part) => ({
+    attachment_id: part.attachment.attachment_id, media_type: part.attachment.media_type,
+    byte_size: part.attachment.byte_size, filename: part.attachment.filename ?? null,
+  })).sort(byAttachmentId);
+  if (json(retainedAttachments) !== json(requestedAttachments)) {
+    throw new TypeError("The turn attachments do not match its saved user message.");
+  }
+  return turn;
+}
+
 /** Reject provider starts that do not match the already-admitted canonical user turn. */
 export function qualifyDurableApplicationTurnStarts(
   transport: ConversationTransport<StreamEvent, ChatRequest>,
@@ -57,39 +96,7 @@ export function qualifyDurableApplicationTurnStarts(
     ...(transport.readCompletedOutput ? { readCompletedOutput: transport.readCompletedOutput.bind(transport) } : {}),
     async startTurn(input, context) {
       try {
-        const replay = await replayConversation({ conversationId: input.conversationId as ConversationId,
-          eventStore, checkpointPolicy: false });
-        const state = replay.state;
-        replay.store.destroy();
-        const turn = state.turns.find((candidate) => candidate.turn_id === input.conversationTurnId);
-        const message = turn?.input_message_ids.length === 1
-          ? state.messages.find((candidate) => candidate.message_id === turn.input_message_ids[0]) : undefined;
-        const proposed = input.request.messages.filter((candidate) => candidate.role === "user").at(-1);
-        // An attachment-only draft is stored with an empty text placeholder by
-        // some clients and with no text parts by others. Empty parts carry no
-        // instructions; retain exact comparison for every nonempty part and
-        // independently bind all attachment identities below.
-        const proposedText = proposed?.content.filter((part) => part.type === "text" && part.text !== "") ?? [];
-        const savedText = message?.content.filter((part) => part.text !== "") ?? [];
-        if (!turn || !message || message.role !== "user" || !proposed || json(savedText) !== json(proposedText)) {
-          throw new TypeError("The turn does not match its saved user message.");
-        }
-        const admission = await findConversationEvent(eventStore, input.conversationId as ConversationId,
-          (event) => event.payload.type === "message.created" && event.payload.message_id === message.message_id);
-        if (!admission) throw new TypeError("The saved user message for this turn could not be found.");
-        if (admission.mutation_id !== input.mutationId) {
-          throw new TypeError("The turn identity does not match its saved user message.");
-        }
-        const retainedAttachments = message.attachments.map((attachment) => ({ attachment_id: attachment.attachment_id,
-          media_type: attachment.media_type, byte_size: attachment.size_bytes ?? null,
-          filename: attachment.filename ?? null })).sort(byAttachmentId);
-        const requestedAttachments = proposed.content.filter((part) => part.type !== "text").map((part) => ({
-          attachment_id: part.attachment.attachment_id, media_type: part.attachment.media_type,
-          byte_size: part.attachment.byte_size, filename: part.attachment.filename ?? null,
-        })).sort(byAttachmentId);
-        if (json(retainedAttachments) !== json(requestedAttachments)) {
-          throw new TypeError("The turn attachments do not match its saved user message.");
-        }
+        await validateSavedApplicationTurnStart(input, eventStore);
         return guardCanonicalTurnExecution(transport, eventStore).startTurn(input, context);
       } catch (error) {
         return { ok: false as const, error: { code: "invalid_request" as const, retryable: false,

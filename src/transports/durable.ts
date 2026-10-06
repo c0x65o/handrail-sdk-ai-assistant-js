@@ -38,6 +38,8 @@ export interface DurableApplicationTurnRecord<TStoredRequest = unknown, TEvent =
   /** Null only for a cancellation that atomically reserved the turn before start. */
   readonly request: TStoredRequest | null;
   readonly cancelledBeforeStart?: true;
+  /** Trusted gateway rejection atomically reserved this identity before execution. */
+  readonly admissionRejected?: true;
   readonly delegateTurnId: string | null;
   /** Written before dispatch. Undefined on older records means admission is uncertain. */
   readonly delegateStartAttempted?: boolean;

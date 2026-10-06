@@ -46,6 +46,7 @@ export { openaiTranscription, createOpenAITranscriptionRequest, createOpenAIAudi
 export { createAssistantTranscription, createTranscriptionHttpHandler, createTranscriptionUsageRecorder, runRetainedTranscription, runTranscriptionAttempt, validateTranscriptionAudio, type RetainedTranscriptionOptions, type TranscriptionAttemptOptions, type AssistantTranscriptionProvider,
   type TranscriptionHttpServerInput, type AssistantTranscriptionUsage } from "./transcription.js";
 import { reconcileDurableConversationTurn } from "./reconcile-conversation.js";
+import { rejectUnstartedTurn } from "./reject-turn-admission.js";
 import { parseConversationEvent } from "../conversation/events.js";
 import { ConversationEventStoreConflictError } from "../conversation/event-store.js";
 import { replayConversation } from "../conversation/replay.js";
@@ -493,7 +494,7 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         ...(bundle.usageReceiptSink ? { usageReceiptSink: bundle.usageReceiptSink } : {}) });
     }
     // Title work is independent of the observing browser and never delays the answer.
-    void titles.afterActivity(conversationId, context);
+    if (!document.record.admissionRejected) void titles.afterActivity(conversationId, context);
     const turnStatus = running ? "running" : status === "failed" ? "error" : "completed";
     const retained = (await bundle.activity.list()).find((record) => record.conversationId === conversationId);
     if (retained?.turnId === turnId && retained.turnStatus === turnStatus) return;
@@ -1080,6 +1081,17 @@ export async function createHandrailAssistant<TContext extends HandrailAssistant
         const historyRequest = new URL(request.url).pathname.replace(/\/+$/u, "").endsWith("/conversations/history")
           ? request.clone() : null;
         return await createApplicationGateway({
+          rejectStart: async (request, start, error) => {
+            // A denied start grants no authority. Independently authenticate the
+            // read policy and verify ownership before retaining a terminal fact.
+            // Fully revoked access leaves the original identity unresolved.
+            const current = await options.authorize(request, "conversations");
+            await ownsConversation(current, start.conversationId);
+            const bundle = bundleFor(current);
+            if (await rejectUnstartedTurn({ start, error, events: bundle.events, turns: bundle.durableTurns })) {
+              await reconcileFor(current, start.conversationId, start.conversationTurnId);
+            }
+          },
           authorize: async (request, action) => {
             context = await options.authorize(request, action);
             releaseContext?.(); releaseContext = executionContexts.retain(executionKeyFor(context));

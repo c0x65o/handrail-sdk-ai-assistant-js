@@ -1,0 +1,17 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ✓ test/durable-canonical-start.test.ts (21 tests) 3979ms
+   ✓ admits a saved follow-up at PostgreSQL revision 1167 after a failed action  2939ms
+ ✓ test/server-assistant-synchronization.integration.test.ts (28 tests) 2170ms
+
+ Test Files  2 passed (2)
+      Tests  49 passed (49)
+   Start at  23:20:16
+   Duration  8.73s (transform 1.35s, setup 0ms, collect 2.10s, tests 6.15s, environment 0ms, prepare 117ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
