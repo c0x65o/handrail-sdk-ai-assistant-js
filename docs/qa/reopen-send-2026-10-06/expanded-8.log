@@ -1,0 +1,112 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+Reopened after canonical completion with delayed observer: { submitting: true, active: null }
+PASS: rendered launcher close/reopen, delayed observer, retained next draft, Enter/form guards, repeated Send; two PostgreSQL admissions, zero cancellations.
+PASS: delayed reopen hydration and slow admission preserve the draft and prevent duplicate admissions.
+PASS: lost admission acknowledgement retries the saved identity exactly once after reopen.
+Fixture failure details: {
+  calls: 5,
+  errors: [],
+  recentRequests: [
+    {
+      path: '/api/assistant/activity',
+      operation: 'list',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: 'turn_6e8de178-6c62-4ef0-b2b9-594bcb32cf9e'
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: 'turn_6e8de178-6c62-4ef0-b2b9-594bcb32cf9e'
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: 'turn_6e8de178-6c62-4ef0-b2b9-594bcb32cf9e'
+    }
+  ],
+  browser: {
+    text: 'Open chat\n' +
+      'Running\n' +
+      'Race fixture\n' +
+      'Race fixture\n' +
+      'First turn\n' +
+      'Copy\n' +
+      '\n' +
+      'Synthetic reply 1\n' +
+      '\n' +
+      'Copy\n' +
+      'Next draft\n' +
+      'Copy\n' +
+      '\n' +
+      'Synthetic reply 2\n' +
+      '\n' +
+      'Copy\n' +
+      'Slow network draft\n' +
+      'Copy\n' +
+      '\n' +
+      'Synthetic reply 3\n' +
+      '\n' +
+      'Copy\n' +
+      'Uncertain acknowledgement\n' +
+      'Copy\n' +
+      '\n' +
+      'Synthetic reply 4\n' +
+      '\n' +
+      'Copy\n' +
+      'Stop this turn\n' +
+      'Copy\n' +
+      'Response started.\n' +
+      '•••\n' +
+      'Thinking…\n' +
+      'The request is still in progress.',
+    errors: [ 'unavailable' ],
+    state: {
+      kind: 'display',
+      conversationId: '9b403de0-767d-4e26-b5a9-720555cfb94d',
+      control: [Object],
+      window: [Object],
+      related: [Array],
+      hasMoreRelated: false,
+      relatedTruncated: false,
+      loading: false,
+      submitting: true,
+      hasPendingSubmission: false,
+      error: null,
+      outgoingMessage: null
+    }
+  }
+}
+file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:25
+  throw Error('Fixture condition did not settle');
+        ^
+
+Error: Fixture condition did not settle
+    at eventually (file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:25:9)
+    at async file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:192:3
+
+Node.js v22.23.1
+Owned temporary PostgreSQL cluster stopped.

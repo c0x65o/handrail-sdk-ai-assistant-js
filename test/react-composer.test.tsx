@@ -104,7 +104,10 @@ it("saves the exact device receipt before dispatching a session send and keeps s
   const storage = new InMemoryConversationLocalStateStore(), text = new ConversationDraftController("conversation_composer", storage);
   const fileStore = new InMemoryAttachmentDraftStore<Blob>(), owner = new AttachmentDraftWorkspace(fileStore, { upload: async request => reference(request) });
   const files = owner.forConversation("conversation_composer"); await text.flush(); await files.flush();
-  const { runtime, sendMessage } = fakeRuntime<{ prompt: string }>(); Object.defineProperty(runtime, "displaySession", { value: { draft: text } });
+  const { runtime, sendMessage } = fakeRuntime<{ prompt: string }>();
+  Object.defineProperty(runtime, "displaySession", { value: { draft: text, subscribe: () => () => undefined,
+    getSnapshot: () => ({ submitting: false, hasPendingSubmission: false, control: { status: "ready" }, window: { status: "ready" } }),
+  } });
   let savedVersion: string | undefined;
   sendMessage.mockImplementation(async () => { savedVersion = (await storage.readDraft("conversation_composer"))?.version; return completed(); });
   const { result, unmount } = renderHook(() => useConversationComposer({ uploader: files.uploader, attachmentDraftController: files,

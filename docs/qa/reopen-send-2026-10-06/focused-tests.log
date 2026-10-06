@@ -1,0 +1,25 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ✓ test/react-application-session.test.tsx (7 tests) 4853ms
+   ✓ keeps unloaded approvals visible and opens their inbox from the fixed request status  536ms
+   ✓ uses negotiated large text and bounded activity navigation through the standard preset  1136ms
+   ✓ places activity paging above history and loads activity on an upward scroll before older messages  824ms
+   ✓ negotiates bounded history in the standard React preset with no snapshot, saved stream replay, or approval-list hydration  1934ms
+ ✓ test/react-launcher.test.tsx (11 tests) 319ms
+ ✓ test/react-hooks.test.tsx (13 tests) 303ms
+ ✓ test/durable-canonical-start.test.ts (21 tests) 3827ms
+   ✓ admits a saved follow-up at PostgreSQL revision 1167 after a failed action  2926ms
+ ✓ test/durable-stop-recovery.test.ts (15 tests) 2548ms
+   ✓ keeps timeout cancellation discoverable beyond execution retry exhaustion  1109ms
+ ✓ test/react-composer.test.tsx (47 tests) 2267ms
+ ✓ test/server-assistant-synchronization.integration.test.ts (28 tests) 2048ms
+ ✓ test/runtime-cancellation.test.ts (18 tests) 1168ms
+ ✓ test/application-session.test.ts (33 tests) 388ms
+ ✓ test/cancellation-contract.test.ts (5 tests) 6ms
+
+ Test Files  10 passed (10)
+      Tests  198 passed (198)
+   Start at  22:42:04
+   Duration  26.64s (transform 3.06s, setup 0ms, collect 5.55s, tests 17.73s, environment 1.45s, prepare 570ms)
+

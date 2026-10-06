@@ -1,0 +1,19 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+Reopened after canonical completion with delayed observer: { submitting: true, active: null }
+REPRODUCED [ 'pending_send_exists' ]
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Send enabled while previous session submission is still settling
+    at file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:101:12 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: undefined,
+  expected: undefined,
+  operator: 'fail',
+  diff: 'simple'
+}
+
+Node.js v22.23.1
+Owned temporary PostgreSQL cluster stopped.

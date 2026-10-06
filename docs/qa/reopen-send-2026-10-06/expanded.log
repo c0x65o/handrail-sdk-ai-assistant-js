@@ -1,0 +1,16 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+locator.fill: Timeout 10000ms exceeded.
+Call log:
+[2m  - waiting for getByRole('textbox')[22m
+
+    at /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:102:31 {
+  log: [ "  - waiting for getByRole('textbox')" ],
+  name: 'TimeoutError'
+}
+
+Node.js v22.23.1
+Owned temporary PostgreSQL cluster stopped.

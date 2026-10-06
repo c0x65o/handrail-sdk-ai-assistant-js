@@ -1,0 +1,95 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+Reopened after canonical completion with delayed observer: { submitting: true, active: null }
+REPRODUCED [ 'pending_send_exists' ]
+Fixture failure details: {
+  calls: 1,
+  errors: [],
+  recentRequests: [
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: 'turn_c7353fbc-ed14-44ab-9c48-46659035196c'
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/activity',
+      operation: 'mark_read',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'page',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/activity',
+      operation: 'list',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'page',
+      turnId: undefined
+    }
+  ],
+  browser: {
+    text: 'Open chat\n' +
+      'Race fixture\n' +
+      'First turn\n' +
+      'Copy\n' +
+      '\n' +
+      'Synthetic reply 1\n' +
+      '\n' +
+      'Copy\n' +
+      'Response complete.\n' +
+      '✓\n' +
+      'Request complete\n' +
+      'The assistant has finished responding.\n' +
+      'The message could not be sent. Check your connection and try again.',
+    errors: [ 'pending_send_exists' ],
+    state: {
+      kind: 'display',
+      conversationId: '54c57448-52a8-4661-9f1f-aa7df43e3f98',
+      control: [Object],
+      window: [Object],
+      related: [Array],
+      hasMoreRelated: false,
+      relatedTruncated: false,
+      loading: false,
+      submitting: true,
+      hasPendingSubmission: false,
+      error: null,
+      outgoingMessage: null
+    }
+  }
+}
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Send enabled while previous session submission is still settling
+    at file:///opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:156:12 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: undefined,
+  expected: undefined,
+  operator: 'fail',
+  diff: 'simple'
+}
+
+Node.js v22.23.1
+Owned temporary PostgreSQL cluster stopped.

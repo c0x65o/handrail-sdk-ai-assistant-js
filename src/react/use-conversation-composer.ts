@@ -53,6 +53,7 @@ import {
 import type {
   ConversationAttachmentReference,
   ConversationId,
+  ConversationTurnId,
 } from "../conversation/events.js";
 import type { PresenceController } from "../presence/controller.js";
 import {
@@ -492,8 +493,19 @@ export function useConversationComposer<TRequest = undefined>(
   const actions = useConversationActions<TRequest>();
   const store = useConversationStore();
   const conversationBinding = useContext(ConversationContext);
-  const durableDraftReceipts = Boolean(conversationBinding?.runtime?.displaySession);
-  const draftController = options.draftController ?? conversationBinding?.runtime?.displaySession?.draft ?? undefined;
+  const session = conversationBinding?.runtime?.displaySession;
+  const durableDraftReceipts = Boolean(session);
+  const draftController = options.draftController ?? session?.draft ?? undefined;
+  // Closing the launcher unmounts this composer, but the session still owns
+  // admission and completion observation. A terminal display can arrive before
+  // that observation settles; local isSending/activeTurnId alone are not enough.
+  const getSessionReady = useCallback(() => {
+    if (!session) return true;
+    const snapshot = session.getSnapshot();
+    return !snapshot.submitting && !snapshot.hasPendingSubmission &&
+      snapshot.control?.status === "ready" && snapshot.window.status === "ready";
+  }, [session]);
+  const sessionReady = useSyncExternalStore(session?.subscribe ?? noDraftSubscribe, getSessionReady, getSessionReady);
   const fileController = options.attachmentDraftController;
   if (fileController && fileController.uploader !== options.uploader) throw new TypeError("Attachment draft must use its owned uploader");
   const persistedFiles = useSyncExternalStore(fileController?.subscribe ?? noDraftSubscribe,
@@ -588,7 +600,7 @@ export function useConversationComposer<TRequest = undefined>(
   >([]);
   const [isSending, setIsSending] = useState(false);
   const sendingRef = useRef(false);
-  const pendingCancellation = useRef<{ scope: object; requested: boolean } | null>(null);
+  const pendingCancellation = useRef<{ scope: object; requested: boolean; turnId: ConversationTurnId | null } | null>(null);
   const submissionBlocks = useRef(new Map<symbol, (() => Promise<boolean>) | undefined>());
   const [submissionBlockCount, setSubmissionBlockCount] = useState(0);
   const preparingSubmission = useRef<object | null>(null);
@@ -817,7 +829,7 @@ export function useConversationComposer<TRequest = undefined>(
   const uploadsReady = attachments.every((attachment) => attachment.status === "ready");
   const hasContent = draft.trim().length > 0 || attachments.length > 0;
   const canPrepare = submissionBlockCount > 0 && [...submissionBlocks.current.values()].every((prepare) => prepare !== undefined);
-  const canSend = (submissionBlockCount === 0 || canPrepare) && !isPreparingSubmission && !isSending &&
+  const canSend = sessionReady && (submissionBlockCount === 0 || canPrepare) && !isPreparingSubmission && !isSending &&
     persistedDraft.status !== "loading" && persistedFiles.status === "saved" && activeTurnId === null && (hasContent || canPrepare) && uploadsReady;
 
   const updateDraft = useCallback((nextDraft: string): void => {
@@ -1093,7 +1105,7 @@ export function useConversationComposer<TRequest = undefined>(
     event?: FormEvent<Element>,
   ): Promise<ConversationRuntimeTurnResult | null> => {
     event?.preventDefault();
-    if (preparingSubmission.current !== null || sendingRef.current || draftController?.getSnapshot().status === "loading" ||
+    if (!getSessionReady() || preparingSubmission.current !== null || sendingRef.current || draftController?.getSnapshot().status === "loading" ||
         fileController && fileController.getSnapshot().status !== "saved" || store.getSnapshot().active_turn_id !== null) return null;
     const preparations = [...submissionBlocks.current.values()];
     if (preparations.some((prepare) => prepare === undefined)) return null;
@@ -1133,7 +1145,7 @@ export function useConversationComposer<TRequest = undefined>(
     const submissionScope = lifecycleRef.current;
     const isCurrent = () => lifecycleRef.current === submissionScope;
     let accepted = false;
-    const eligible = submissionBlocks.current.size === 0 && !sendingRef.current && store.getSnapshot().active_turn_id === null &&
+    const eligible = getSessionReady() && submissionBlocks.current.size === 0 && !sendingRef.current && store.getSnapshot().active_turn_id === null &&
       (currentDraft.trim().length > 0 || currentOwned.length > 0) &&
       readyReferences.length === currentOwned.length;
     if (!eligible) return null;
@@ -1145,23 +1157,26 @@ export function useConversationComposer<TRequest = undefined>(
     }
 
     sendingRef.current = true;
-    pendingCancellation.current = { scope: submissionScope, requested: false };
+    pendingCancellation.current = { scope: submissionScope, requested: false, turnId: null };
     setIsSending(true);
     setOperationErrors([]);
     const submission = Object.freeze({
       text: currentDraft,
       attachments: Object.freeze(readyReferences),
     });
-    const accept = () => {
+    const accept = (identity?: { readonly turnId: ConversationTurnId }) => {
       if (accepted) return;
       accepted = true;
       const clearsCurrentDraft = isCurrent() && draftRevision.current === submittedRevision;
       if (submittedDraftEdit !== undefined) draftController?.accepted(submittedDraftEdit);
       fileController?.remove(currentOwned.map(entry => entry.id));
       if (!isCurrent()) return;
+      // Admission is authoritative before the next display poll publishes its
+      // active turn. Keep the receipt so an explicit Stop in that gap is sent.
+      if (identity && pendingCancellation.current?.scope === submissionScope) pendingCancellation.current.turnId = identity.turnId;
       if (pendingCancellation.current?.scope === submissionScope && pendingCancellation.current.requested) {
         pendingCancellation.current.requested = false;
-        const turnId = store.getSnapshot().active_turn_id;
+        const turnId = pendingCancellation.current.turnId ?? store.getSnapshot().active_turn_id;
         if (turnId) void actions.cancelTurn(turnId, "user").then(result => {
           if (result.status === "failed" || result.status === "unsupported") throw new Error("Cancellation unavailable");
         }).catch(() => {
@@ -1233,13 +1248,14 @@ export function useConversationComposer<TRequest = undefined>(
         setIsSending(false);
       }
     }
-  }, [actions, createRequest, presence, releaseOwned, request, store, uploader, draftController, fileController, durableDraftReceipts, localTextOwner]);
+  }, [actions, createRequest, presence, releaseOwned, request, store, uploader, draftController, fileController, durableDraftReceipts, localTextOwner, getSessionReady]);
 
   const cancel = useCallback(async (): Promise<boolean> => {
     try {
       if (onCancel) await onCancel();
       else {
-        const turnId = store.getSnapshot().active_turn_id;
+        const pending = pendingCancellation.current?.scope === lifecycleRef.current ? pendingCancellation.current : null;
+        const turnId = store.getSnapshot().active_turn_id ?? pending?.turnId;
         if (!turnId) {
           if (sendingRef.current && pendingCancellation.current?.scope === lifecycleRef.current) {
             pendingCancellation.current.requested = true;

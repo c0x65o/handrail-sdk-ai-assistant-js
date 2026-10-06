@@ -1,0 +1,9 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+Reopened after canonical completion with delayed observer: { submitting: true, active: null }
+PASS: rendered launcher close/reopen, delayed observer, retained next draft, Enter/form guards, repeated Send; two PostgreSQL admissions, zero cancellations.
+PASS: delayed reopen hydration and slow admission preserve the draft and prevent duplicate admissions.
+PASS: lost admission acknowledgement retries the saved identity exactly once after reopen.
+Stop before delayed display control: { active: null, submitting: true }
+PASS: repeated explicit Stop persists one cancellation, suppresses late output, and permits the next turn.
+PASS: account replacement during delayed hydration isolates history; revoked authorization retains draft with zero admissions.
+Owned temporary PostgreSQL cluster stopped.

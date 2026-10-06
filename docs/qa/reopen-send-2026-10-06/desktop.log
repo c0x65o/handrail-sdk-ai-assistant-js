@@ -1,0 +1,128 @@
+Fresh isolated PostgreSQL 15 cluster initialized; dedicated disposable database and non-superuser fixture role; connection values withheld.
+Reopened after canonical completion with delayed observer: { submitting: true, active: null }
+PASS: rendered launcher close/reopen, delayed observer, retained next draft, Enter/form guards, repeated Send; two PostgreSQL admissions, zero cancellations.
+PASS: delayed reopen hydration and slow admission preserve the draft and prevent duplicate admissions.
+PASS: lost admission acknowledgement retries the saved identity exactly once after reopen.
+Stop before delayed display control: { active: null, submitting: true }
+PASS: repeated explicit Stop persists one cancellation, suppresses late output, and permits the next turn.
+Fixture failure details: {
+  calls: 7,
+  errors: [],
+  recentRequests: [
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: 'turn_4da7292c-a7ba-46d8-a4e4-d9ae2e1e7b9a'
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'changes',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/conversations/history',
+      operation: 'control',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/activity',
+      operation: 'list',
+      turnId: undefined
+    },
+    {
+      path: '/api/assistant/activity',
+      operation: 'list',
+      turnId: undefined
+    }
+  ],
+  browser: {
+    text: 'Open chat\n' +
+      'Race fixture\n' +
+      'Race fixture\n' +
+      '\n' +
+      'Loading conversation…\n' +
+      '\n' +
+      'Conversation access is unavailable.\n' +
+      '\n' +
+      '✓\n' +
+      'Request complete\n' +
+      'The assistant has finished responding.',
+    errors: [ 'unavailable', 'observation_closed' ],
+    state: {
+      kind: 'display',
+      conversationId: '044cf45d-480b-4f6e-94d5-61140effbbd2',
+      control: null,
+      window: [Object],
+      related: [],
+      hasMoreRelated: false,
+      relatedTruncated: false,
+      loading: false,
+      submitting: false,
+      hasPendingSubmission: false,
+      error: Error [ApplicationConversationSessionError]: Conversation access is unavailable.
+          at _o (http://127.0.0.1:40109/fixture.js:133:202919)
+          at http://127.0.0.1:40109/fixture.js:133:213810,
+      outgoingMessage: null
+    }
+  }
+}
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+locator.click: Timeout 10000ms exceeded.
+Call log:
+[2m  - waiting for getByRole('button', { name: 'Send message', exact: true })[22m
+[2m    - locator resolved to <button type="submit" aria-busy="false" aria-label="Send message" class="hr-composer__icon hr-composer__send">…</button>[22m
+[2m  - attempting click action[22m
+[2m    2 × waiting for element to be visible, enabled and stable[22m
+[2m      - element is not enabled[22m
+[2m    - retrying click action[22m
+[2m    - waiting 20ms[22m
+[2m    2 × waiting for element to be visible, enabled and stable[22m
+[2m      - element is not enabled[22m
+[2m    - retrying click action[22m
+[2m      - waiting 100ms[22m
+[2m    19 × waiting for element to be visible, enabled and stable[22m
+[2m       - element is not enabled[22m
+[2m     - retrying click action[22m
+[2m       - waiting 500ms[22m
+
+    at /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/scripts/check-reopen-send-browser.mjs:223:16 {
+  log: [
+    "  - waiting for getByRole('button', { name: 'Send message', exact: true })",
+    '    - locator resolved to <button type="submit" aria-busy="false" aria-label="Send message" class="hr-composer__icon hr-composer__send">…</button>',
+    '  - attempting click action',
+    '    2 × waiting for element to be visible, enabled and stable',
+    '      - element is not enabled',
+    '    - retrying click action',
+    '    - waiting 20ms',
+    '    2 × waiting for element to be visible, enabled and stable',
+    '      - element is not enabled',
+    '    - retrying click action',
+    '      - waiting 100ms',
+    '    19 × waiting for element to be visible, enabled and stable',
+    '       - element is not enabled',
+    '     - retrying click action',
+    '       - waiting 500ms'
+  ],
+  name: 'TimeoutError'
+}
+
+Node.js v22.23.1
+Owned temporary PostgreSQL cluster stopped.

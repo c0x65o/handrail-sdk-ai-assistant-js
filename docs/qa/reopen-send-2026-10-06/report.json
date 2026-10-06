@@ -1,0 +1,154 @@
+{
+  "workRequest": "26b8b8f9-8d78-4b3c-89f3-b550488bd07c",
+  "verdict": "SDK race reproduced deterministically; local candidate fixed and qualified. Installed Mills/Preview acceptance awaits the published candidate pin.",
+  "publishedGit": {
+    "repository": "https://github.com/c0x65o/handrail-sdk-ai-assistant-js.git",
+    "currentPublishedVersion": "0.2.76",
+    "currentPublishedSha": "704b6599f37dce7255e345c8132bf81856bdb6bf",
+    "remoteHeadVerified": true,
+    "candidatePublishedVersion": null,
+    "candidatePublishedSha": null,
+    "releaseOwner": "Handrail post-agent version bump, commit and push; source changes intentionally uncommitted. The baseline SHA does not contain this patch."
+  },
+  "millsEvidence": {
+    "commit": "e85af3b9339fe06a7b0d6eee320312f128db6e1c",
+    "url": "https://github.com/c0x65o/mills-family-erp-v4/tree/e85af3b9339fe06a7b0d6eee320312f128db6e1c/docs/qa/assistant-acceptance-2200-2026-10-06",
+    "inspected": [
+      "acceptance.json",
+      "REPRODUCE.txt",
+      "harness.tar.gz (browser.mjs, browser-entry.tsx and runner notes)",
+      "rendered/attempt-1791255972927/browser.json",
+      "rendered/attempt-1791255972927/phone-send-failed.png",
+      "rendered/attempt-1791255972927/phone-send-failed-persisted.json",
+      "src/client/assistant/MillsAssistantRuntime.tsx"
+    ],
+    "findings": "Screenshot shows Request complete, retained in-flight reload draft, enabled Send and send_failed. Browser records no HTTP errors. Failure SQL contains 96 canonical events and 10 started turns; the last user message is close and return, with no subsequent phone in-flight reload admission.",
+    "hostTrigger": "Mills uses HandrailAssistantLauncher presentation=page, visible=active and an inline uploaderForConversation. Visibility rerenders replace the upload owner; the composer lifecycle effect resets local sending state while the account-owned ApplicationConversationSession continues its prior submission.",
+    "boundaryLimit": "The original Mills artifact did not capture the underlying exception. The SDK fixture reproduces its exact public configuration and symptom and captures pending_send_exists. The full Mills app was not modified or rerun here."
+  },
+  "rootCause": {
+    "send": "Session completion observation and display polling are independent. Display controls can report activeTurnId=null before the previous submission promise settles. A remounted or reinitialized composer loses its local isSending flag, exposes Send and rejects in ApplicationConversationSession.sendMessage with pending_send_exists before admission.",
+    "stop": "Explicit Stop after durable admission but before the active turn appears in display controls had no turn ID. The composer recorded a request after its one acceptance callback had already run, so it never dispatched cancellation. stop-before.log holds display controls to reproduce active=null/submitting=true deterministically.",
+    "fix": "Subscribe composer eligibility to the existing shared session snapshot: initialized ready history/controls, no submitting operation and no saved pending submission. Apply the same live check to Send, Enter/form and after asynchronous composer preparation. Retain the accepted turn ID for an explicit Stop before display catches up.",
+    "scope": "Only production file changed: src/react/use-conversation-composer.ts. No timing sleeps, automatic new-message retries, admission-lock weakening, server changes or host workaround."
+  },
+  "validation": {
+    "negativeControls": [
+      {
+        "log": "before.log",
+        "result": "Expected failure on unchanged 0.2.76 compiled SDK: pending_send_exists; one provider call and no next admission."
+      },
+      {
+        "log": "mills-page-before.log",
+        "result": "Expected failure with the exact frozen 704b659 composer compiled in memory, using the Mills page/inline-uploader configuration. No source/dist rewrite or installed dependency change."
+      },
+      {
+        "log": "stop-before.log",
+        "result": "Expected failure before the Stop receipt fix: accepted turn, delayed display, repeated Stop, no cancellation."
+      }
+    ],
+    "nativePostgresBrowser": {
+      "logs": [
+        "desktop-final.log",
+        "phone-final.log",
+        "mills-page-final.log"
+      ],
+      "result": "All three pass. Compiled SDK UI/client plus real authenticated gateway, SDK migrations, durable execution and PostgreSQL 15. Each run owns a fresh loopback cluster, random temporary credentials and non-superuser role; cluster stopped and removed in finally.",
+      "viewports": [
+        "1440x1000 launcher",
+        "390x844 touch/mobile launcher",
+        "390x844 touch/mobile Mills-style page"
+      ],
+      "assertions": [
+        "Close/return never calls cancellation",
+        "Completed display with delayed observation keeps Send disabled; no pending_send_exists",
+        "Exact next draft survives close/open",
+        "Enter/form and repeated Send cannot duplicate admission",
+        "Delayed hydration and slow mutation admission are gated",
+        "Truncated acknowledgement retries the saved submission identity, with exactly one canonical turn",
+        "Repeated explicit Stop before active display controls saves one cancellation",
+        "Late provider output after Stop is suppressed; next send succeeds",
+        "Account replacement during delayed hydration clears old draft/history",
+        "Revoked authorization retains draft and admits no turn"
+      ],
+      "perRunDurableOutcome": {
+        "admittedTurns": 7,
+        "syntheticProviderCalls": 7,
+        "cancelledTurns": 1,
+        "duplicateAdmissions": 0,
+        "closeCancellationRequests": 0
+      },
+      "simulatedBoundaries": "Only HTTP timing/acknowledgement failure, synthetic request authentication and provider Responses events. No fake database/repository, real model, real account or business effects.",
+      "screenshots": [
+        "desktop.png",
+        "phone.png",
+        "mills-page.png"
+      ]
+    },
+    "focused": {
+      "result": "198 passed, 10 files, 26.64 seconds, maxWorkers=1",
+      "log": "focused-tests.log",
+      "includes": "composer, React sessions/launcher/hooks, application session, runtime cancellation, cancellation contracts, durable canonical start/Stop, and all 28 prior synchronization authorization cases (existing PGlite harness)."
+    },
+    "build": {
+      "result": "passed",
+      "log": "build.log"
+    },
+    "typecheck": {
+      "result": "passed; final fixture recheck recorded separately",
+      "logs": [
+        "typecheck.log",
+        "typecheck-final.log"
+      ]
+    },
+    "lint": {
+      "result": "passed after fixing one unused fixture parameter",
+      "logs": [
+        "lint.log (initial failure)",
+        "lint-final.log",
+        "lint-final-2.log"
+      ]
+    },
+    "packageContract": {
+      "result": "31 passed, 12.59 seconds",
+      "log": "package-contract.log"
+    },
+    "diffCheck": "git diff --check passed",
+    "budget": "Checks run sequentially with 240-second command bounds; Vitest maxWorkers=1. No full expensive CI.",
+    "intermediateReceipts": "expanded.log through expanded-8.log and desktop.log retain unsuccessful harness iterations and the discovered Stop failure; none is presented as passing. Final receipts above supersede them.",
+    "harnessCorrections": [
+      "Use launcher disclosure toggle, preserve protected RequestInit, truncate acknowledgement instead of socket destruction (browser may retry), allow pending-turn Stop to replace Send, follow visible Jump to latest when reading position is retained, handle a polling button detaching during interaction, and accept authorization polling disabling Send before a click. No production timing workaround was added."
+    ]
+  },
+  "reproduce": {
+    "prerequisites": "Node/dependencies from this checkout; PostgreSQL 15 binaries at /usr/lib/postgresql/15/bin; cached Playwright Chromium or HANDRAIL_TEST_CHROMIUM. Existing locked pg dependency comes from test/fixtures/agent-cancellation. No DATABASE_URL/shared database is used.",
+    "build": "npm run build",
+    "launcher": "HANDRAIL_REOPEN_SEND_TEST=1 node test/run-agent-stop-postgres.mjs",
+    "phone": "HANDRAIL_REOPEN_SEND_TEST=1 HANDRAIL_REOPEN_MOBILE=1 node test/run-agent-stop-postgres.mjs",
+    "millsPage": "HANDRAIL_REOPEN_SEND_TEST=1 HANDRAIL_REOPEN_PAGE=1 HANDRAIL_REOPEN_MOBILE=1 node test/run-agent-stop-postgres.mjs",
+    "failingBaseline": "HANDRAIL_REOPEN_SEND_TEST=1 HANDRAIL_REOPEN_PAGE=1 HANDRAIL_REOPEN_BASELINE=1 node test/run-agent-stop-postgres.mjs (expected exit 1; read-only negative control for the assigned frozen composer)",
+    "screenshots": "Optionally set HANDRAIL_REOPEN_SCREENSHOT to an output PNG path.",
+    "browserCache": "This worker downloaded Chromium only into its task-owned temporary PLAYWRIGHT_BROWSERS_PATH after the normal cache was absent."
+  },
+  "compatibility": {
+    "publicApi": "No public signature, gateway protocol, capability, persistence schema, server authorization or cancellation mutation changes.",
+    "draftAndIdempotency": "Draft and pending-journal ownership remain unchanged. Saved-message retry keeps its original IDs; new Send stays gated until readiness.",
+    "syncUnauthorized": "The prior 704b659 synchronization fix is unchanged; its 28 integration tests pass.",
+    "flutter": "Linked Flutter checkout remains clean. Wire/server behavior unchanged. No fresh Flutter/native suite or installed-device validation is claimed."
+  },
+  "installedConsumerQualification": [
+    "After Handrail publishes this work, obtain the actual new package version and full 40-character public Git SHA from its release/commit output. Do not use baseline 704b659 as the patched release and do not invent a candidate SHA.",
+    "In each authorized Mills/Preview consumer change, pin @handrail/ai-assistant to git+https://github.com/c0x65o/handrail-sdk-ai-assistant-js.git#<published-full-sha>, update the matching package-manager lockfile and any exact-SHA install-script allowlist, then run the normal install/build pipeline. Do not patch dist or install via file/workspace/registry/tarball/branch/tag.",
+    "The Mills archived harness rejects SDK pins other than its recorded 0.2.76 baseline. Update its explicit expected-pin assertion to the assigned published candidate as part of consumer qualification, preserving the baseline receipt and recording manifest/lock/installed SHA agreement.",
+    "Rebuild the actual Mills browser bundle with the archived harness and run its rendered --stress flow against disposable PostgreSQL and synthetic provider/storage boundaries. Require zero send_failed_before_admission findings, not a recovered-retry pass. Keep immediate Send after close/return/completion, reload, repeated Send/Stop, slow hydration/observation, draft retention, duplicate-admission SQL assertions, auth changes and existing PDF/approval checks.",
+    "Preview should independently rerun its real installed launcher close/open/immediate Send flow against the same exact SHA. Record its consumer version/SHA, installed SDK version/SHA, browser/network evidence and durable no-duplicate/no-close-cancellation results.",
+    "Actual deployed Mills/Preview and native/device acceptance remain separate owner workflow steps. This worker did not change consumers, bump versions, commit, push, deploy or modify Handrail database/queue state."
+  ],
+  "sourceSha256": {
+    "src/react/use-conversation-composer.ts": "e44ba0260720681edcf9e3e69d9f3f489728e2707997a8525a39d67c8b93f0aa",
+    "test/react-composer.test.tsx": "4169d5013f4beaea6dbd5ed5a4dcdee3a9b542198354a0a533aa23dd53c9a1c8",
+    "test/fixtures/reopen-send-browser.tsx": "ba5f52685f6a81f30675b109ebb3cc01c4a9eaa210918824ff176ec57dda6dfd",
+    "scripts/check-reopen-send-browser.mjs": "dd9e38a1b48512929c3c182f01c09b33e45e559b5ff22a700969b630eff737e5",
+    "test/run-agent-stop-postgres.mjs": "5ba6adb558f4880b9f274f13304dc9749463eb49ee92d36b7726030e5a5cc3cc"
+  }
+}
