@@ -55,6 +55,7 @@ export interface ApplicationConversationSessionOptions<TRequest> {
   readonly approvalHistory?: boolean;
   /** Bootstrap waits for account-owned local flushes before completing disposal. */
   readonly onLocalStateFlush?: (operation: Promise<void>) => void;
+  /** Automatic display/stream cadence; defaults to 1s. Explicit refresh and Stop remain immediate. */
   readonly pollMilliseconds?: number;
   readonly idlePollMilliseconds?: number;
   readonly createId?: () => string;
@@ -91,6 +92,17 @@ function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function observationRead<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener("abort", abort);
+      reject(new ApplicationConversationSessionError("observation_closed", "Conversation observation was closed.")); };
+    if (signal.aborted) { abort(); return; }
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(value => { signal.removeEventListener("abort", abort); resolve(value); },
+      cause => { signal.removeEventListener("abort", abort); reject(cause); });
+  });
+}
+
 /** Server-owned execution with bounded browser presentation. Opening and observing
  * never hydrate checkpoints, replay provider logs or write assistant output.
  * Durable local intent precedes admission; stream frames only wake display reads. */
@@ -105,7 +117,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   private readonly lifetime = new AbortController();
   private displayLifetime = new AbortController();
   private readonly listeners = new Set<() => void>();
-  private readonly waits = new Map<string, { turnId: string; controller: AbortController }>();
+  private readonly waits = new Map<string, { turnId: string; controller: AbortController; wake?: () => void }>();
+  private readonly observedControls = new Map<string, Promise<ConversationDisplayControl>>();
   private readonly cancellationIds = new Map<string, { identity: string; reason: ConversationTurnCancellationReason }>();
   private readonly pollMilliseconds: number;
   private readonly idlePollMilliseconds: number;
@@ -128,6 +141,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   private observationTurnId: string | null = null;
   private poll: ReturnType<typeof setTimeout> | undefined;
   private wake: ReturnType<typeof setTimeout> | undefined;
+  private refreshDemand = 0;
+  private lastRefreshStarted = -Infinity;
   private readonly readBackoff = new ReadBackoff();
   private readonly startBackoff = new ReadBackoff();
   private followingLatest = true;
@@ -152,10 +167,12 @@ export class ApplicationConversationSession<TRequest = unknown> {
       window: this.window.getSnapshot(), related: this.related, hasMoreRelated: false, relatedTruncated: false, loading: false, submitting: false, hasPendingSubmission: false, error: null });
     this.unsubscribeWindow = this.window.subscribe(() => {
       const next = this.window.getSnapshot();
+      const changed = next.version !== this.state.window.version;
       if (next.version !== this.state.window.version && next.change === "older") this.followingLatest = false;
       if (next.version !== this.state.window.version && next.change === "latest") this.followingLatest = true;
       this.publish();
-      if (!this.pending && this.active && this.relatedKey !== this.contextKey()) this.scheduleRefresh();
+      if (this.active && this.relatedKey !== this.contextKey() &&
+          (!this.pending || changed && next.change !== "changes")) this.scheduleRefresh();
     });
   }
   getSnapshot = (): ApplicationConversationSessionSnapshot => this.state;
@@ -194,12 +211,14 @@ export class ApplicationConversationSession<TRequest = unknown> {
     clearTimeout(this.poll);
     if (this.lifetime.signal.aborted || this.readBackoff.terminal || this.state.error && !this.state.error.retryable) return;
     this.poll = setTimeout(() => {
-      void this.refresh().catch(() => undefined).finally(() => this.schedulePoll());
+      this.scheduleRefresh(); this.schedulePoll();
     }, Math.max(this.readBackoff.remaining, this.active || this.control?.activeTurn ? this.pollMilliseconds : this.idlePollMilliseconds));
   }
   private scheduleRefresh() {
+    this.refreshDemand++;
     if (this.wake || this.lifetime.signal.aborted || this.readBackoff.terminal || this.state.error && !this.state.error.retryable) return;
-    this.wake = setTimeout(() => { this.wake = undefined; void this.refresh().catch(() => undefined); }, Math.max(100, this.readBackoff.remaining));
+    this.wake = setTimeout(() => { this.wake = undefined; void this.refresh().catch(() => undefined); }, Math.max(0, this.readBackoff.remaining,
+      this.lastRefreshStarted + this.pollMilliseconds - Date.now()));
   }
   setFollowingLatest(value: boolean): void { this.followingLatest = value; this.publish(); }
   get supportsApprovalHistory(): boolean { return this.options.approvalHistory === true; }
@@ -314,6 +333,9 @@ export class ApplicationConversationSession<TRequest = unknown> {
     this.assertOpen();
     if (this.pending) return this.pending;
     if (this.readBackoff.remaining) return Promise.resolve();
+    clearTimeout(this.wake); this.wake = undefined;
+    this.lastRefreshStarted = Date.now();
+    const demand = this.refreshDemand;
     const readGeneration = this.readBackoff.generation;
     const signal = AbortSignal.any([this.lifetime.signal, this.displayLifetime.signal]);
     const work = Promise.resolve().then(async () => {
@@ -368,7 +390,10 @@ export class ApplicationConversationSession<TRequest = unknown> {
         }
         const error = normalize(cause); this.readBackoff.failed(error); this.publish({ error }); throw error;
       } finally { if (!this.lifetime.signal.aborted) this.publish({ loading: false }); }
-    }).finally(() => { if (this.pending === work) this.pending = null; });
+    }).finally(() => {
+      if (this.pending === work) this.pending = null;
+      if (this.refreshDemand !== demand) this.scheduleRefresh();
+    });
     this.pending = work; return work;
   }
   private clearRelated() {
@@ -424,6 +449,8 @@ export class ApplicationConversationSession<TRequest = unknown> {
   async prepare(input: ConversationRuntimeSendMessageInput<TRequest>, operationId = this.options.createId?.() ?? crypto.randomUUID()): Promise<ApplicationConversationSubmission<TRequest>> {
     const captured = captureApplicationConversationInput(input);
     await this.refresh(); this.assertOpen();
+    if (this.readBackoff.remaining) throw this.state.error ?? new ApplicationConversationSessionError(
+      "read_unavailable", "Fresh conversation controls are temporarily unavailable.", true, this.readBackoff.remaining);
     if (!this.control || this.control.status !== "ready") throw new ApplicationConversationSessionError("history_preparing", "Preparing saved conversation…", true);
     if (this.submission || this.control.activeTurnId) throw new ApplicationConversationSessionError("turn_active", "Wait for the active response or stop it before sending.");
     return prepareApplicationConversationSubmission({ conversationId: this.options.conversationId,
@@ -571,21 +598,36 @@ export class ApplicationConversationSession<TRequest = unknown> {
     void (async () => {
       try { for await (const event of observation.events) { void event; if (this.lifetime.signal.aborted) break; this.scheduleRefresh(); } }
       catch { /* The durable controls remain authoritative after disconnection. */ }
-      finally { if (this.observation === observation) { this.observation = null; this.observationTurnId = null; } this.scheduleRefresh(); }
+      finally {
+        if (this.observation === observation) {
+          this.observation = null; this.observationTurnId = null;
+          for (const wait of this.waits.values()) if (wait.turnId === turnId) wait.wake?.();
+        }
+        this.scheduleRefresh();
+      }
     })();
   }
   async waitForTurn(turnId: string, signal?: AbortSignal): Promise<ConversationDisplayTurnControl> {
     this.assertOpen();
     if (this.waits.size >= 32) throw new ApplicationConversationSessionError("observation_capacity", "Too many conversation observers.");
     const controller = new AbortController(), key = `${turnId}:${crypto.randomUUID()}`;
-    this.waits.set(key, { turnId, controller });
+    const wait: { turnId: string; controller: AbortController; wake?: () => void } = { turnId, controller };
+    this.waits.set(key, wait);
     const lifetime = AbortSignal.any([this.lifetime.signal, controller.signal, ...(signal ? [signal] : [])]);
     try {
       for (;;) {
         if (lifetime.aborted) throw new ApplicationConversationSessionError("observation_closed", "Conversation observation was closed.");
         if (this.readBackoff.remaining) await delay(this.readBackoff.remaining, lifetime);
         try {
-          const control = await this.options.reader.control({ conversationId: this.options.conversationId, turnId }, lifetime);
+          // Share only concurrent observation reads of this exact turn. Admission,
+          // recovery and cancellation retain their own fresh authorization reads.
+          let reading = this.observedControls.get(turnId);
+          if (!reading) {
+            reading = this.options.reader.control({ conversationId: this.options.conversationId, turnId }, this.lifetime.signal)
+              .finally(() => { if (this.observedControls.get(turnId) === reading) this.observedControls.delete(turnId); });
+            this.observedControls.set(turnId, reading);
+          }
+          const control = await observationRead(reading, lifetime);
           if (lifetime.aborted) continue;
           if (control.status === "ready" && control.requestedTurn &&
             (executionTerminal(control.requestedTurn) ||
@@ -596,10 +638,24 @@ export class ApplicationConversationSession<TRequest = unknown> {
             this.assertOpen(); return control.requestedTurn;
           }
         } catch (cause) {
+          if (lifetime.aborted) throw new ApplicationConversationSessionError("observation_closed", "Conversation observation was closed.");
           const error = normalize(cause); this.readBackoff.failed(error);
+          if (denied(cause)) {
+            this.observation?.disconnect(); this.observation = null;
+            clearTimeout(this.wake); this.wake = undefined;
+            this.control = null; this.outgoing = null; this.clearRelated();
+            await this.window.select(null); this.publish({ error });
+          }
           if (!error.retryable) throw error;
         }
-        await delay(Math.max(this.pollMilliseconds, this.readBackoff.remaining), lifetime);
+        const wake = new AbortController();
+        wait.wake = () => wake.abort();
+        try {
+          const interval = this.cancellationIds.has(turnId) ? Math.min(1000, this.pollMilliseconds) : this.pollMilliseconds;
+          await delay(Math.max(interval, this.readBackoff.remaining),
+            AbortSignal.any([lifetime, wake.signal]));
+        } catch (cause) { if (!wake.signal.aborted) throw cause; }
+        finally { delete wait.wake; }
       }
     } finally { this.waits.delete(key); }
   }
@@ -622,6 +678,7 @@ export class ApplicationConversationSession<TRequest = unknown> {
     this.assertOpen();
     if (!result.ok) throw new ApplicationConversationSessionError(result.error.code, result.error.message, result.error.retryable);
     // The authoritative receipt is independent of transcript rendering latency.
+    for (const wait of this.waits.values()) if (wait.turnId === turnId) wait.wake?.();
     void this.refresh().catch(() => undefined); return result.value.status;
   }
   stopObserving(turnId: string): boolean {

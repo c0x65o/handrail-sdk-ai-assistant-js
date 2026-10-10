@@ -209,3 +209,86 @@ it("returns bounded idempotent decision receipts and refuses mismatched review b
   const bytes = createApplicationGatewayDisplayHistory({ baseUrl: "https://app.test", fetch: (async () => new Response("x".repeat(8193))) as typeof fetch });
   await expect(bytes.decideApproval(input)).rejects.toThrow("byte budget");
 });
+
+
+it("bundles bounded reads through ordinary scoped authorization and rejects mixed conversations", async () => {
+  const value = { schemaVersion: 1, status: "ready", conversationId: "conversation", generation: 0,
+    revision: 0, canonicalRevision: 0, activeTurnId: null, records: [], nextCursor: null };
+  const history: ConversationDisplayHistory = { page: vi.fn(async () => value as never), changes: vi.fn(), content: vi.fn(),
+    control: vi.fn(async () => ({ ...value, activeTurn: null, latestTurn: null, requestedTurn: null }) as never) };
+  const authorize = vi.fn(async () => ({ principalId: "account" }));
+  const gateway = createApplicationGateway({ transport, authorize, checkpointForEvent: point,
+    displayHistoryFor: () => history, displayControl: true });
+  const read = (reads: unknown[]) => gateway.handle(new Request("https://app.test/conversations/history", {
+    method: "POST", body: JSON.stringify({ operation: "bundle", input: { conversationId: "conversation", reads } }),
+  }));
+  const reads = [{ operation: "control", input: { conversationId: "conversation", turnId: "exact" } },
+    { operation: "page", input: { conversationId: "conversation", view: { type: "approval_history" } } }];
+  const response = await read(reads);
+  expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect((await response.json()).value.results).toHaveLength(2);
+  expect(history.control).toHaveBeenCalledWith(reads[0]!.input);
+  expect(history.page).toHaveBeenCalledWith(reads[1]!.input);
+  for (const invalid of [[], Array(5).fill(reads[0]), [reads[0], { operation: "page", input: { conversationId: "other" } }],
+    [{ operation: "approval_decision", input: { conversationId: "conversation" } }]]) {
+    expect((await read(invalid)).status).toBe(400);
+  }
+  expect(history.page).toHaveBeenCalledTimes(1);
+  vi.mocked(history.page).mockRejectedValueOnce(new Response(null, { status: 403 }));
+  expect((await read(reads)).status).toBe(403);
+  expect(authorize).toHaveBeenCalledTimes(6);
+});
+
+it("derives bounded context from the exact bundled message page and withholds the envelope on denial", async () => {
+  const header = { schemaVersion: 1 as const, status: "ready" as const, conversationId: "conversation", generation: 0,
+    revision: 1, canonicalRevision: 1, activeTurnId: null };
+  const message = { kind: "message" as const, id: "message", turnId: null, revision: 1, bytes: 20, deferred: false,
+    value: { message_id: "message", role: "user", content: [{ type: "text", text: "Hi" }], attachments: [] } };
+  const history: ConversationDisplayHistory = { changes: vi.fn(), content: vi.fn(),
+    control: vi.fn(async () => ({ ...header, activeTurn: null, latestTurn: null, requestedTurn: null })),
+    page: vi.fn(async input => ({ ...header, nextCursor: null, records: input.view ? [] : [message] }) as never) };
+  const gateway = createApplicationGateway({ transport, authorize: async () => ({ principalId: "account" }), checkpointForEvent: point,
+    displayHistoryFor: () => history, displayControl: true });
+  const request = () => gateway.handle(new Request("https://app.test/conversations/history", { method: "POST",
+    body: JSON.stringify({ operation: "bundle", input: { conversationId: "conversation", contextFromPage: 1,
+      reads: [{ operation: "control", input: { conversationId: "conversation" } },
+        { operation: "page", input: { conversationId: "conversation" } }] } }) }));
+  const response = await request();
+  expect(response.status).toBe(200);
+  expect((await response.json()).value.related.input).toEqual({ conversationId: "conversation", limit: 30,
+    maximumBytes: 65536, view: { type: "context", messageIds: ["message"] } });
+  expect(history.page).toHaveBeenCalledTimes(2);
+  vi.mocked(history.page).mockImplementation(async input => {
+    if (input.view) throw new Response(null, { status: 403 });
+    return { ...header, nextCursor: null, records: [message] } as never;
+  });
+  expect((await request()).status).toBe(403);
+});
+
+it("bundles latest/context only for complete tail changes and retains paged demands", async () => {
+  const header = { schemaVersion: 1 as const, status: "ready" as const, conversationId: "conversation", generation: 0,
+    revision: 2, canonicalRevision: 2, activeTurnId: null };
+  const message = (id: string) => ({ kind: "message" as const, id, turnId: null, revision: 2, bytes: 20, deferred: false,
+    value: { message_id: id, role: "user", content: [{ type: "text", text: id }], attachments: [] } });
+  let cursor: string | null = null;
+  const history: ConversationDisplayHistory = { content: vi.fn(),
+    control: vi.fn(async () => ({ ...header, activeTurn: null, latestTurn: null, requestedTurn: null })),
+    changes: vi.fn(async () => ({ ...header, throughRevision: 2, nextCursor: cursor, records: [message("new")] }) as never),
+    page: vi.fn(async input => ({ ...header, nextCursor: null, records: input.view ? [] : [message("old"), message("new")] }) as never) };
+  const gateway = createApplicationGateway({ transport, authorize: async () => ({ principalId: "account" }), checkpointForEvent: point,
+    displayHistoryFor: () => history, displayControl: true });
+  const request = () => gateway.handle(new Request("https://app.test/conversations/history", { method: "POST",
+    body: JSON.stringify({ operation: "bundle", input: { conversationId: "conversation", tailFromChanges: ["old"],
+      reads: [{ operation: "control", input: { conversationId: "conversation" } },
+        { operation: "changes", input: { conversationId: "conversation", generation: 0, afterRevision: 1 } },
+        { operation: "page", input: { conversationId: "conversation", view: { type: "approval_history" } } }] } }) }));
+  const result = await (await request()).json();
+  expect(result.value.tail.value.records.map((record: { id: string }) => record.id)).toEqual(["old", "new"]);
+  expect(result.value.related.input.view).toEqual({ type: "context", messageIds: ["new", "old"] });
+  expect(history.page).toHaveBeenCalledTimes(3); // approval history, latest, exact context
+  cursor = "remaining-changes"; vi.mocked(history.page).mockClear();
+  const partial = await (await request()).json();
+  expect(partial.value.tail).toBeNull(); expect(partial.value.related).toBeNull();
+  expect(partial.value.results[1].nextCursor).toBe("remaining-changes");
+  expect(history.page).toHaveBeenCalledTimes(1);
+});

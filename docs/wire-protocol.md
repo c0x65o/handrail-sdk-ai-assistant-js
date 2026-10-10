@@ -30,6 +30,52 @@ Each `event` frame contains `{type:"event", event, checkpoint}`. Canonical `Stre
 
 Clients must ignore unknown additive fields and event types they do not render, reject an incompatible major protocol string, preserve opaque IDs/cursors byte-for-byte, and resume only after durably applying the associated event. Servers must bound JSON/SSE sizes, redact public errors, authorize every conversation and attachment, and never trust client-supplied tenancy or actor identity.
 
+## Bounded history read bundles
+
+Gateways that advertise `displayHistory.readBundle: true` accept
+`POST /conversations/history` with `operation: "bundle"` and
+`input: {conversationId, reads: [{operation, input}, ...]}`. A bundle contains
+one to four `control`, `page`, or `changes` reads for the same conversation.
+Each read uses the existing scoped store authorization, input limits and result
+shape. Failure of any read fails the whole HTTP response. Writes, content chunks
+and approval decisions are not bundle operations. Responses are private/no-store.
+The request envelope remains limited to 8 KiB; every result retains its own
+control/page byte and record limits.
+
+The response is `{results: [...] , related: null | {input, value}}`. An optional
+`contextFromPage: 1` may accompany at most three explicit reads: read zero must
+be control and read one must be an unanchored, uncursored messages page. If those
+heads agree, the gateway also reads the first bounded context group derived from
+that exact message page and active/latest turn, returning its explicit input and
+page in `related`. This counts toward the four-read limit. Further reference
+groups and continuation pages remain ordinary explicit reads.
+
+A tail-following refresh may instead supply `tailFromChanges: [messageIds...]`
+(up to 90 distinct retained message IDs) with at most three explicit reads,
+starting with control and an uncursored changes read. Only complete changes at
+the same generation/revision may derive a bounded latest messages page when new
+messages are outside the retained window. The response includes that explicit
+`tail: {input, value}` and a context page for the resulting message IDs. This
+bounded dependent form performs at most five store reads in one HTTP request.
+Partial changes and historical/anchored windows retain their normal paging paths.
+
+This envelope is not a transactional snapshot or a cache. The Flutter session
+consumes each matching result once within its initiating refresh, checking client,
+conversation, activation, operation intent, generation, revision and exact inputs.
+Incoherent heads, intervening navigation/invalidation or incomplete derived
+coverage fall back to the ordinary read paths. Existing paging, deferred content,
+approval and context validation still applies. Exact-turn admission and uncertain
+submission recovery issue fresh controls. Old gateways retain the existing
+individual-read behavior; both gateway and Flutter source revisions must be
+published and adopted to enable bundling.
+
+JS automatic display polling and stream invalidations share the configured
+polling interval (one second by default). Ordinary exact-turn observation honors
+the configured interval. A demand received during a read schedules a follow-up. Explicit
+refresh/admission and Stop are immediate; acknowledged Stop uses a short bounded
+observation cadence. Concurrent observers share only an in-flight exact-turn
+read, and closing one observer does not cancel another or poison read backoff.
+
 ## Cancellation reasons
 
 `handrail.ai-runtime.v1` `response.cancelled.reason` is a closed enum:

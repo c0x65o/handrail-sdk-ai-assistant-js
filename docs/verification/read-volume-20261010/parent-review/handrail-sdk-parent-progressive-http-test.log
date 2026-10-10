@@ -1,0 +1,12 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ✓ test/application-session-volume.test.ts (2 tests) 18737ms
+   ✓ qualifies 70 streamed deltas at 'default cadence' through real HTTP with the unchanged 120/60 budget  9637ms
+   ✓ qualifies 70 streamed deltas at 'configured five-second cadence' through real HTTP with the unchanged 120/60 budget  9099ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  09:12:34
+   Duration  21.02s (transform 1.45s, setup 0ms, collect 1.93s, tests 18.74s, environment 0ms, prepare 89ms)
+

@@ -1,0 +1,185 @@
+{
+  "work_request": "942f9027-b481-4f9b-bb3d-6c19cb5631ee",
+  "parent_goal": "7e79dd9a-6de5-4922-81dd-2ed283021316",
+  "original_preview_outcome": "d848dc87-0773-4b18-bcef-2ff95973a209",
+  "verdict": "Tested SDK source repair. Original live Preview outcome remains unverified pending parent publication, adoption and authenticated validation.",
+  "scope": "Only the two registered SDK repositories; no commit, push, PR, publication, deployment, consumer pin edits, owner operation replay, Handrail database/queue changes or new tasks/goals.",
+  "base_commits": {
+    "handrail-sdk-ai-assistant-js": "27436ebd452ba36aaf3f5bb4e0e2fc99f02b76e8",
+    "handrail-sdk-ai-assistant-flutter": "e9ecd864e181a5a1672a2aad2d20a4d0f2cb6895"
+  },
+  "changed_source_and_test_files_sha256": {
+    "handrail-sdk-ai-assistant-js": {
+      "docs/wire-protocol.md": "460812bc8c7f63ae0cdb6d1eb92cfc060db50e6db746a51cfa2c0834d16b7f25",
+      "src/client/application-session.ts": "8e11116e9e674dacc3545fdb27c16d71fa4f6c0c79b5fa9b1287e075e948f1c0",
+      "src/transports/application-gateway.ts": "fb5978a36a9b533617fe98d41edfbf5910ed3ac8e487700e700c266dc18b033d",
+      "test/application-display-history.test.ts": "7d4a861f6b3078053d03e3e6b822103747faa98961e7bf042d6b15e36ef5bcda",
+      "test/application-session-volume.test.ts": "122110ef423c7b91aefb6506ed11984714e296148cfd0d3fe8bd06653ae5234e",
+      "test/application-session.test.ts": "977f75464f503ed813f677d35a6d58001c6fc8aa366cdfd045bb2ef56652b56d"
+    },
+    "handrail-sdk-ai-assistant-flutter": {
+      "packages/handrail_ai_client/README.md": "2b411549ac3cbcaae14c5056ba800ac3960e7a0357dc5d2f00b8cec8672431f6",
+      "packages/handrail_ai_client/lib/src/display_control.dart": "46250e45b187855e97529f76bf41e3f9adff4350abc98d21218fd9216793aef0",
+      "packages/handrail_ai_client/lib/src/display_history.dart": "8c4fb11307b4ff1ac7a36c5235479d17258edd5bd5f4984763643c8caf42f295",
+      "packages/handrail_ai_client/lib/src/display_session.dart": "434101c90e417f1f298a7d011a1bbac9bce8c87916b5e64b906f2e8708edae4f",
+      "packages/handrail_ai_client/lib/src/display_window.dart": "dec4fe5c6e953f49f0b181c9f112078ad1ba17dc9024c3f42252cadede7ac214",
+      "packages/handrail_ai_client/lib/src/session.dart": "4303216a44adb5746eda674d8960938c0216aa520d2d1d78f26f8758c9697738",
+      "packages/handrail_ai_client/test/display_session_test.dart": "5c51e46933b1006ab258f6050ec132adbb25cbc74f5a7dd0fe31d6a3fe462789",
+      "packages/handrail_ai_client/test/read_bundle_test.dart": "37025784bd0416b45ae43cb26c0f10adc91fcc35b2cb9efae27d23bfb96b75a8",
+      "tool/gateway/gateway.mjs": "fc56d4c9e53e5bc2f62e466e003a9a77c48decc6666e06051685cbd58dd38d3f",
+      "tool/read_volume_journey_test.dart": "60882325ea12c18c08b9ba0e6bd114b1067918e2162c64157943d959c6d8d94b"
+    }
+  },
+  "implementation": [
+    "Gateway adds a negotiated bounded history bundle to the existing authorized history endpoint: up to four explicit control/page/changes reads, or at most five with dependent latest/context reads. Each constituent uses existing scoped store authorization; failures withhold the envelope. Body and constituent byte/page limits remain enforced.",
+    "Flutter spends a bundle only once inside its owning refresh. Client/account, conversation, activation, operation intent, window observation, generation and revision fences retain existing parsers, complete related coverage and approval/context paging. Incoherent envelopes fall back to ordinary reads; admission/recovery/exact-turn controls remain fresh and separate.",
+    "Stream and window invalidations retain follow-up demand across in-flight reads and moved deadlines. Concurrent observers share only an in-flight exact-turn observation read; independent cancellation, authoritative Stop and revoked-access eviction are covered.",
+    "JS invalidations honor the configured polling cadence instead of a fixed 100ms wake. Concurrent shared-tree changes preserving the one-second public default/caller cadence were retained and verified. Fresh prepare cannot use a refresh skipped during read backoff.",
+    "No host cache or separate recovery mechanism. Bundling reduces HTTP dispatches, not necessarily constituent database reads; comparison.json records both. Existing Flutter one-use preparation/related-coverage safeguards remain in place."
+  ],
+  "evidence_scope": {
+    "harness": "Actual loopback HTTP through SDK application gateway and existing disposable PGlite PostgreSQL engine, migrations, scoped event/catalog/display/durable-turn stores. Deterministic provider; first response is 70 deltas at 100ms intervals. This is source/protocol qualification, not live owner traffic or an external PostgreSQL deployment.",
+    "limit": "Unchanged single 120 requests/rolling 60s bucket for every /api/ai dispatch, including capabilities and turn start. Three deliberate diagnostic list reads also count. /test fixture orchestration is separately recorded. No limit resets/exemptions or rate-window sleeps.",
+    "comparison": "Same current source journey with only readBundle capability disabled versus enabled, not an immutable-public-Flutter-SHA benchmark. Both widths complete identical phases through canonical Stop: legacy 114 shared HTTP, bundle 82. Legacy first 429 is request 121 during New; legacy has no completed whole-journey result.",
+    "candidate": [
+      {
+        "width": 390,
+        "completed_phases": [
+          "new",
+          "ordinary-70-delta",
+          "ordinary-second",
+          "navigation-return",
+          "reload-one",
+          "lost-start-ack",
+          "reload-retained-intent",
+          "exact-once-retry",
+          "reload-two",
+          "held-stop",
+          "new-one-admission",
+          "reload-three-reopen-both",
+          "diagnostic-lists"
+        ],
+        "http_dispatches": 130,
+        "ordinary_http": 111,
+        "diagnostic_http": 19,
+        "shared_http": 114,
+        "diagnostic_shared_http": 3,
+        "history_http": 56,
+        "maximum_rolling_60s_shared": 114,
+        "maximum_history_concurrency": 1,
+        "last_shared_dispatch_ms": 19164
+      },
+      {
+        "width": 1440,
+        "completed_phases": [
+          "new",
+          "ordinary-70-delta",
+          "ordinary-second",
+          "navigation-return",
+          "reload-one",
+          "lost-start-ack",
+          "reload-retained-intent",
+          "exact-once-retry",
+          "reload-two",
+          "held-stop",
+          "new-one-admission",
+          "reload-three-reopen-both",
+          "diagnostic-lists"
+        ],
+        "http_dispatches": 130,
+        "ordinary_http": 111,
+        "diagnostic_http": 19,
+        "shared_http": 114,
+        "diagnostic_shared_http": 3,
+        "history_http": 56,
+        "maximum_rolling_60s_shared": 114,
+        "maximum_history_concurrency": 1,
+        "last_shared_dispatch_ms": 17954
+      }
+    ],
+    "javascript": {
+      "configured_poll_ms": 5000,
+      "stream_deltas": 70,
+      "http_dispatches": 18,
+      "history_http": 15,
+      "maximum_rolling_60s": 18,
+      "maximum_history_concurrency": 1,
+      "original_source_reproduction": "Original HEAD source in temporary new files emitted 70 ordinary controls in seven seconds despite configured 10s cadence; identical regression on repaired source emits zero before 10s and one at 10s. Temporary source/test files removed; before-tests.log retained."
+    },
+    "default_cadence_limitation": "JS one-second default remains unchanged. An intermediate real-HTTP run at that default emitted 41 requests (38 history) for the seven-second turn and failed the new 30-total/24-history qualification threshold; default-cadence-tests.log retains that failure. The final 18-request result explicitly uses 5s. Do not claim the default or live React workload is qualified from this result.",
+    "prior_authoritative_documents": "The exact requested Flutter docs/assistant-dependency-assessment-20261010/handoff.json and docs/assistant-amplification-20261010/handoff.json were absent from authorized checkouts. Supplied authoritative evidence was retained; no cross-project access was attempted. Its 126/121 totals are not directly comparable to this stricter fixture partition."
+  },
+  "verification": [
+    {
+      "cwd": "handrail-sdk-ai-assistant-js",
+      "command": "npm run typecheck && npm run build",
+      "result": "passed",
+      "log": "compile.log"
+    },
+    {
+      "cwd": "handrail-sdk-ai-assistant-js",
+      "command": "HANDRAIL_READ_VOLUME_EVIDENCE=docs/verification/read-volume-20261010 npx vitest run test/application-display-history.test.ts test/application-session.test.ts test/application-session-volume.test.ts test/display-window.test.ts test/react-application-session.test.tsx test/application-gateway.test.ts test/application-gateway-synchronization.test.ts --maxWorkers=1 --no-file-parallelism",
+      "result": "97 passed in 7 files",
+      "log": "tests.log"
+    },
+    {
+      "cwd": "handrail-sdk-ai-assistant-flutter/packages/handrail_ai_client",
+      "command": "/opt/handrail/.handrail/flutter-sdk/bin/cache/dart-sdk/bin/dart analyze",
+      "result": "passed, no issues"
+    },
+    {
+      "cwd": "handrail-sdk-ai-assistant-flutter/packages/handrail_ai_client",
+      "command": "/opt/handrail/.handrail/flutter-sdk/bin/cache/dart-sdk/bin/dart test --concurrency=1",
+      "result": "313 passed, 3 existing source-gateway cases skipped by their environment gate",
+      "log": "client-tests.log"
+    },
+    {
+      "cwd": "handrail-sdk-ai-assistant-flutter/packages/handrail_ai_client",
+      "command": "HANDRAIL_TEST_JS_SDK_DIST=/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/dist /opt/handrail/.handrail/flutter-sdk/bin/cache/dart-sdk/bin/dart test test/submission_gateway_test.dart --concurrency=1",
+      "result": "21 passed, including all three gated PostgreSQL cases",
+      "log": "source-gateway-tests.log"
+    },
+    {
+      "cwd": "handrail-sdk-ai-assistant-flutter",
+      "command": "FLUTTER_ALREADY_LOCKED=true node tool/check-shared-widgets.mjs /opt/handrail/.handrail/flutter-sdk",
+      "result": "117 passed using the installed public dependency (backward compatibility)",
+      "log": "widget-tests.log"
+    },
+    {
+      "cwd": "handrail-sdk-ai-assistant-flutter",
+      "command": "FLUTTER_ALREADY_LOCKED=true HANDRAIL_TEST_READ_VOLUME=1 HANDRAIL_TEST_JS_SDK_DIST=/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/dist HANDRAIL_READ_VOLUME_EVIDENCE=/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter/docs/verification/read-volume-20261010 node tool/check-shared-widgets.mjs /opt/handrail/.handrail/flutter-sdk tool/read_volume_journey_test.dart",
+      "result": "2 complete journeys passed at 390 and 1440",
+      "log": "journey.log"
+    },
+    {
+      "cwd": "handrail-sdk-ai-assistant-flutter",
+      "command": "HANDRAIL_READ_VOLUME_LEGACY=1 FLUTTER_ALREADY_LOCKED=true HANDRAIL_TEST_READ_VOLUME=1 HANDRAIL_TEST_JS_SDK_DIST=/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/dist HANDRAIL_READ_VOLUME_EVIDENCE=/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-flutter/docs/verification/read-volume-20261010 node tool/check-shared-widgets.mjs /opt/handrail/.handrail/flutter-sdk tool/read_volume_journey_test.dart",
+      "result": "Expected negative comparison: both tests failed at first 429 during New after ten completed phases. Not a passing legacy journey.",
+      "log": "legacy-journey.log"
+    },
+    {
+      "cwd": "both repositories",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "remaining_parent_work": [
+    "Review and publish supported full-SHA revisions through the parent-authorized flow; adopt both the JS gateway and Flutter client revisions via public HTTPS Git and matching locks, retaining normal compilation. No published SHA for this patch exists yet.",
+    "Re-run the full Preview native Flutter/server checks, web build/assets and original owner journey after adoption. SDK source tests do not replace the previously failed native Flutter receipt or establish live Preview acceptance.",
+    "Independently validate authenticated six-SDK QA and the separate live React workload, including its actual configured cadence, request budget, account replacement, pending approvals and uncertain recovery. A 5s JS fixture does not qualify the unchanged 1s default.",
+    "Preserve the existing owner approvals and uncertain recovery identities; no live operation was read, replayed, recreated or settled by this worker. Preview remains dev-only."
+  ],
+  "required_check_ids": [],
+  "repository": "handrail-sdk-ai-assistant-js",
+  "evidence_directory": "/opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js/docs/verification/read-volume-20261010",
+  "parent_review": {
+    "source": "Parent goal review after worker settlement",
+    "default_cadence_http": "Parent fixture now qualifies default 1s and explicit 5s with progressive canonical updates and unchanged 120/60 limit. Both passed; default41requests/38history/sevenpartialupdates; explicit5s18requests/15history/onepartialupdate. This qualifies this deterministic seven-second fixture, not the full live React journey.",
+    "logs": [
+      "/tmp/handrail-sdk-parent-progressive-http-test.log",
+      "/tmp/handrail-sdk-parent-typecheck.log"
+    ],
+    "evidence_directory": "Handrail artifacts/blocked-work-recovery/sdk-parent-http-review",
+    "supersedes": "Prior default-cadence limitation refers to superseded incidental 30-total/24-history assertions, not an actual120/60failure. The earlier failed run remains retained."
+  }
+}

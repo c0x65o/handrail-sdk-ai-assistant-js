@@ -1,0 +1,23 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ✓ test/application-session-volume.test.ts (2 tests) 18352ms
+   ✓ qualifies 70 streamed deltas at 'default cadence' through real HTTP with the unchanged 120/60 budget  9367ms
+   ✓ qualifies 70 streamed deltas at 'configured five-second cadence' through real HTTP with the unchanged 120/60 budget  8984ms
+ ✓ test/application-display-history.test.ts (13 tests) 731ms
+   ✓ returns bounded idempotent decision receipts and refuses mismatched review bindings before mutation  533ms
+ ✓ test/application-session.test.ts (48 tests) 424ms
+ ✓ test/application-gateway-synchronization.test.ts (2 tests) 112ms
+ ✓ test/application-gateway.test.ts (13 tests) 63ms
+ ✓ test/display-window.test.ts (12 tests) 21ms
+ ✓ test/react-application-session.test.tsx (7 tests) 3708ms
+   ✓ keeps unloaded approvals visible and opens their inbox from the fixed request status  480ms
+   ✓ uses negotiated large text and bounded activity navigation through the standard preset  1065ms
+   ✓ places activity paging above history and loads activity on an upward scroll before older messages  443ms
+   ✓ negotiates bounded history in the standard React preset with no snapshot, saved stream replay, or approval-list hydration  1256ms
+
+ Test Files  7 passed (7)
+      Tests  97 passed (97)
+   Start at  09:22:47
+   Duration  29.14s (transform 2.54s, setup 0ms, collect 4.06s, tests 23.41s, environment 310ms, prepare 424ms)
+

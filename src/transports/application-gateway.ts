@@ -1,3 +1,4 @@
+import { relatedViews } from "../client/related-records.js";
 import type { TurnApprovalModeInput, TurnApprovalModeResult } from "../composer-approval.js";
 import { approvalDisplayProposalBinding, parseConversationApprovalDisplayDecision, type ConversationApprovalDisplayDecisionInput } from "../conversation/approval-display-review.js";
 import { parseServerSentEvents } from "./sse.js";
@@ -72,7 +73,7 @@ export interface ApplicationGatewayCapabilities {
   readonly presence: boolean;
   readonly synchronization: boolean;
   /** Complete message records, separate from canonical audit synchronization. */
-  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true; readonly messageText?: true; readonly recordText?: true; readonly approvalReview?: true; readonly pendingApprovals?: true; readonly approvalHistory?: true };
+  readonly displayHistory?: false | { readonly version: 1; readonly maximumPageSize: number; readonly maximumPageBytes: number; readonly control?: true; readonly readBundle?: true; readonly messageText?: true; readonly recordText?: true; readonly approvalReview?: true; readonly pendingApprovals?: true; readonly approvalHistory?: true };
   readonly activity?: boolean;
   /** Omitted by older gateways; never assume saved files have public URLs. */
   readonly attachmentDownloads?: false | AttachmentDownloadCapability;
@@ -419,7 +420,7 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
     ...(options.capabilities?.transcription === undefined ? {} : { transcription: options.capabilities.transcription }),
     synchronization: options.capabilities?.synchronization ?? false,
     ...(options.displayHistoryFor ? { displayHistory: { version: 1 as const,
-      maximumPageSize: CONVERSATION_DISPLAY_LIMITS.maximumPageSize, maximumPageBytes: CONVERSATION_DISPLAY_LIMITS.maximumPageBytes,
+      readBundle: true as const, maximumPageSize: CONVERSATION_DISPLAY_LIMITS.maximumPageSize, maximumPageBytes: CONVERSATION_DISPLAY_LIMITS.maximumPageBytes,
       ...(options.displayControl ? { control: true as const } : {}),
       ...(options.displayApprovalHistory ? { approvalHistory: true as const } : {}),
       ...(options.displayPendingApprovals ? { pendingApprovals: true as const } : {}),
@@ -497,7 +498,8 @@ export function createApplicationGateway<TEvent, TRequest, TContext extends Appl
               throw new ConversationDisplayHistoryError("invalid_input", "Invalid history request");
             }
             const history = options.displayHistoryFor(authorizationContext);
-            const value = input.operation === "page" ? await history.page(input.input as ConversationDisplayPageInput)
+            const value = input.operation === "bundle" ? await readDisplayBundle(history, input.input, request.signal)
+              : input.operation === "page" ? await history.page(input.input as ConversationDisplayPageInput)
               : input.operation === "changes" ? await history.changes(input.input as ConversationDisplayChangesInput)
               : input.operation === "control" && history.control ? await history.control(input.input as ConversationDisplayControlInput)
               : input.operation === "content" ? await history.content(input.input as ConversationDisplayContentInput)
@@ -1056,6 +1058,84 @@ export function createApplicationGatewayDisplayHistory(
     changes: async (input: ConversationDisplayChangesInput, signal?: AbortSignal) =>
       parseConversationDisplayPage(await invoke("changes", input, pageBudget(input), signal), input) as Awaited<ReturnType<ConversationDisplayHistory["changes"]>>,
   });
+}
+
+/** A bounded transport envelope, not a snapshot or authorization cache. Every
+ * constituent operation passes through the scoped store's ordinary authorization
+ * and parsers. Callers must fence independently advancing projection revisions. */
+async function readDisplayBundle(history: ConversationDisplayHistory, raw: unknown, signal: AbortSignal) {
+  const input = raw as { conversationId?: unknown; reads?: unknown; contextFromPage?: unknown; tailFromChanges?: unknown };
+  if (typeof input.conversationId !== "string" || !Array.isArray(input.reads) ||
+      input.reads.length < 1 || input.reads.length > 4) {
+    throw new ConversationDisplayHistoryError("invalid_input", "Invalid history bundle");
+  }
+  const reads = input.reads as { operation: string; input: ConversationDisplayPageInput & ConversationDisplayChangesInput & ConversationDisplayControlInput }[];
+  if (reads.some(read => !read || !["control", "page", "changes"].includes(read.operation) ||
+      !read.input || read.input.conversationId !== input.conversationId)) {
+    throw new ConversationDisplayHistoryError("invalid_input", "Invalid history bundle scope");
+  }
+  if (input.contextFromPage !== undefined && (input.contextFromPage !== 1 || reads.length > 3 ||
+      reads[0]?.operation !== "control" || reads[1]?.operation !== "page" ||
+      reads[1].input.view !== undefined || reads[1].input.anchor !== undefined || reads[1].input.cursor !== undefined)) {
+    throw new ConversationDisplayHistoryError("invalid_input", "Invalid bundled context intent");
+  }
+  const tailIds = input.tailFromChanges;
+  if (tailIds !== undefined && (input.contextFromPage !== undefined || reads.length > 3 ||
+      reads[0]?.operation !== "control" || reads[1]?.operation !== "changes" || reads[1].input.cursor !== undefined ||
+      !Array.isArray(tailIds) || tailIds.length > 90 || new Set(tailIds).size !== tailIds.length ||
+      tailIds.some(id => typeof id !== "string" || !id.length || id.length > 512))) {
+    throw new ConversationDisplayHistoryError("invalid_input", "Invalid bundled tail intent");
+  }
+  const results: unknown[] = [];
+  for (const read of reads) {
+    signal.throwIfAborted();
+    const value = read.operation === "control" && history.control ? await history.control(read.input)
+      : read.operation === "page" ? await history.page(read.input)
+      : read.operation === "changes" ? await history.changes(read.input) : null;
+    if (value === null) throw new ConversationDisplayHistoryError("invalid_input", "Unsupported history bundle read");
+    results.push(value);
+  }
+  signal.throwIfAborted();
+  let related = null;
+  if (input.contextFromPage === 1) {
+    const control = parseConversationDisplayControl(results[0], reads[0]!.input);
+    const page = parseConversationDisplayPage(results[1], reads[1]!.input);
+    if (control.status === "ready" && page.status === "ready" && page.generation === control.generation && page.revision === control.revision) {
+      const view = relatedViews(page.records.map(record => record.id), (control.activeTurn ?? control.latestTurn)?.turnId)[0];
+      if (view) {
+        const request = { conversationId: input.conversationId, limit: 30, maximumBytes: 65536, view };
+        const value = await history.page(request);
+        signal.throwIfAborted(); related = { input: request, value };
+      }
+    }
+  }
+  let tail = null;
+  if (Array.isArray(tailIds)) {
+    const control = parseConversationDisplayControl(results[0], reads[0]!.input);
+    const changes = parseConversationDisplayPage(results[1], reads[1]!.input);
+    if (control.status === "ready" && changes.status === "ready" && changes.nextCursor === null &&
+        control.generation === changes.generation && control.revision === changes.revision) {
+      let messageIds = tailIds as string[];
+      if (changes.records.some(record => record.kind === "message" && !record.deleted && !messageIds.includes(record.id))) {
+        const request = { conversationId: input.conversationId, limit: reads[1]!.input.limit ?? 30,
+          maximumBytes: reads[1]!.input.maximumBytes ?? 65536 };
+        const value = await history.page(request); signal.throwIfAborted();
+        tail = { input: request, value };
+        const page = parseConversationDisplayPage(value, request);
+        messageIds = page.status === "ready" && page.generation === control.generation ? page.records.map(record => record.id) : [];
+      } else {
+        const removed = new Set(changes.records.filter(record => record.kind === "message" && record.deleted).map(record => record.id));
+        messageIds = messageIds.filter(id => !removed.has(id));
+      }
+      const view = relatedViews(messageIds, (control.activeTurn ?? control.latestTurn)?.turnId)[0];
+      if (view) {
+        const request = { conversationId: input.conversationId, limit: 30, maximumBytes: 65536, view };
+        const value = await history.page(request); signal.throwIfAborted();
+        related = { input: request, value };
+      }
+    }
+  }
+  return { results, related, tail };
 }
 
 async function readGatewayStream<TEvent>(

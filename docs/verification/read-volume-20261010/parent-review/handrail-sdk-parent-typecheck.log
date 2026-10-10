@@ -1,0 +1,4 @@
+
+> @handrail/ai-assistant@0.2.80 typecheck
+> tsc -p tsconfig.json
+

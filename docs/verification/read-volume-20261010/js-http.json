@@ -1,0 +1,137 @@
+{
+  "dispatches": [
+    {
+      "ms": 7,
+      "path": "/api/ai/capabilities",
+      "rolling60s": 1,
+      "status": 200
+    },
+    {
+      "ms": 15,
+      "path": "/api/ai/conversations/history",
+      "operation": "control",
+      "rolling60s": 2,
+      "status": 200
+    },
+    {
+      "ms": 26,
+      "path": "/api/ai/conversations/history",
+      "operation": "page",
+      "rolling60s": 3,
+      "status": 200
+    },
+    {
+      "ms": 40,
+      "path": "/api/ai/conversations/history",
+      "operation": "control",
+      "rolling60s": 4,
+      "status": 200
+    },
+    {
+      "ms": 47,
+      "path": "/api/ai/conversations/history",
+      "operation": "changes",
+      "rolling60s": 5,
+      "status": 200
+    },
+    {
+      "ms": 61,
+      "path": "/api/ai/synchronization",
+      "operation": "append_mutations",
+      "rolling60s": 6,
+      "status": 200
+    },
+    {
+      "ms": 86,
+      "path": "/api/ai/conversations/history",
+      "operation": "control",
+      "turnId": "turn_4f3733ad-8ea5-4a10-bed2-0d28f44dae48",
+      "rolling60s": 7,
+      "status": 200
+    },
+    {
+      "ms": 95,
+      "path": "/api/ai/turns/start",
+      "rolling60s": 8,
+      "status": 200
+    },
+    {
+      "ms": 163,
+      "path": "/api/ai/conversations/history",
+      "operation": "control",
+      "turnId": "turn_4f3733ad-8ea5-4a10-bed2-0d28f44dae48",
+      "rolling60s": 9,
+      "status": 200
+    },
+    {
+      "ms": 5039,
+      "path": "/api/ai/conversations/history",
+      "operation": "control",
+      "rolling60s": 10,
+      "status": 200
+    },
+    {
+      "ms": 5047,
+      "path": "/api/ai/conversations/history",
+      "operation": "changes",
+      "rolling60s": 11,
+      "status": 200
+    },
+    {
+      "ms": 5059,
+      "path": "/api/ai/conversations/history",
+      "operation": "page",
+      "rolling60s": 12,
+      "status": 200
+    },
+    {
+      "ms": 5078,
+      "path": "/api/ai/conversations/history",
+      "operation": "page",
+      "rolling60s": 13,
+      "status": 200
+    },
+    {
+      "ms": 5173,
+      "path": "/api/ai/conversations/history",
+      "operation": "control",
+      "turnId": "turn_4f3733ad-8ea5-4a10-bed2-0d28f44dae48",
+      "rolling60s": 14,
+      "status": 200
+    },
+    {
+      "ms": 7224,
+      "path": "/api/ai/conversations/history",
+      "operation": "control",
+      "turnId": "turn_4f3733ad-8ea5-4a10-bed2-0d28f44dae48",
+      "rolling60s": 15,
+      "status": 200
+    },
+    {
+      "ms": 7234,
+      "path": "/api/ai/conversations/history",
+      "operation": "control",
+      "rolling60s": 16,
+      "status": 200
+    },
+    {
+      "ms": 7242,
+      "path": "/api/ai/conversations/history",
+      "operation": "changes",
+      "rolling60s": 17,
+      "status": 200
+    },
+    {
+      "ms": 7253,
+      "path": "/api/ai/conversations/history",
+      "operation": "page",
+      "rolling60s": 18,
+      "status": 200
+    }
+  ],
+  "maximumConcurrency": 1,
+  "maximumRolling60s": 18,
+  "partialLengths": [
+    382
+  ]
+}

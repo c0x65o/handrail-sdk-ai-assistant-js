@@ -1,0 +1,43 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ❯ test/application-session-volume.test.ts (1 test | 1 failed) 9722ms
+   × qualifies 70 streamed deltas through real HTTP with the unchanged 120/60 budget 9721ms
+     → expected 38 to be less than or equal to 24
+ ✓ test/application-display-history.test.ts (13 tests) 710ms
+   ✓ returns bounded idempotent decision receipts and refuses mismatched review bindings before mutation  525ms
+ ✓ test/application-session.test.ts (47 tests) 429ms
+ ✓ test/application-gateway-synchronization.test.ts (2 tests) 113ms
+ ✓ test/application-gateway.test.ts (13 tests) 58ms
+ ✓ test/display-window.test.ts (12 tests) 20ms
+ ✓ test/react-application-session.test.tsx (7 tests) 3994ms
+   ✓ keeps unloaded approvals visible and opens their inbox from the fixed request status  496ms
+   ✓ uses negotiated large text and bounded activity navigation through the standard preset  1106ms
+   ✓ places activity paging above history and loads activity on an upward scroll before older messages  538ms
+   ✓ negotiates bounded history in the standard React preset with no snapshot, saved stream replay, or approval-list hydration  1347ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/application-session-volume.test.ts > qualifies 70 streamed deltas through real HTTP with the unchanged 120/60 budget
+AssertionError: expected 38 to be less than or equal to 24
+ ❯ test/application-session-volume.test.ts:98:90
+     96|     expect(execute).toHaveBeenCalledOnce();
+     97|     expect(dispatches.some(row => row.status === 429)).toBe(false);
+     98|     expect(dispatches.filter(row => row.path.endsWith("/conversations/…
+       |                                                                                          ^
+     99|     expect(Math.max(...dispatches.map(row => row.rolling60s))).toBeLes…
+    100|     expect(maximumConcurrency).toBeLessThanOrEqual(2); // exact-turn o…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 6 passed (7)
+      Tests  1 failed | 94 passed (95)
+   Start at  09:09:10
+   Duration  21.00s (transform 2.56s, setup 0ms, collect 4.19s, tests 15.05s, environment 335ms, prepare 432ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

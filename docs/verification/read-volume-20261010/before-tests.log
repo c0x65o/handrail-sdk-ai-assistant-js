@@ -1,0 +1,85 @@
+
+ RUN  v3.2.4 /opt/handrail/repos/handrail/handrail-ai-assistant-sdk/handrail-sdk-ai-assistant-js
+
+ ❯ test/read-volume-before.test.ts (47 tests | 1 failed | 46 skipped) 39ms
+   ↓ releases definitively rejected admission for correction without clearing the draft or starting a provider
+   ↓ keeps a rejected send journal if exact local removal fails and retries only that identity
+   ↓ cancels selected approval reads and prevents decisions after a chat is deactivated
+   ↓ scopes explicit record inspection to negotiated active account/selection lifetime
+   ↓ replays a saved draft origin after process loss without sending device metadata to the server
+   ↓ preserves a same-text newer draft across retry after partial local cleanup
+   ↓ does not clean any local draft until exact server admission is confirmed
+   ↓ rejects malformed draft origins before any journal or network mutation
+   ↓ opens only the newest message page, bounds history while scrolling, and evicts inactive bodies
+   ↓ retains earlier activity pages within hard bounds, refreshes loaded records and exposes a restart
+   ↓ does not resurrect activity when a changes read overtakes an older page
+   ↓ exposes citations only with a retained source and reports incomplete citation presentation
+   ↓ publishes activity-page errors and clears all presentation after access revocation
+   ↓ bounds large activity pages by serialized bytes independently of row count
+   ↓ pages long context references on demand without exceeding the gateway request budget
+   ↓ restores one indexed anchor page and flushes the latest position when its session closes
+   ↓ does not hold the transcript behind a blocked local position read
+   ↓ captures content and request before asynchronous storage or refresh; retains exact intent before writes
+   ↓ coalesces an identical submission, notifies each caller once, and preserves identity after uncertain replies
+   ↓ reconciles a previously completed send without starting it again
+   ↓ does not start a provider or notify later callbacks after admission closes the account
+   ↓ rejects corrupted persisted admissions before touching network or storage
+   ↓ cancels only the requested active turn and retries the exact cancellation intent
+   ↓ settles a wait from scalar controls even when message rendering is temporarily offline
+   ↓ does not hold terminal observation behind an unfinished display fetch
+   ↓ returns the accepted Stop receipt while a display fetch is unfinished
+   ↓ Stop reaches an approval wait and the original client waits past stale controls for cancellation
+   ↓ aborts waiting and ignores late controls when an account closes
+   ↓ evicts access-revoked content and stops automatic retries
+   ↓ aborts and discards a late display read when switching away
+   ↓ shows the exact outgoing message synchronously while preflight is stalled and blocks double sends
+   ↓ notifies acceptance before a slow post-admission control read
+   ↓ removes local feedback when preflight fails before a submission is retained
+   ↓ settles forbidden only from canonical failure and retains the saved message
+   ↓ settles unauthenticated only from canonical failure and retains the saved message
+   ↓ does not terminalize an uncertain start when a later retry is forbidden
+   ↓ honors start Retry-After across repeated explicit Retry without new writes or identities
+   ↓ releases a terminal pending journal after reload without resubmitting
+   ↓ backs off throttled display reads while active=true without Retry or visibility bypass
+   ↓ backs off throttled display reads while active=false without Retry or visibility bypass
+   ↓ keeps Retry-After when an older display read succeeds after an observer is throttled
+   ↓ publishes new canonical messages at the caller's one-second polling interval
+   ↓ retains the default one-second canonical display cadence
+   × bounds 70 stream invalidations by the configured cadence 38ms
+     → expected [ [ …(2) ], [ …(2) ], …(68) ] to have a length of +0 but got 70
+   ↓ retains a newer navigation demand received during a display read
+   ↓ shares only concurrent exact-turn observations and independently closes a waiter
+   ↓ does not let a throttled refresh satisfy fresh prepare demand
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/read-volume-before.test.ts > bounds 70 stream invalidations by the configured cadence
+AssertionError: expected [ [ …(2) ], [ …(2) ], …(68) ] to have a length of +0 but got 70
+
+- Expected
++ Received
+
+- 0
++ 70
+
+ ❯ test/read-volume-before.test.ts:677:85
+    675|   }
+    676|   expect(frames).toBe(70);
+    677|   expect(vi.mocked(f.reader.control).mock.calls.filter(([input]) => !i…
+       |                                                                                     ^
+    678|   await vi.advanceTimersByTimeAsync(3000);
+    679|   expect(vi.mocked(f.reader.control).mock.calls.filter(([input]) => !i…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 46 skipped (47)
+   Start at  09:10:39
+   Duration  778ms (transform 408ms, setup 0ms, collect 489ms, tests 39ms, environment 0ms, prepare 66ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.8 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

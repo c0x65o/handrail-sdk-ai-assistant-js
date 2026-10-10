@@ -15,7 +15,7 @@ const sessions: ApplicationConversationSession<{ text: string }>[] = [];
 afterEach(() => { for (const session of sessions.splice(0)) session.dispose(); vi.useRealTimers(); });
 const flush = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(accept => { resolve = accept; }); return { promise, resolve }; }
-function fixture(count = 0, localStateStore?: ConversationLocalStateStore, reconcileAcceptedFiles?: (ids: readonly string[]) => Promise<void>, recordText = false) {
+function fixture(count = 0, localStateStore?: ConversationLocalStateStore, reconcileAcceptedFiles?: (ids: readonly string[]) => Promise<void>, recordText = false, pollMilliseconds = 100) {
   const records: ConversationDisplayRecord[] = Array.from({ length: count }, (_, index) => ({
     kind: "message", id: `message-${index + 1}`, revision: index + 1, turnId: null, bytes: 200, deferred: false,
     value: { message_id: `message-${index + 1}` as never, role: "user", content: [{ type: "text", text: `Text ${index + 1}` }],
@@ -69,7 +69,7 @@ function fixture(count = 0, localStateStore?: ConversationLocalStateStore, recon
   };
   let sequence = 0;
   const session = new ApplicationConversationSession({ conversationId: "chat" as never, clientId: "client" as never,
-    reader, resources, transport, pendingStore, pollMilliseconds: 100, idlePollMilliseconds: 1000, recordText, approvalReview: recordText,
+    reader, resources, transport, pendingStore, pollMilliseconds, idlePollMilliseconds: 1000, recordText, approvalReview: recordText,
     ...(localStateStore ? { localStateStore } : {}),
     ...(reconcileAcceptedFiles ? { reconcileAcceptedFiles } : {}),
     createId: () => `op${++sequence}`, now: () => "2026-09-16T12:00:00.000Z" });
@@ -625,4 +625,111 @@ it("keeps Retry-After when an older display read succeeds after an observer is t
   await f.session.refresh(); await vi.advanceTimersByTimeAsync(4999);
   expect(f.reader.control).toHaveBeenCalledTimes(reads);
   controller.abort(); await stopped; await otherStopped;
+});
+
+
+it("publishes new canonical messages at the caller's one-second polling interval", async () => {
+  vi.useFakeTimers();
+  const f = fixture(1, undefined, undefined, false, 1000);
+  await f.session.initialize();
+  f.addMessage();
+  await vi.advanceTimersByTimeAsync(1100);
+  expect(f.session.getSnapshot().window.records.map(record => record.id)).toEqual(["message-1", "message-2"]);
+  expect(f.session.getSnapshot().control?.revision).toBe(2);
+});
+
+it("retains the default one-second canonical display cadence", async () => {
+  vi.useFakeTimers();
+  const f = fixture(1);
+  const session = new ApplicationConversationSession({
+    conversationId: "chat" as never, clientId: "default-client" as never,
+    reader: f.reader, resources: f.resources, transport: f.transport, pendingStore: f.pendingStore,
+  });
+  sessions.push(session);
+  await session.initialize();
+  f.addMessage();
+  await vi.advanceTimersByTimeAsync(1100);
+  expect(session.getSnapshot().window.records.map(record => record.id)).toEqual(["message-1", "message-2"]);
+});
+
+it("bounds 70 stream invalidations by the configured cadence", async () => {
+  vi.useFakeTimers();
+  const f = fixture(1, undefined, undefined, false, 10000);
+  let emit!: () => void;
+  let frames = 0;
+  vi.mocked(f.transport.startTurn).mockImplementation(async input => ({ ok: true, value: {
+    conversationId: input.conversationId, turnId: input.conversationTurnId, mutationId: input.mutationId,
+    observation: { disconnect: f.disconnect,
+      result: Promise.resolve({ status: "disconnected", checkpoint: { lastAppliedEventId: null, lastAppliedCursor: null, lastAppliedRevision: null } }),
+      events: { async *[Symbol.asyncIterator]() {
+        for (let i = 0; i < 70; i++) { await new Promise<void>(resolve => { emit = resolve; }); frames++; yield {}; }
+      } },
+    },
+  } }));
+  await f.session.initialize();
+  const send = f.session.sendMessage({ content: "70 deltas", request: { text: "70 deltas" } }).catch(() => undefined);
+  await flush(); await flush();
+  vi.mocked(f.reader.control).mockClear();
+  for (let i = 0; i < 70; i++) {
+    emit(); await flush(); await vi.advanceTimersByTimeAsync(100);
+  }
+  expect(frames).toBe(70);
+  expect(vi.mocked(f.reader.control).mock.calls.filter(([input]) => !input.turnId)).toHaveLength(0);
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(vi.mocked(f.reader.control).mock.calls.filter(([input]) => !input.turnId)).toHaveLength(1);
+  f.session.dispose(); await send;
+});
+
+it("retains a newer navigation demand received during a display read", async () => {
+  vi.useFakeTimers();
+  const f = fixture(40, undefined, undefined, false, 5000);
+  await f.session.initialize();
+  vi.mocked(f.reader.control).mockClear();
+  const held = deferred<ConversationDisplayControl>();
+  vi.mocked(f.reader.control).mockReturnValueOnce(held.promise);
+  const refreshing = f.session.refresh(); await flush();
+  await f.session.window.loadOlder();
+  held.resolve(f.control()); await refreshing;
+  expect(f.reader.control).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(f.reader.control).toHaveBeenCalledTimes(2);
+  expect(f.session.getSnapshot().window.records).toHaveLength(40);
+});
+
+it("shares only concurrent exact-turn observations and independently closes a waiter", async () => {
+  const f = fixture(); await f.session.initialize();
+  const held = deferred<ConversationDisplayControl>();
+  vi.mocked(f.reader.control).mockClear().mockReturnValueOnce(held.promise);
+  const controller = new AbortController();
+  const first = f.session.waitForTurn("observed", controller.signal);
+  const second = f.session.waitForTurn("observed");
+  const closed = expect(first).rejects.toMatchObject({ code: "observation_closed" });
+  expect(f.reader.control).toHaveBeenCalledTimes(1);
+  controller.abort(); await closed;
+  f.setTurn({ turnId: "observed", revision: 1, status: "completed", remoteMayStillBeRunning: false, error: null });
+  held.resolve(f.control("observed"));
+  expect((await second).status).toBe("completed");
+  await f.session.refresh();
+  expect(f.reader.control).toHaveBeenCalledTimes(2);
+});
+
+it("does not let a throttled refresh satisfy fresh prepare demand", async () => {
+  vi.useFakeTimers(); const f = fixture(); await f.session.initialize();
+  vi.mocked(f.reader.control).mockRejectedValueOnce({ transportCode: "rate_limited", retryable: true, retryAfterMs: 20000 });
+  await expect(f.session.refresh()).rejects.toMatchObject({ code: "rate_limited" });
+  const reads = vi.mocked(f.reader.control).mock.calls.length;
+  await expect(f.session.sendMessage({ content: "retain draft", request: { text: "retain draft" } }))
+    .rejects.toMatchObject({ retryable: true });
+  expect(f.reader.control).toHaveBeenCalledTimes(reads);
+  expect(f.resources.appendMutations).not.toHaveBeenCalled();
+  expect(f.transport.startTurn).not.toHaveBeenCalled();
+});
+
+it("evicts display data when a shared exact-turn observer discovers revoked access", async () => {
+  const f = fixture(1); await f.session.initialize();
+  vi.mocked(f.reader.control).mockRejectedValueOnce({ transportCode: "forbidden", retryable: false });
+  await expect(f.session.waitForTurn("observed")).rejects.toMatchObject({ code: "forbidden" });
+  expect(f.session.getSnapshot().control).toBeNull();
+  expect(f.session.getSnapshot().window.records).toHaveLength(0);
+  expect(f.session.getSnapshot().related).toHaveLength(0);
 });
