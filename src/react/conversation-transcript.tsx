@@ -8,6 +8,7 @@ import type { ConversationApprovalProposalRecord, ConversationMessageRecord,  Co
 import { useSmartTranscriptFollow } from "./transcript-follow.js";
 import { Message } from "./primitives.js";
 import { ConversationDeferredRecords } from "./deferred-records.js";
+import { OutgoingDeliveryStatus } from "./outgoing-delivery-status.js";
 
 export interface ConversationTranscriptProps extends Omit<HTMLAttributes<HTMLDivElement>, "children">, ConversationTimelineOptions {
   readonly state: ConversationState;
@@ -77,7 +78,7 @@ function PagedConversationTranscript({ session, state, proposals, includeToolRes
     }}>
     {snapshot.outgoingMessage && <article data-outgoing-message={snapshot.outgoingMessage.message.message_id}>
       {renderMessage?.(snapshot.outgoingMessage.message) ?? <Message message={snapshot.outgoingMessage.message}/>}
-      <p role="status">{snapshot.outgoingMessage.status === "sending" ? "Sending…" : snapshot.outgoingMessage.status === "sent" ? "Sent" : "Send unconfirmed — retry saved message"}</p>
+      <OutgoingDeliveryStatus scope={session} key={`${snapshot.conversationId}:${snapshot.outgoingMessage.message.message_id}`} status={snapshot.outgoingMessage.status}/>
     </article>}
     {pending}<ActionHistory proposals={history} renderApproval={renderApproval} scope={session} conversationId={state.conversation_id}/>{snapshot.loading && snapshot.window.status === "empty" && <p role="status">Loading conversation…</p>}
     {snapshot.error && <div role="alert"><p>{snapshot.error.message}</p>
@@ -88,7 +89,7 @@ function PagedConversationTranscript({ session, state, proposals, includeToolRes
       onRefresh={() => { void session.showLatestRelated().catch(() => undefined); }}/>}
     {snapshot.relatedTruncated && <p>Showing part of this chat’s activity. <button type="button"
       onClick={() => { void session.showLatestRelated().catch(() => undefined); }}>Show latest activity</button></p>}
-    {snapshot.hasPendingSubmission && <button type="button" disabled={snapshot.submitting}
+    {snapshot.hasPendingSubmission && !snapshot.submitting && <button type="button"
       onClick={() => { void session.retryPending().catch(() => undefined); }}>Retry saved message</button>}
     {children}
   </ConversationDisplayTranscript>;

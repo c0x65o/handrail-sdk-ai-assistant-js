@@ -25,13 +25,19 @@ it("renders and follows outgoing text before a slow send, then removes it after 
     let reject!: (cause: unknown) => void;
     vi.spyOn(pending, "load").mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
     let sending!: Promise<unknown>;
+    vi.useFakeTimers();
     act(() => { sending = session.sendMessage({ content: "Visible immediately", request: { text: "Visible immediately" } }).catch(() => undefined); });
     expect(view.getByText("Visible immediately")).toBeTruthy();
+    expect(view.queryByText("Sending…")).toBeNull();
+    act(() => { vi.advanceTimersByTime(1999); });
+    expect(view.queryByText("Sending…")).toBeNull();
+    act(() => { vi.advanceTimersByTime(1); });
     expect(view.getByText("Sending…")).toBeTruthy();
+    vi.useRealTimers();
     expect(view.queryByText("Start chatting")).toBeNull();
     expect(transcript.scrollTop).toBe(900);
     await act(async () => { reject(new Error("Storage offline")); await sending; });
     expect(view.queryByText("Visible immediately")).toBeNull();
     expect(view.getByText("Start chatting")).toBeTruthy();
-  } finally { view.unmount(); runtime.destroy(); }
+  } finally { view.unmount(); runtime.destroy(); vi.useRealTimers(); }
 });
