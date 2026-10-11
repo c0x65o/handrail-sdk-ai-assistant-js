@@ -29,11 +29,11 @@ packages:
     dependency: "direct main"
     description:
       path: "packages/handrail_ai_client"
-      ref: d25abe84c1c039d69be41fc89887bc799130e0cc
-      resolved-ref: d25abe84c1c039d69be41fc89887bc799130e0cc
+      ref: "71854eb568dd546477eee6c780063f1ce7791f19"
+      resolved-ref: "71854eb568dd546477eee6c780063f1ce7791f19"
       url: "https://github.com/c0x65o/handrail-sdk-ai-assistant-flutter.git"
     source: git
-    version: "0.1.44"
+    version: "0.1.45"
   http:
     dependency: transitive
     description:
